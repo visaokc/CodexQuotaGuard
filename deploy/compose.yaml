@@ -1,0 +1,25 @@
+services:
+  relay:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    environment:
+      CQG_RELAY_TOKEN: ${CQG_RELAY_TOKEN:?Set a random access token in .env}
+    restart: unless-stopped
+    networks: [cqg]
+  caddy:
+    image: caddy:2
+    environment:
+      CQG_DOMAIN: ${CQG_DOMAIN:?Set a domain pointing to this server}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+    networks: [cqg]
+networks:
+  cqg:
+volumes:
+  caddy_data:
+  caddy_config:

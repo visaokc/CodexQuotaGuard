@@ -1,0 +1,3 @@
+{$CQG_DOMAIN} {
+    reverse_proxy relay:48733
+}

@@ -1,0 +1,10 @@
+work/
+dist/
+build/
+*.spec
+__pycache__/
+.pytest_cache/
+*.sqlite*
+settings.json
+.env
+.private/

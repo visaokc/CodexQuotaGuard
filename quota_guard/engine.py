@@ -35,6 +35,7 @@ class Engine:
         self.view = dict(status='准备监测…', identity={}, summary=None, blocked=False,
                          active=0, uncertain=0, notifications=[], error='', mesh='', peers={})
         self.mesh = None
+        self.sync_receipts = {}
         self.blocked = bool(self.db.get('block_state'))
         self.last_identity, self.last_snapshot = None, None
         self.last_read = 0
@@ -80,6 +81,7 @@ class Engine:
                 self.mesh.close()
 
     def _account(self, ident, now):
+        self.sync_receipts = {}
         if self.mesh:
             self.mesh.close()
             self.mesh = None
@@ -169,7 +171,8 @@ class Engine:
             with self.view_lock:
                 self.view.update(summary=None, status=('当前账号未添加：不统计、不查询额度、不连接设备组'
                                  if ident['mode'] == 'account' else 'API / 未登录模式：不统计订阅 Token 与额度'),
-                                 active=0, uncertain=0, peers={}, mesh='未连接', history=None)
+                                 active=0, uncertain=0, peers={}, mesh='未连接', history=None,
+                                 pair_scope=False, connection={}, sync_receipts={})
             return
         account = ident['account']
         while not self.inbox.empty():
@@ -189,6 +192,8 @@ class Engine:
                     self.journal.merge(account, message['records'])
                 elif message['type'] == 'bye':
                     self.ledger.logout(peer)
+                if message['type'] in ('sync', 'facts'):
+                    self.sync_receipts[peer] = now
             except (ValueError, KeyError, TypeError) as e:
                 with self.view_lock:
                     self.view['error'] = '忽略无效同步数据：'+type(e).__name__
@@ -249,6 +254,8 @@ class Engine:
                 active=active, uncertain=uncertain, unbound_active=unbound_active,
                 unbound_uncertain=unbound_uncertain, blocked=self.blocked, error=self.quota_error,
                 mesh=self.mesh.status if self.mesh else '点击“生成匹配码”即可自动连接，无需填写参数',
+                pair_scope=True, sync_receipts=dict(self.sync_receipts),
+                connection=self.mesh.connection_state() if self.mesh and hasattr(self.mesh, 'connection_state') else {},
                 peers=self.mesh.peer_states() if self.mesh else {})
 
     def enforce(self, summary, now):

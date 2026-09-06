@@ -135,10 +135,43 @@ def main():
     root.update()
     dialogs = [w for w in root.winfo_children() if w.winfo_toplevel() is w and w is not root]
     assert dialogs and dialogs[0].title() == '发送匹配码'
+    assert app.pair_panel.code.startswith('CQG2.')
+    app.pair_panel.copy.invoke()
+    assert root.clipboard_get() == app.pair_panel.code
     assert app.config['link_enabled'] and not app.advanced.winfo_manager()
     assert create_code(app.config).startswith('CQG2.')
     ImageGrab.grab(window=ctypes.windll.user32.GetParent(dialogs[0].winfo_id())).save(out/'pairing-setup.png')
     dialogs[0].destroy()
+    # Real refresh route must preserve operation state and never imply a pasted code is connected.
+    app.pair_flow = dict(stage='preparing', started=time.monotonic()-15)
+    waiting = dict(view, peers={}, sync_receipts={}, connection=dict(phase='waiting', relay_ready=False))
+    app.render(waiting)
+    assert '正在生成匹配码' in app.pair_panel.title.cget('text')
+    app.fail_pair('测试：公共连接准备超时')
+    app.render(waiting)
+    assert app.pair_panel.title.cget('text') == '匹配码尚未生成'
+    capture('pairing-failed.png')
+    app.pair_flow = dict(stage='saved')
+    app.pair_panel.set_code('')
+    app.render(dict(waiting, connection=dict(phase='waiting', relay_ready=True)))
+    assert '已保存' in app.pair_panel.title.cget('text')
+    capture('pairing-saved.png')
+    connected = dict(view, peers={'b': {'route': '公共加密中转'}}, sync_receipts={})
+    app.render(connected)
+    assert '等待首次用量同步' in app.pair_panel.title.cget('text')
+    capture('pairing-connected.png')
+    app.render(dict(connected, sync_receipts={'b': time.time()}))
+    assert '已收到同步数据' in app.pair_panel.title.cget('text')
+    capture('pairing-synced.png')
+    # Busy work cannot extend the invitation deadline forever; obsolete callbacks are ignored.
+    app.busy = True
+    app.wait_pair_ready(time.monotonic()-1, app.pair_request)
+    assert app.pair_flow['stage'] == 'failed'
+    app.pair_request += 1
+    app.pair_flow = dict(stage='saved')
+    app.wait_pair_ready(time.monotonic()-1, app.pair_request-1)
+    assert app.pair_flow['stage'] == 'saved'
+    app.busy = False
     app.tabs.select(app.settings)
     capture('settings.png')
     assert app.auto_update.get()
@@ -165,6 +198,7 @@ def main():
     saved = load_config(out/'settings.json')
     assert saved['group_secret'] == peer['group_secret']
     assert saved['device_id'] == 'a', 'Pairing must not copy another device identity'
+    assert app.pair_flow['stage'] == 'saved'
     app.tabs.select(app.overview)
     root.geometry('1100x720')
     capture('overview-compact.png')

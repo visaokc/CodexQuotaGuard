@@ -22,6 +22,11 @@ class FileMesh:
         self.peers = {}
         self.received = {}
         self.status = '正在自动建立连接…'
+        self.diagnostics = dict(phase='starting', relay_ready=False)
+
+    def connection_state(self):
+        with self.lock:
+            return dict(self.diagnostics)
 
     def start(self):
         self.thread = threading.Thread(target=self._run, daemon=True)
@@ -92,6 +97,9 @@ class FileMesh:
                         raise RuntimeError('自动连接组件退出，正在重连')
                     if now-last_poll >= 5:
                         self.node.poll()
+                        addresses = self.node.invitation_addresses()
+                        with self.lock:
+                            self.diagnostics = dict(phase='waiting', relay_ready=bool(addresses), checked_at=now)
                         last_poll = now
                     if now-last_hello >= 15:
                         self._write('*', 'hello', dict(link_device=self.node.device), 'hello')
@@ -99,10 +107,12 @@ class FileMesh:
                     with self.lock:
                         self._read()
                     peers = self.peer_states()
-                    self.status = f'自动连接 · {len(peers)} 台同账号设备在线' if peers else '自动连接已启动 · 等待对方上线／输入匹配码'
+                    self.status = f'自动连接 · {len(peers)} 台同账号设备在线' if peers else '连接组件运行中 · 尚未发现同账号设备'
                     self.stop.wait(1)
             except Exception as e:
                 self.status = '自动连接重试中 · '+type(e).__name__
+                with self.lock:
+                    self.diagnostics = dict(phase='retrying', relay_ready=False, error=type(e).__name__)
             finally:
                 if self.node:
                     self.node.close()

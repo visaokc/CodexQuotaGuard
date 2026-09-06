@@ -21,6 +21,7 @@ from .quota import identity
 from . import startup
 from .tray import Tray
 from .limit_controls import CapDialog, LimitPanel, limit_presentation
+from .pair_status import PairPanel
 
 BG, PANEL, FG, MUTED, ACCENT = '#101620', '#1a2432', '#e8eef8', '#8c9eb6', '#69d9bd'
 
@@ -172,6 +173,8 @@ class App:
         self.cap_dialog = None
         self.update_running = False
         self.update_offer = None
+        self.pair_request = 0
+        self.pair_flow = dict(stage='saved' if config.get('link_enabled') or config.get('rendezvous_url') else 'idle')
         self.root.title('Codex 配额管家 · '+__version__)
         self.root.geometry(f"{min(1240, self.root.winfo_screenwidth()-60)}x{min(840, self.root.winfo_screenheight()-80)}")
         self.root.minsize(1100, 720)
@@ -336,7 +339,10 @@ class App:
             ctk.CTkLabel(card, text=desc, text_color=MUTED, font=('Microsoft YaHei UI', 11), wraplength=390,
                          justify='left').pack(anchor='w', padx=22, pady=(8, 18))
             button(card, text=action, style='Accent.TButton' if i == 0 else None, command=command).pack(fill='x', padx=22, pady=(0, 20))
-        self.mesh_label = tk.StringVar(value='尚未连接发现服务')
+        self.pair_panel = PairPanel(self.pair_tab, self.retry_pair)
+        self.pair_panel.pack(fill='x', pady=(18, 6))
+        self.pair_panel.render(self.pair_flow, {})
+        self.mesh_label = tk.StringVar(value='连接诊断：尚未启动')
         ctk.CTkLabel(self.pair_tab, textvariable=self.mesh_label, text_color=ACCENT, font=('Microsoft YaHei UI', 12)).pack(anchor='w', pady=(16, 6))
         button(self.pair_tab, text='高级：自建服务（可选）  ▾', command=self.toggle_advanced).pack(anchor='w', pady=8)
         self.advanced = ttk.Frame(self.pair_tab)
@@ -598,8 +604,6 @@ class App:
             if self.tray:
                 self.tray.stop()
             self.exited = True
-            for timer in self.root.tk.call('after', 'info'):
-                self.root.after_cancel(timer)
             self.root.destroy()
         self.background(work, done)
 
@@ -701,7 +705,7 @@ class App:
             messagebox.showerror('连接设置', str(e), parent=self.root)
 
     def send_pair(self):
-        if self.busy:
+        if self.busy or self.pair_flow.get('stage') == 'preparing':
             return
         if self.config.get('link_enabled') or not self.config['rendezvous_url']:
             if not self.demo:
@@ -710,8 +714,26 @@ class App:
                     messagebox.showinfo('先添加账号', '请先在账号管理中添加当前登录账号。API 或未添加账号不会启动同步。', parent=self.root)
                     return
             from .autolink import prepare
-            self.mesh_label.set('正在自动准备本机身份和匹配码…无需填写参数')
-            self.background(lambda: prepare(self.folder), self.finish_auto_pair)
+            self.pair_request += 1
+            request = self.pair_request
+            self.pair_flow = dict(stage='preparing', started=time.monotonic(), elapsed=0)
+            self.pair_panel.set_code('', '正在准备匹配码，生成后会保留在此处供复制。')
+            self.pair_panel.render(self.pair_flow, self.last_view)
+            self.root.after(100, self.focus_pair_status)
+            def work():
+                try:
+                    return prepare(self.folder), None
+                except Exception as e:
+                    return None, '本机身份准备失败：'+type(e).__name__+'。请点击重试。'
+            def done(result):
+                if request != self.pair_request:
+                    return
+                device, error = result
+                if error:
+                    self.fail_pair(error)
+                else:
+                    self.finish_auto_pair(device)
+            self.background(work, done)
             return
         try:
             code = create_code(self.config)
@@ -721,17 +743,44 @@ class App:
         self.show_pair_code(code)
 
     def finish_auto_pair(self, device):
-        self.config.update(link_enabled=True, link_device=device, rendezvous_url='', relay_token='', fingerprint='')
+        self.config.update(link_enabled=True, link_device=device, rendezvous_url='', relay_token='', fingerprint='', pair_role='sender')
         self.persist_restart()
         self.mesh_label.set('正在自动连接公共中转并生成匹配码…无需填写参数')
         if self.demo:
             self.show_pair_code(create_code(self.config))
         else:
-            self.root.after(500, lambda: self.wait_pair_ready(time.monotonic()+90))
+            deadline, request = time.monotonic()+90, self.pair_request
+            self.root.after(500, lambda: self.wait_pair_ready(deadline, request))
 
-    def wait_pair_ready(self, deadline):
+    def fail_pair(self, error):
+        self.pair_flow = dict(stage='failed', error=error)
+        self.pair_panel.set_code('', '匹配码未生成，请查看上方原因并点击重试。')
+        self.pair_panel.render(self.pair_flow, self.last_view)
+
+    def focus_pair_status(self):
+        if not self.exited:
+            self.pair_tab._parent_canvas.yview_moveto(max(0, self.pair_panel.winfo_y()-8)/max(1, self.pair_tab.winfo_height()))
+
+    def retry_pair(self):
         if self.busy:
-            self.root.after(500, lambda: self.wait_pair_ready(deadline))
+            return
+        if self.pair_flow.get('stage') in ('failed', 'ready', 'idle') or self.config.get('pair_role') == 'sender':
+            self.send_pair()
+        else:
+            self.pair_flow = dict(stage='saved')
+            if not self.demo:
+                self.restart()
+            self.pair_panel.render(self.pair_flow, {})
+
+    def wait_pair_ready(self, deadline, request=None):
+        request = self.pair_request if request is None else request
+        if request != self.pair_request or self.exited:
+            return
+        if time.monotonic() >= deadline:
+            self.fail_pair('公共连接准备超时，尚未生成可复制的匹配码。请检查本机网络／代理后重试；不需要对方先输入。')
+            return
+        if self.busy:
+            self.root.after(500, lambda: self.wait_pair_ready(deadline, request))
             return
         def probe():
             mesh = self.engine.mesh if self.engine else None
@@ -743,19 +792,27 @@ class App:
                     pass
             return []
         def done(addresses):
+            if request != self.pair_request:
+                return
             if addresses:
                 self.config.setdefault('link_addresses', {})[self.config['link_device']] = addresses[:4]
                 save_config(self.folder/'settings.json', self.config)
                 self.mesh_label.set('匹配码已就绪 · 对方输入后自动连接')
                 self.show_pair_code(create_code(self.config))
             elif time.monotonic() < deadline:
-                self.root.after(2000, lambda: self.wait_pair_ready(deadline))
+                self.root.after(2000, lambda: self.wait_pair_ready(deadline, request))
             else:
-                self.mesh_label.set('公共连接暂未就绪，请检查联网后再点生成匹配码；不需要填写服务器参数')
+                self.fail_pair('公共连接准备超时，尚未生成匹配码。请检查网络后点击重试。')
         self.background(probe, done)
 
     def show_pair_code(self, code):
+        self.pair_flow = dict(stage='ready')
+        self.pair_panel.set_code(code)
+        self.pair_panel.render(self.pair_flow, self.last_view)
+        self.root.after(100, self.focus_pair_status)
         win = ctk.CTkToplevel(self.root)
+        win.transient(self.root)
+        win.after(200, win.lift)
         win.title('发送匹配码')
         win.geometry('760x350')
         win.configure(fg_color=BG)
@@ -780,7 +837,7 @@ class App:
         win.geometry('760x360')
         win.configure(fg_color=BG)
         ctk.CTkLabel(win, text='加入设备组', font=('Microsoft YaHei UI', 20, 'bold')).pack(anchor='w', padx=22, pady=(18, 5))
-        ctk.CTkLabel(win, text='粘贴另一台设备生成的完整匹配码。连接配置自动完成，以后无需重复输入。', text_color=MUTED,
+        ctk.CTkLabel(win, text='确认后立即保存配对信息，再自动连接并同步。无需重复输入，进度会持续显示在配对页面。', text_color=MUTED,
                      font=('Microsoft YaHei UI', 12)).pack(anchor='w', padx=22, pady=(0, 12))
         entry = ctk.CTkTextbox(win, font=('Consolas', 12), fg_color=PANEL, corner_radius=10)
         entry.pack(fill='both', expand=True, padx=22)
@@ -793,7 +850,7 @@ class App:
             except tk.TclError:
                 pass
         button(row, text='从剪贴板粘贴', command=paste).pack(side='left')
-        button(row, text='确认匹配', style='Accent.TButton',
+        button(row, text='保存并开始连接', style='Accent.TButton',
                command=lambda: self.accept_pair(entry.get('1.0', 'end'), win)).pack(side='right')
 
     def accept_pair(self, code, dialog=None):
@@ -804,10 +861,16 @@ class App:
             if not pair.get('link_enabled') and not messagebox.askokcancel('确认加入设备组', '将连接到：\n'+pair['rendezvous_url']+'\n\n同组、同 Codex 账号的设备可交换用量和状态。', parent=self.root):
                 return
             self.config.update(pair)
+            self.config['pair_role'] = 'receiver'
             self.url.set(pair['rendezvous_url'])
             self.token.set(pair['relay_token'])
             self.stun.set(pair.get('stun_url', self.config['stun_url']))
             self.persist_restart()
+            self.pair_request += 1
+            self.pair_flow = dict(stage='saved')
+            self.pair_panel.set_code('')
+            self.pair_panel.render(self.pair_flow, {})
+            self.root.after(100, self.focus_pair_status)
             self.mesh_label.set('匹配信息已保存，等待连接与对端确认…')
             if dialog:
                 dialog.destroy()
@@ -920,7 +983,10 @@ class App:
         ident = view.get('identity') or {}
         self.show_detected_account(ident)
         self.account.set(f"{ident.get('label', '未识别账号')}    {ident.get('plan', '').upper()}    ·    本机：{self.config['name']}")
-        self.mesh_label.set(view.get('mesh', ''))
+        self.mesh_label.set('连接诊断：'+view.get('mesh', ''))
+        if self.pair_flow.get('stage') == 'preparing':
+            self.pair_flow['elapsed'] = int(time.monotonic()-self.pair_flow['started'])
+        self.pair_panel.render(self.pair_flow, view)
         error = view.get('error', '')
         if ident.get('mode') != 'account' or ident.get('account') not in self.config.get('tracked_accounts', {}):
             self.observed.set('当前是 API、未登录或未添加账号，不统计订阅会话与用量。')
@@ -1028,7 +1094,5 @@ class App:
             if self.tray:
                 self.tray.stop()
             self.exited = True
-            for timer in self.root.tk.call('after', 'info'):
-                self.root.after_cancel(timer)
             self.root.destroy()
         self.background(work, done)

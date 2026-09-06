@@ -27,7 +27,7 @@ def client(mode):
         cfg = defaults()
         enroll(cfg, identity(cfg['codex_home']))
         save_config(folder/'settings.json', cfg)
-    command = [str(ROOT/'dist'/'0.2.0'/'Codex配额管家.exe'), '--data-dir', str(folder), '--smoke-seconds', '15']
+    command = [str(ROOT/'dist'/'0.2.1'/'Codex配额管家.exe'), '--data-dir', str(folder), '--smoke-seconds', '15']
     if mode == 'demo':
         command += ['--demo']
     if mode == 'untracked':
@@ -58,7 +58,7 @@ async def relay_probe():
         s.bind(('127.0.0.1', 0))
         port = s.getsockname()[1]
     token = secrets.token_urlsafe(32)
-    proc = subprocess.Popen([str(ROOT/'dist'/'0.2.0'/'CodexQuotaRelay.exe'), '--port', str(port)],
+    proc = subprocess.Popen([str(ROOT/'dist'/'0.2.1'/'CodexQuotaRelay.exe'), '--port', str(port)],
                             env=dict(os.environ, CQG_RELAY_TOKEN=token),
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             creationflags=subprocess.CREATE_NO_WINDOW)

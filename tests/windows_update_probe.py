@@ -39,7 +39,7 @@ def scenario(root, rollback, frozen=False):
         source.write_text(code)
         subprocess.run([compiler, '/nologo', '/target:winexe', '/out:'+str(dest), str(source)], check=True)
     if frozen:
-        shutil.copyfile(Path('dist/0.2.0/Codex配额管家.exe'), old)
+        shutil.copyfile(Path('dist/0.2.1/Codex配额管家.exe'), old)
     original = old.read_bytes()
     expected = new.read_bytes()
     keypath = Path('D:/Codex/.private/update-signing-key.dpapi')
@@ -63,7 +63,7 @@ def scenario(root, rollback, frozen=False):
         assert parent_pid != proc.pid
     path = updates/'job.json'
     atomic_json(path, dict(parent=parent_pid, target=str(old), staged=str(new), data_dir=str(folder),
-        background=False, current='0.2.0', manifest=manifest, nonce=secrets.token_hex(24)))
+        background=False, current='0.2.1', manifest=manifest, nonce=secrets.token_hex(24)))
     helper = subprocess.Popen([str(Path('work/updater/CodexQuotaUpdater.exe').resolve()), '--apply', str(path)], creationflags=0x08000000)
     try:
         assert helper.wait(timeout=100) == (1 if rollback else 0)

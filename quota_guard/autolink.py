@@ -132,17 +132,28 @@ class LinkNode:
             if child is None:
                 child = ET.SubElement(parent, name)
             child.text = str(value)
-        existing = {d.attrib['id'] for d in root.findall('device')}
+        existing = {d.attrib['id']: d for d in root.findall('device')}
         for peer in self.config.get('link_peers', []):
             if not DEVICE.fullmatch(peer):
                 raise ValueError('匹配码设备身份无效')
-            if peer not in existing and peer != self.device:
+            if peer == self.device:
+                continue
+            item = existing.get(peer)
+            if item is None:
                 item = ET.SubElement(root, 'device', id=peer, name='CQG peer', introducer='true', skipIntroductionRemovals='true')
+                existing[peer] = item
                 put(item, 'address', 'dynamic')
-                for address in self.config.get('link_addresses', {}).get(peer, []):
+                put(item, 'autoAcceptFolders', 'false')
+            addresses = self.config.get('link_addresses', {}).get(peer)
+            if addresses is not None:
+                # A freshly pasted code supersedes stale relay hints even when
+                # this device was accepted by an earlier pairing attempt.
+                for address in list(item.findall('address')):
+                    item.remove(address)
+                put(item, 'address', 'dynamic')
+                for address in addresses:
                     if relay_address(address):
                         ET.SubElement(item, 'address').text = address
-                put(item, 'autoAcceptFolders', 'false')
         own = next(d for d in root.findall('device') if d.attrib['id'] == self.device)
         own.set('name', proof(self.secret, self.device))
         gui = root.find('gui')
@@ -215,10 +226,15 @@ class LinkNode:
                 continue
             self.request('config/devices', dict(deviceID=peer, name='CQG peer', addresses=['dynamic'],
                 introducer=False, skipIntroductionRemovals=True, autoAcceptFolders=False), 'POST')
-            folder = self.request('config/folders/'+self.group)
-            folder['devices'].append(dict(deviceID=peer))
-            self.request('config/folders/'+self.group, folder, 'PUT')
             ids.add(peer)
+        # Device acceptance and folder sharing are separate API writes. Reconcile
+        # already accepted IDs too, so a transient second-write failure recovers.
+        folder = self.request('config/folders/'+self.group)
+        shared = {d['deviceID'] for d in folder['devices']}
+        missing = ids-shared
+        if missing:
+            folder['devices'].extend(dict(deviceID=peer) for peer in sorted(missing))
+            self.request('config/folders/'+self.group, folder, 'PUT')
         self.connections = self.request('system/connections').get('connections', {})
         return self.connections
 

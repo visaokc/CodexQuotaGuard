@@ -744,7 +744,15 @@ class App:
 
     def finish_auto_pair(self, device):
         self.config.update(link_enabled=True, link_device=device, rendezvous_url='', relay_token='', fingerprint='', pair_role='sender')
-        self.persist_restart()
+        node = getattr(self.engine.mesh, 'node', None) if self.engine else None
+        reusable = (node and node.device == device and node.process and node.process.poll() is None
+                    and self.engine.config.get('link_enabled')
+                    and self.engine.config['group_secret'] == self.config['group_secret'])
+        if reusable:
+            # Generating/retrying a code must not tear down an already live relay.
+            save_config(self.folder/'settings.json', self.config)
+        else:
+            self.persist_restart()
         self.mesh_label.set('正在自动连接公共中转并生成匹配码…无需填写参数')
         if self.demo:
             self.show_pair_code(create_code(self.config))

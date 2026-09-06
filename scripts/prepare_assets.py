@@ -14,7 +14,7 @@ draw.text((128, 113), 'C', font=font, fill='#142c29', anchor='mm')
 image.save(assets/'app.ico', sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
 licenses = root/'licenses'
 licenses.mkdir(exist_ok=True)
-notices = ['Syncthing v2.1.3-cqg1 | MPL-2.0 | Modified proxy compatibility build; see syncthing-source-notices/BUILD.md and modified-source.', 'Third-party software packaged with Codex Quota Guard 0.2.1', '',
+notices = ['Syncthing v2.1.3-cqg1 | MPL-2.0 | Modified proxy compatibility build; see syncthing-source-notices/BUILD.md and modified-source.', 'Third-party software packaged with Codex Quota Guard 0.2.2', '',
            'Project implementation is original. Token Monitor and Cockpit Tools were read as references, not vendored.',
            'Python and Tcl/Tk are bundled by PyInstaller. See corresponding license files.', '']
 for name in ('aiortc', 'aioice', 'av', 'websockets', 'cryptography', 'customtkinter', 'darkdetect',

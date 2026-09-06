@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import json
 import queue
 import threading
 import time
@@ -36,6 +37,7 @@ class Engine:
                          active=0, uncertain=0, notifications=[], error='', mesh='', peers={})
         self.mesh = None
         self.sync_receipts = {}
+        self.sync_vectors = {}
         self.blocked = bool(self.db.get('block_state'))
         self.last_identity, self.last_snapshot = None, None
         self.last_read = 0
@@ -55,7 +57,14 @@ class Engine:
     def receive(self, peer, message):
         try:
             self.inbox.put_nowait((peer, message))
-            if not self.background_mode:
+            # Bootstrap and history progress should not wait for the 30 s hidden
+            # timer. Unchanged presence heartbeats keep the low-idle-cost path.
+            bootstrap = (self.last_identity and message.get('account') == self.last_identity['account']
+                         and (message.get('type') in ('peer_ready', 'facts') or
+                              (message.get('type') == 'sync' and
+                               (peer not in self.sync_receipts or message.get('records') or
+                                message.get('vector', {}) != self.sync_vectors.get(peer)))))
+            if not self.background_mode or bootstrap:
                 self.wakeup.set()
         except queue.Full:
             pass
@@ -82,6 +91,7 @@ class Engine:
 
     def _account(self, ident, now):
         self.sync_receipts = {}
+        self.sync_vectors = {}
         if self.mesh:
             self.mesh.close()
             self.mesh = None
@@ -114,11 +124,17 @@ class Engine:
     def scope_key(ident):
         return ident['mode'], ident['account'], ident.get('revision')
 
+    def scanner_scope(self, ident):
+        return dict(identity=json.dumps(self.scope_key(ident), sort_keys=True),
+                    home=str(self.scanner.home.resolve()), device=self.config['device_id'],
+                    added_at=self.tracked.get(ident['account'], {}).get('added_at'))
+
     def scope_changed(self, ident, now):
         if self.scope_key(self.identity_reader(self.config['codex_home'])) == self.scope_key(ident):
             return False
         if self.blocked:
             self.restore()
+        self.db.put('scanner_scope', None)
         self.scanner.boundary(now)
         if self.mesh:
             self.mesh.close()
@@ -148,7 +164,19 @@ class Engine:
                     self.restore()
                 if self.last_identity.get('account'):
                     self.ledger.logout(self.config['device_id'])
-            self.scanner.boundary(now)
+            saved = self.db.get('scanner_scope') if first else None
+            # Resume only a previously verified scope, never infer ownership from
+            # the current login alone. A changed config or legacy install drains
+            # ambiguous history as before.
+            resume = (saved and self.is_tracked(ident) and ident.get('revision') is not None
+                      and saved.get('scope') == self.scanner_scope(ident)
+                      and isinstance(saved.get('since'), (int, float))
+                      and self.scanner.start <= saved['since'] <= now)
+            self.db.put('scanner_scope', None)
+            if resume:
+                self.scanner.scope_since = saved['since']
+            else:
+                self.scanner.boundary(now)
             self._account(ident, now)
         self.last_identity = ident
         with self.view_lock:
@@ -175,21 +203,29 @@ class Engine:
                                  pair_scope=False, connection={}, sync_receipts={})
             return
         account = ident['account']
+        sync_due = False
         while not self.inbox.empty():
             peer, message = self.inbox.get_nowait()
             try:
                 if message.get('account') != account:
                     continue
                 if message['type'] == 'sync':
-                    self.journal.merge(account, message.get('records', []))
+                    vector = message.get('vector', {})
+                    if not isinstance(vector, dict):
+                        raise ValueError('同步版本向量无效')
+                    sync_due |= peer not in self.sync_receipts
+                    sync_due |= bool(self.journal.merge(account, message.get('records', [])))
                     if message.get('presence'):
                         self.journal.presence(account, peer, message['presence'], now)
                     if self.mesh:
-                        batch = self.journal.since(account, message.get('vector', {}))
+                        batch = self.journal.since(account, vector)
                         if batch:
                             self.mesh.send(peer, dict(type='facts', account=account, records=batch))
+                    self.sync_vectors[peer] = dict(vector)
                 elif message['type'] == 'facts':
-                    self.journal.merge(account, message['records'])
+                    sync_due |= bool(self.journal.merge(account, message['records']))
+                elif message['type'] == 'peer_ready':
+                    sync_due = True
                 elif message['type'] == 'bye':
                     self.ledger.logout(peer)
                 if message['type'] in ('sync', 'facts'):
@@ -220,10 +256,13 @@ class Engine:
         if self.scope_changed(ident, now):
             return
         checkpoint = self.scanner.checkpoint()
+        # An interrupted or identity-racing scan must not authorize restart replay.
+        self.db.put('scanner_scope', None)
         self.scanner.scan(account, self.config['multiplier'] * ident['multiplier'])
         if self.scope_changed(ident, now):
             self.scanner.reject_since(checkpoint)
             return
+        self.db.put('scanner_scope', dict(scope=self.scanner_scope(ident), since=self.scanner.scope_since))
         active, uncertain = self.scanner.activity(now, account)
         unbound_active, unbound_uncertain = self.scanner.activity(now, '')
         eligible = self.scanner.pending(account=account, limit=400)
@@ -238,7 +277,7 @@ class Engine:
                         active=active, uncertain=uncertain,
                         unbound_active=unbound_active, unbound_uncertain=unbound_uncertain)
         self.journal.presence(account, self.config['device_id'], presence, now)
-        if self.mesh and now-self.last_broadcast >= 5:
+        if self.mesh and (sync_due or now-self.last_broadcast >= 5):
             self.last_broadcast = now
             message = dict(type='sync', account=account, records=[], vector=self.journal.vector(account), presence=presence)
             for peer in self.mesh.peer_states():

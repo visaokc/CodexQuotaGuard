@@ -2,13 +2,16 @@ import json
 import time
 from datetime import datetime, timezone
 
+import pytest
+
 from quota_guard.autolink import prepare
 from quota_guard.engine import Engine
 from quota_guard.file_mesh import FileMesh
 from quota_guard.storage import Database, defaults
 
 
-def test_three_real_native_mesh_engines_tokens_caps_restart(tmp_path):
+@pytest.mark.parametrize('background', [False, True])
+def test_three_real_native_mesh_engines_tokens_caps_restart(tmp_path, background):
     account = 'a'*64
     engines, configs = [], []
     identities = [prepare(tmp_path/str(i)) for i in range(3)]
@@ -46,8 +49,9 @@ def test_three_real_native_mesh_engines_tokens_caps_restart(tmp_path):
         deadline = time.monotonic()+timeout
         while time.monotonic()<deadline:
             wire()
-            for e in engines:
-                e.wakeup.set()
+            if not background:
+                for e in engines:
+                    e.wakeup.set()
             if predicate():
                 return
             time.sleep(.5)
@@ -61,6 +65,11 @@ def test_three_real_native_mesh_engines_tokens_caps_restart(tmp_path):
                 link_peers=identities[:i], interval=1, codex_home=str(folder/'codex'), started_at=time.time()-1)
             cfg['tracked_accounts'] = {account: dict(label='fixture', added_at=0)}
             e = Engine(Database(folder/'local.sqlite'), cfg, quota_reader=quota, identity_reader=identity, mesh_factory=factory)
+            e.background_mode = background
+            if background and i == 0:
+                # More than two fact pages; no artificial wakeups during transfer.
+                for n in range(125):
+                    e.journal.append(account, 'cap', dict(device='0', cap=33), time.time()-500+n)
             configs.append(cfg); engines.append(e); e.start()
         wait(lambda: all(e.snapshot().get('summary') and len(e.snapshot()['summary']['devices']) == 3 for e in engines))
         for i, tokens in enumerate((2000, 1000, 1000)):
@@ -77,6 +86,7 @@ def test_three_real_native_mesh_engines_tokens_caps_restart(tmp_path):
         wait(lambda: all(next(d for d in e.snapshot()['summary']['devices'] if d['id']=='1')['cap'] == 40 for e in engines))
         engines[2].close()
         engines[2] = Engine(Database(tmp_path/'2'/'local.sqlite'), configs[2], quota_reader=quota, identity_reader=identity, mesh_factory=factory)
+        engines[2].background_mode = background
         engines[2].start()
         wait(lambda: engines[2].snapshot().get('summary') and len(engines[2].snapshot()['peers']) == 2)
         assert sum(d['tokens'] for d in engines[2].snapshot()['summary']['devices']) == 4000

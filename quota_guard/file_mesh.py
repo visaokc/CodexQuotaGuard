@@ -4,7 +4,7 @@ import json
 import threading
 import time
 
-from .autolink import LinkNode
+from .autolink import DEVICE, LinkNode
 from .pairing import Cipher
 from .storage import atomic_json
 
@@ -70,13 +70,11 @@ class FileMesh:
                 if not isinstance(peer, str) or not 1 <= len(peer) <= 100:
                     continue
                 if envelope['kind'] == 'hello':
-                    link = self.node.connections.get(value.get('link_device'), {})
-                    if not link.get('connected'):
-                        # Retry this hello after the authenticated transport reconnects.
-                        self.received.pop(path.name, None)
+                    if not isinstance(value.get('link_device'), str) or not DEVICE.fullmatch(value['link_device']):
                         continue
-                    self.peers[peer] = dict(route='公共加密中转' if 'relay' in link.get('type', '').lower() else 'P2P 直连',
-                        last_seen=time.time(), link_device=value['link_device'])
+                    # Retain the authenticated hello even if the transport poll
+                    # lags behind its arrival. peer_states still requires live TLS.
+                    self.peers[peer] = dict(last_seen=time.time(), link_device=value['link_device'])
                 elif envelope['kind'] == 'app':
                     self.on_message(peer, value)
             except (OSError, ValueError, KeyError, TypeError):
@@ -91,13 +89,24 @@ class FileMesh:
                 self.node = LinkNode(self.config['_data_dir'], self.config, self.local_test)
                 self.node.start()
                 last_hello = last_poll = 0
+                started = time.monotonic()
+                online = set()
+                poll_failures = 0
                 while not self.stop.is_set():
                     now = time.time()
                     if self.node.process.poll() is not None:
                         raise RuntimeError('自动连接组件退出，正在重连')
-                    if now-last_poll >= 5:
-                        self.node.poll()
-                        addresses = self.node.invitation_addresses()
+                    if now-last_poll >= (1 if time.monotonic()-started < 60 else 5):
+                        try:
+                            self.node.poll()
+                            addresses = self.node.invitation_addresses()
+                        except (OSError, ValueError):
+                            poll_failures += 1
+                            if poll_failures >= 3:
+                                raise
+                            self.stop.wait(1)
+                            continue
+                        poll_failures = 0
                         with self.lock:
                             self.diagnostics = dict(phase='waiting', relay_ready=bool(addresses), checked_at=now)
                         last_poll = now
@@ -107,6 +116,11 @@ class FileMesh:
                     with self.lock:
                         self._read()
                     peers = self.peer_states()
+                    for peer in peers.keys()-online:
+                        # Wake the engine on first connection/reconnection, not on
+                        # every hello. This is not a received usage-data receipt.
+                        self.on_message(peer, dict(type='peer_ready', account=self.account))
+                    online = set(peers)
                     self.status = f'自动连接 · {len(peers)} 台同账号设备在线' if peers else '连接组件运行中 · 尚未发现同账号设备'
                     self.stop.wait(1)
             except Exception as e:
@@ -121,7 +135,9 @@ class FileMesh:
     def peer_states(self):
         now = time.time()
         with self.lock:
-            return {peer: dict(state) for peer, state in self.peers.items()
+            return {peer: dict(state, route='公共加密中转' if 'relay' in
+                    self.node.connections.get(state['link_device'], {}).get('type', '').lower() else 'P2P 直连')
+                    for peer, state in self.peers.items()
                     if now-state['last_seen'] < 90 and self.node
                     and self.node.connections.get(state.get('link_device'), {}).get('connected')}
 

@@ -4,6 +4,7 @@ import statistics
 import threading
 import time
 from datetime import datetime
+from .token_budget import estimate_budget
 
 
 class Ledger:
@@ -138,7 +139,7 @@ class Ledger:
                 d.update(estimated=0.0, tokens=0, weight=0.0, unknown_tokens=0,
                          online=now-d['seen'] < 100 and bool(d['logged_in']))
             result = dict(account=account, epoch=dict(epoch) if epoch else None, devices=[],
-                          unassigned=0.0, provisional=0.0, calibration=None,
+                          unassigned=0.0, provisional=0.0, calibration=None, attribution_gaps=[],
                           reset_pending=bool(db.execute('SELECT 1 FROM meta WHERE key=?', ('reset_candidate:'+account,)).fetchone()))
             if epoch:
                 # IDs survive deterministic rebuild and late initial-history reconciliation.
@@ -147,6 +148,14 @@ class Ledger:
                     cycle += ':'+str(int(epoch['started']))
                 result['epoch']['cycle'] = cycle
                 events = list(db.execute('SELECT * FROM events WHERE account=? AND ts>? ORDER BY ts', (account, epoch['started'])))
+                budget_key = 'token_budget:'+account
+                saved = db.execute('SELECT value FROM meta WHERE key=?', (budget_key,)).fetchone()
+                previous = json.loads(saved[0]) if saved else {}
+                segments = list(db.execute('SELECT * FROM segments WHERE epoch=? ORDER BY end', (epoch['id'],)))
+                result['token_budget'], calibrated = estimate_budget(
+                    result['epoch'], events, devices, segments, now, previous, result['reset_pending'])
+                if calibrated and calibrated != previous:
+                    db.execute('INSERT OR REPLACE INTO meta VALUES (?,?)', (budget_key, json.dumps(calibrated)))
                 for e in events:
                     if e['device'] in devices:
                         d = devices[e['device']]
@@ -167,20 +176,26 @@ class Ledger:
                     for e in eligible:
                         weights[e['device']] = weights.get(e['device'], 0) + e['weight']
                     total = sum(weights.values())
-                    # Unknown models cannot silently receive a guessed weight. Hold the window.
-                    if total <= 0 or unknown:
+                    # A sole device needs no model conversion ratio. With multiple
+                    # devices an unknown weight still cannot be silently guessed.
+                    sole_device = len(weights) == 1 and sum(e['tokens'] for e in eligible) > 0
+                    if not sole_device and (total <= 0 or unknown):
                         result['unassigned'] += s['delta']
+                        result['attribution_gaps'].append(dict(start=s['start'], end=s['end'], delta=s['delta'],
+                            reason='unknown_weight' if unknown else 'missing_tokens',
+                            devices=sorted(weights), unknown_models=sorted({e['model'] for e in eligible if not e['known']})))
                         continue
                     provisional = now-s['end'] < 120 or any(d['scan_at'] < s['end'] and d['online'] for d in devices.values())
                     for device, weight in weights.items():
                         if device in devices:
-                            devices[device]['estimated'] += s['delta'] * weight/total
+                            share = s['delta'] if sole_device else s['delta'] * weight/total
+                            devices[device]['estimated'] += share
                             if not provisional:
-                                devices[device]['settled'] = devices[device].get('settled', 0) + s['delta'] * weight/total
+                                devices[device]['settled'] = devices[device].get('settled', 0) + share
                     # Recent windows and missing reports remain revisable after delayed uploads.
                     if provisional:
                         result['provisional'] += s['delta']
-                    if len(weights) == 1 and s['delta'] >= 2:
+                    if len(weights) == 1 and not unknown and total > 0 and s['delta'] >= 2:
                         coefficients.append(s['delta']/total)
                 if coefficients:
                     result['calibration'] = dict(samples=len(coefficients),

@@ -1,6 +1,8 @@
 """Encrypted anti-entropy mailboxes transported by the embedded Syncthing runtime."""
 import hashlib
 import json
+import os
+from pathlib import Path
 import threading
 import time
 
@@ -32,10 +34,20 @@ class FileMesh:
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
+    def _shared_path(self):
+        # Mailbox filenames can push otherwise short data roots past MAX_PATH.
+        # Keep transport paths/names unchanged; use extended paths only for local IO.
+        if os.name != 'nt':
+            return self.node.shared
+        path = os.path.abspath(self.node.shared)
+        if not path.startswith('\\\\?\\'):
+            path = '\\\\?\\' + ('UNC\\' + path[2:] if path.startswith('\\\\') else path)
+        return Path(path)
+
     def _path(self, recipient, slot):
         sender = hashlib.sha256(self.device.encode()).hexdigest()[:24]
         target = hashlib.sha256(recipient.encode()).hexdigest()[:24]
-        return self.node.shared/f'{self.cipher.room}-{sender}-{target}-{slot}.cqg'
+        return self._shared_path()/f'{self.cipher.room}-{sender}-{target}-{slot}.cqg'
 
     def _write(self, recipient, kind, value, slot):
         with self.lock:
@@ -52,7 +64,7 @@ class FileMesh:
         self._write(peer, 'app', value, slot)
 
     def _read(self):
-        for path in self.node.shared.glob(self.cipher.room+'-*.cqg'):
+        for path in self._shared_path().glob(self.cipher.room+'-*.cqg'):
             try:
                 if path.stat().st_size > 256*1024 or path.is_symlink():
                     continue

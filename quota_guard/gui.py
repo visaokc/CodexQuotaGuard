@@ -22,6 +22,7 @@ from . import startup
 from .tray import Tray
 from .limit_controls import CapDialog, LimitPanel, limit_presentation
 from .pair_status import PairPanel
+from .token_budget import budget_text
 
 BG, PANEL, FG, MUTED, ACCENT = '#101620', '#1a2432', '#e8eef8', '#8c9eb6', '#69d9bd'
 
@@ -272,13 +273,18 @@ class App:
             value = tk.StringVar(value='—')
             ctk.CTkLabel(card, textvariable=value, text_color=ACCENT if key == 'local' else FG,
                      font=('Segoe UI', 31 if key != 'reset' else 23, 'bold')).pack(anchor='w', padx=18, pady=(4, 8))
-            hints = {'global': '账号共享额度 · 非单台设备', 'local': '按本机加权 Token 分摊', 'reset': '以官方最新快照为准'}
+            if key == 'global':
+                self.account_tokens = tk.StringVar(value=budget_text(None))
+                self.account_tokens_label = ctk.CTkLabel(card, textvariable=self.account_tokens,
+                    text_color=MUTED, font=('Microsoft YaHei UI', 10))
+                self.account_tokens_label.pack(anchor='w', padx=18, pady=(0, 4))
+            hints = {'global': '账号共享估算 · 已用 / 总 Token', 'local': '按本机加权 Token 分摊', 'reset': '以官方最新快照为准'}
             ctk.CTkLabel(card, text=hints[key], text_color=MUTED, font=('Microsoft YaHei UI', 10)).pack(anchor='w', padx=18, pady=(0, 14))
             self.cards[key] = value
         self.meter = Meter(self.overview)
         self.meter.pack(fill='x', pady=(22, 10))
-        self.detail = tk.StringVar(value='仅记录开始监测后的用量，不把账号历史消费记给本机。')
-        ttk.Label(self.overview, textvariable=self.detail, style='Muted.TLabel').pack(anchor='w', pady=(0, 17))
+        self.detail = tk.StringVar(value='正在核对本机日志与账号证据，自动补记漏采历史。')
+        ttk.Label(self.overview, textvariable=self.detail, style='Muted.TLabel', wraplength=900, justify='left').pack(anchor='w', pady=(0, 17))
         self.limit_panel = LimitPanel(self.overview, self.limit_action)
         self.limit_panel.pack(fill='x', pady=(0, 18))
         self.limit_panel.render(limit_presentation({}, self.config.get('tracked_accounts', {})))
@@ -442,6 +448,14 @@ class App:
                           '刷新时间：'+datetime.fromtimestamp(epoch['reset_at']).strftime('%Y-%m-%d %H:%M'), '']
                 for d in summary['devices']:
                     lines.append(f"{d['name']}   Token {number(d['tokens'])}   估算 {d['estimated']:.2f}% / 配额 {d['cap']:g}%")
+                lines += ['', '未归属额度逐段核对（不会按设备比例强行补齐）：']
+                names = {d['id']: d['name'] for d in summary['devices']}
+                for gap in summary.get('attribution_gaps', []):
+                    span = ' → '.join(datetime.fromtimestamp(gap[k]).strftime('%m-%d %H:%M:%S') for k in ('start', 'end'))
+                    reason = ('已采集设备：'+', '.join(names.get(d, d) for d in gap['devices'])+
+                              '；未知模型权重：'+', '.join(gap['unknown_models'])
+                              if gap['reason'] == 'unknown_weight' else '没有对应 Token；等待来源设备补记及同步')
+                    lines.append(f"{span}   {gap['delta']:g}%   {reason}")
             else:
                 lines.append('还没有此账号的有效周额度快照。')
             lines += ['', '本机今日 / 自然周 / 本月：'+' / '.join(number(history['current'][k]) for k in ('day', 'week', 'month'))]
@@ -621,8 +635,18 @@ class App:
             '按模型区分非缓存输入、缓存输入与输出 Token，以公开计价比例作为初始相对权重。'
             '账号额度增量按同一时间段的设备权重分摊；这不是官方设备账单，无法承诺固定误差。\n\n'
             '哪些用量不强行归属\n'
-            '首次监测前的消费单列为基线；没有对应 Token 或出现未知模型的区间单列“未归属”。'
+            '首次监测前的消费单列为基线；没有对应 Token 或多设备混用未知权重模型的区间单列“未归属”。'
+            '只有一台设备有 Token 时，未知模型不再阻止设备归属。账号账本提供未归属的时间段及原因。'
             'Spark 使用独立额度池，不混入主池。离线补传会修正历史估算。所有使用设备都应运行本工具。\n\n'
+            '自动补记旧日志\n'
+            '升级后自动重读本机已添加账号的历史时段，保留独立数值证据，不改动原始日志及旧采集游标。'
+            '日志周额度快照与已知账号的历史快照相互匹配且没有账号冲突时，补记漏采 Token 并同步。'
+            '同一会话的连续区间可继承已确认 Token 的账号，首尾均确认时标记区间推断；'
+            'Provider、账号、额度指纹冲突或账号切换拒绝记录会截断继承。推断记录不再充当新的证据向外扩散。'
+            '新版本还会只读索引本机 process_uuid、thread_id 与 turn_id，把连续运行区间绑定到已确认账号；'
+            '重启和 account/updated 通知划分运行区间，旧请求尾部保留原归属。运行证据未索引完成或存在冲突时不扩散推断。'
+            '这是额度快照相关性推断，不是逐请求账号证明；不会套用当前登录账号或今日快速模式回填旧记录。'
+            '缺少证据的记录保留待核对；其他设备需升级后各自扫描，本机不会代造远端 Token。\n\n'
             '并发数的含义\n'
             '“活动会话”依据本机日志里的开始、完成与最近活动事件判断，并非服务端并发推理数。'
             '120 秒没有日志更新的未结束会话标记“待确认”；等待审批、断线或日志缺失会影响判断。\n\n'
@@ -1003,6 +1027,7 @@ class App:
                               f"长时间无新日志：本账号 {view.get('uncertain', 0)} · 归属待确认 {view.get('unbound_uncertain', 0)}。待归属活动不计入本账号 Token 或限额。")
         self.status.set(('已限制 Codex · ' if view.get('blocked') else '')+view.get('status', '')+(' | '+error if error else ''))
         summary = view.get('summary')
+        self.account_tokens.set(budget_text((summary or {}).get('token_budget')))
         if not summary or not summary.get('epoch'):
             self.cycle_tokens.set('本额度周期 Token：—')
             for value in self.history_values.values():
@@ -1023,7 +1048,13 @@ class App:
         self.cards['reset'].set(datetime.fromtimestamp(e['reset_at']).strftime('%m-%d  %H:%M'))
         self.meter['value'] = e['used']
         self.detail.set(f"账号剩余 {100-e['used']:.0f}%   ·   监测前基线 {e['baseline']:.0f}%   ·   未归属 {summary['unassigned']:.2f}%   ·   待稳定分摊 {summary['provisional']:.2f}%"
-                        + ('   ·   正在确认重置' if summary['reset_pending'] else ''))
+                        + ('   ·   正在确认重置' if summary['reset_pending'] else '')
+                        + ('\n本机旧日志扫描中…' if (view.get('recovery') or {}).get('scanning') else
+                           f"\n本机自动补记 {number((view.get('recovery') or {}).get('recovered_tokens', 0))} Token"
+                           f"（含推断 {number((view.get('recovery') or {}).get('inferred_tokens', 0))}）"
+                           f"   ·   本机日志待核对 {number((view.get('recovery') or {}).get('unresolved_tokens', 0))} Token")
+                        + ('\n运行身份索引中…' if ((view.get('recovery') or {}).get('runtime') or {}).get('scanning') else
+                           f"\n按运行实例补记 {number((view.get('recovery') or {}).get('runtime_tokens', 0))} Token"))
         old = set(self.table.get_children())
         for d in summary['devices']:
             name = d['name']+('（本机）' if d['id'] == self.config['device_id'] else '')

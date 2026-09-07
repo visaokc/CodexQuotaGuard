@@ -77,13 +77,14 @@ def test_allocation_and_late_upload(tmp_path):
     assert s['epoch']['baseline'] == 20
 
 
-def test_unknown_model_holds_window(tmp_path):
+def test_unknown_model_does_not_erase_sole_device_ownership(tmp_path):
     db, l = ledger(tmp_path)
     register(l)
     l.observe(snap(100, 20))
     l.ingest(dict(account=A, device='one', name='one', events=[event(known=False)]), 160)
     l.observe(snap(200, 24))
-    assert l.summary(A, 400)['unassigned'] == 4
+    assert l.summary(A, 400)['unassigned'] == 0
+    assert l.summary(A, 400)['devices'][0]['estimated'] == 4
     assert l.summary(A, 400)['devices'][0]['unknown_tokens'] == 1000
 
 

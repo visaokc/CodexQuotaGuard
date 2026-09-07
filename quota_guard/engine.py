@@ -11,6 +11,7 @@ from .ledger import Ledger
 from .mesh import make_mesh
 from .meter import Scanner
 from .quota import identity, read_quota
+from .recovery import HistoryRecovery
 from .storage import Database
 
 
@@ -29,6 +30,7 @@ class Engine:
         self.journal = Journal(self.group_db, self.ledger, config['device_id'])
         self.tracked = config.get('tracked_accounts', {})
         self.scanner = Scanner(database, config['codex_home'], config['device_id'], config['started_at'], self.tracked)
+        self.recovery = HistoryRecovery(database, self.group_db, config['codex_home'], config['device_id'])
         self.stop_event, self.wakeup = threading.Event(), threading.Event()
         self.view_lock = threading.Lock()
         self.inbox = queue.Queue(maxsize=500)
@@ -135,6 +137,7 @@ class Engine:
         if self.blocked:
             self.restore()
         self.db.put('scanner_scope', None)
+        self.recovery.boundary(self.db.get('scope_observed_at'))
         self.scanner.boundary(now)
         if self.mesh:
             self.mesh.close()
@@ -143,6 +146,24 @@ class Engine:
         with self.view_lock:
             self.view.update(summary=None, blocked=False, status='登录配置已变化，等待重新确认账号', peers={}, mesh='未连接')
         return True
+
+    def publish_events(self, account, now):
+        eligible = self.scanner.pending(account=account, limit=400)
+        self.scanner.ack([e['id'] for e in eligible if e['ts'] <= self.tracked[account]['added_at']])
+        eligible = [e for e in eligible if e['ts'] > self.tracked[account]['added_at']]
+        # Leave room for runtime provenance under the journal's 24 KB limit.
+        for i in range(0, len(eligible), 20):
+            batch = eligible[i:i+20]
+            self.journal.append(account, 'events', batch, now)
+            self.scanner.ack([e['id'] for e in batch])
+
+    def recover_inactive(self, current_account, now):
+        # These are old tracked-account requests, not current API usage. Publish
+        # locally only; inactive account groups never use the current connection.
+        for account, profile in self.tracked.items():
+            if account != current_account:
+                self.recovery.reconcile(account, profile['added_at'], self.config['multiplier'], runtime_only=True)
+                self.publish_events(account, now)
 
     def step(self, now=None):
         now = time.time() if now is None else now
@@ -176,9 +197,11 @@ class Engine:
             if resume:
                 self.scanner.scope_since = saved['since']
             else:
+                self.recovery.boundary(self.db.get('scope_observed_at'))
                 self.scanner.boundary(now)
             self._account(ident, now)
         self.last_identity = ident
+        self.db.put('scope_observed_at', now)
         with self.view_lock:
             self.view['identity'] = ident
             self.view['blocked'] = self.blocked
@@ -196,9 +219,12 @@ class Engine:
             if self.blocked:
                 self.restore()
             self.scanner.scan('')
+            if self.tracked:
+                self.recovery.scan(min(p['added_at'] for p in self.tracked.values()))
+                self.recover_inactive(None, now)
             with self.view_lock:
                 self.view.update(summary=None, status=('当前账号未添加：不统计、不查询额度、不连接设备组'
-                                 if ident['mode'] == 'account' else 'API / 未登录模式：不统计订阅 Token 与额度'),
+                                 if ident['mode'] == 'account' else 'API / 未登录模式：不统计当前用量，仅核对已绑定旧请求'),
                                  active=0, uncertain=0, peers={}, mesh='未连接', history=None,
                                  pair_scope=False, connection={}, sync_receipts={})
             return
@@ -259,20 +285,16 @@ class Engine:
         # An interrupted or identity-racing scan must not authorize restart replay.
         self.db.put('scanner_scope', None)
         self.scanner.scan(account, self.config['multiplier'] * ident['multiplier'])
+        self.recovery.scan(min(p['added_at'] for p in self.tracked.values()))
+        recovered = self.recovery.reconcile(account, self.tracked[account]['added_at'], self.config['multiplier'])
         if self.scope_changed(ident, now):
             self.scanner.reject_since(checkpoint)
             return
         self.db.put('scanner_scope', dict(scope=self.scanner_scope(ident), since=self.scanner.scope_since))
         active, uncertain = self.scanner.activity(now, account)
         unbound_active, unbound_uncertain = self.scanner.activity(now, '')
-        eligible = self.scanner.pending(account=account, limit=400)
-        before_enrollment = [e['id'] for e in eligible if e['ts'] <= self.tracked[account]['added_at']]
-        self.scanner.ack(before_enrollment)
-        eligible = [e for e in eligible if e['ts'] > self.tracked[account]['added_at']]
-        for i in range(0, len(eligible), 40):
-            batch = eligible[i:i+40]
-            self.journal.append(account, 'events', batch, now)
-            self.scanner.ack([e['id'] for e in batch])
+        self.publish_events(account, now)
+        self.recover_inactive(account, now)
         presence = dict(device=self.config['device_id'], account=account, at=now, scan_at=now,
                         active=active, uncertain=uncertain,
                         unbound_active=unbound_active, unbound_uncertain=unbound_uncertain)
@@ -289,6 +311,7 @@ class Engine:
             return
         with self.view_lock:
             self.view.update(summary=summary, history=self.ledger.history(account, self.config['device_id'], now),
+                recovery=recovered,
                 status='监测中 · 所有设备用量均为估算' if self.mesh else '本机监测中 · 尚未配置异地匹配服务',
                 active=active, uncertain=uncertain, unbound_active=unbound_active,
                 unbound_uncertain=unbound_uncertain, blocked=self.blocked, error=self.quota_error,

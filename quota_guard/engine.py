@@ -13,6 +13,7 @@ from .meter import Scanner
 from .quota import identity, read_quota
 from .recovery import HistoryRecovery
 from .storage import Database
+from .sync_diagnostics import progress, rejection_reason
 
 
 class Engine:
@@ -40,6 +41,8 @@ class Engine:
         self.mesh = None
         self.sync_receipts = {}
         self.sync_vectors = {}
+        self.sync_errors = {}
+        self.sync_error_types = {}
         self.blocked = bool(self.db.get('block_state'))
         self.last_identity, self.last_snapshot = None, None
         self.last_quota_publish = 0
@@ -95,6 +98,8 @@ class Engine:
     def _account(self, ident, now):
         self.sync_receipts = {}
         self.sync_vectors = {}
+        self.sync_errors = {}
+        self.sync_error_types = {}
         if self.mesh:
             self.mesh.close()
             self.mesh = None
@@ -234,7 +239,8 @@ class Engine:
                 self.view.update(summary=None, status=('当前账号未添加：不统计、不查询额度、不连接设备组'
                                  if ident['mode'] == 'account' else 'API / 未登录模式：不统计当前用量，仅核对已绑定旧请求'),
                                  active=0, uncertain=0, peers={}, mesh='未连接', history=None,
-                                 pair_scope=False, connection={}, sync_receipts={})
+                                 pair_scope=False, connection={}, sync_receipts={}, sync_progress={},
+                                 sync_vectors={}, local_vector={}, sync_errors={}, tracked_since=None)
             return
         account = ident['account']
         sync_due = False
@@ -248,7 +254,9 @@ class Engine:
                     continue
                 if message['type'] == 'sync':
                     vector = message.get('vector', {})
-                    if not isinstance(vector, dict):
+                    if (not isinstance(vector, dict) or any(
+                            not isinstance(k, str) or not 1 <= len(k) <= 100
+                            or type(v) is not int or not 0 <= v <= 1e9 for k, v in vector.items())):
                         raise ValueError('同步版本向量无效')
                     sync_due |= peer not in self.sync_receipts
                     sync_due |= bool(self.journal.merge(account, message.get('records', [])))
@@ -270,9 +278,13 @@ class Engine:
                     self.ledger.logout(peer)
                 if message['type'] in ('sync', 'facts'):
                     self.sync_receipts[peer] = now
+                    if (self.sync_error_types.get(peer) == message['type']
+                            and (message['type'] == 'sync' or message['records'])):
+                        self.sync_errors.pop(peer, None)
+                        self.sync_error_types.pop(peer, None)
             except (ValueError, KeyError, TypeError) as e:
-                with self.view_lock:
-                    self.view['error'] = '忽略无效同步数据：'+type(e).__name__
+                self.sync_errors[peer] = rejection_reason(e)
+                self.sync_error_types[peer] = message.get('type')
         if now-self.last_read >= self.config['interval']:
             self.last_read = now
             try:
@@ -347,17 +359,24 @@ class Engine:
             self.enforce(summary, now)
         if self.scope_changed(ident, now):
             return
+        peers = self.mesh.peer_states() if self.mesh else {}
+        local_vector = self.journal.vector(account)
+        sync_errors = {p: error for p, error in self.sync_errors.items() if p not in removed}
         with self.view_lock:
             self.view.update(summary=summary, history=self.ledger.history(account, self.config['device_id'], now),
                 recovery=recovered,
+                tracked_since=self.tracked[account]['added_at'],
                 status='监测中 · 所有设备用量均为估算' if self.mesh else '本机监测中 · 尚未配置异地匹配服务',
                 active=active, uncertain=uncertain, unbound_active=unbound_active,
                 unbound_uncertain=unbound_uncertain, blocked=self.blocked,
-                error=' | '.join(value for value in (self.quota_error, recovery_error) if value),
+                error=' | '.join(value for value in (self.quota_error, recovery_error,
+                    '同步记录被拒绝：'+', '.join(sorted(set(sync_errors.values()))) if sync_errors else '') if value),
                 mesh=self.mesh.status if self.mesh else '点击“生成匹配码”即可自动连接，无需填写参数',
                 pair_scope=True, sync_receipts=dict(self.sync_receipts),
+                sync_progress=progress(local_vector, peers, self.sync_vectors, self.sync_receipts, sync_errors, now),
+                local_vector=local_vector, sync_vectors=copy.deepcopy(self.sync_vectors), sync_errors=sync_errors,
                 connection=self.mesh.connection_state() if self.mesh and hasattr(self.mesh, 'connection_state') else {},
-                peers=self.mesh.peer_states() if self.mesh else {})
+                peers=peers)
 
     def enforce(self, summary, now):
         if summary.get('account') not in self.tracked:
@@ -381,7 +400,9 @@ class Engine:
             with self.view_lock:
                 self.view['notifications'].append(f"本机估算用量 {device['estimated']:.2f}% 已达到配额 {device['cap']:.2f}%")
         if self.blocked:
-            if not self.config['auto_block'] or (fresh and block and device['cap'] > block.get('cap', 0) and not reached):
+            reallocated = summary.get('allocation') == 'cycle_weighted_v1' and summary.get('unassigned') == 0
+            if not self.config['auto_block'] or (fresh and block and not reached
+                    and (device['cap'] > block.get('cap', 0) or reallocated)):
                 self.restore()
             else:
                 self.firewall.pause(self.config['program_paths'], self.db)

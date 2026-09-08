@@ -127,9 +127,21 @@ class HistoryRecovery:
                     AND json_extract(recovery_usage.payload,'$.turn_id') IS NULL)''',
                        (self.source, eid, state['session'], ts, json.dumps(value)))
 
+    @staticmethod
+    def _unresolved(result, event, reason):
+        result['unresolved_events'] += 1
+        result['unresolved_tokens'] += event['tokens']
+        group = result['unresolved_reasons'].setdefault(reason,
+            dict(events=0, tokens=0, first_at=event['ts'], last_at=event['ts']))
+        group['events'] += 1
+        group['tokens'] += event['tokens']
+        group['first_at'] = min(group['first_at'], event['ts'])
+        group['last_at'] = max(group['last_at'], event['ts'])
+
     def reconcile(self, account, added_at, multiplier=1, runtime_only=False):
         result = dict(recovered_events=0, recovered_tokens=0, inferred_tokens=0, runtime_tokens=0,
-                      unresolved_events=0, unresolved_tokens=0, runtime=self.runtime.summary(), scanning=not self.complete)
+                      unresolved_events=0, unresolved_tokens=0, unresolved_reasons={},
+                      runtime=self.runtime.summary(), scanning=not self.complete)
         if not self.complete:
             return dict(self.db.get('history_recovery:'+account, result), scanning=True)
         with self.group_db.connect() as db:
@@ -236,14 +248,16 @@ class HistoryRecovery:
                             event['evidence'].update(process=run['process'], segment=run['segment'], anchors=[run['anchor']])
                             db.execute('INSERT OR IGNORE INTO outbox(id,payload) VALUES (?,?)', (event['id'], json.dumps(event)))
                         else:
-                            result['unresolved_events'] += 1
-                            result['unresolved_tokens'] += event['tokens']
+                            reason = ('quota_conflict' if event['id'] in runtime_blocked else
+                                      'other_account' if run and run.get('account') else
+                                      (run or {}).get('reason', 'missing_runtime_evidence'))
+                            self._unresolved(result, event, reason)
                         continue
                     pos = bisect.bisect_left(stops, ts)
                     witnesses = blocks[pos] if pos == len(stops) or stops[pos] != ts else []
                     if not witnesses:
-                        result['unresolved_events'] += 1
-                        result['unresolved_tokens'] += event['tokens']
+                        self._unresolved(result, event, 'quota_conflict' if event['id'] in runtime_blocked
+                                         else 'missing_session_evidence')
                         continue
                     before = [w for w in witnesses if w[0] < ts]
                     after = [w for w in witnesses if w[0] > ts]

@@ -136,10 +136,11 @@ class Ledger:
             epoch = db.execute('SELECT * FROM epochs WHERE account=? ORDER BY id DESC LIMIT 1', (account,)).fetchone()
             devices = {r['id']: dict(r) for r in db.execute('SELECT * FROM devices WHERE account=? ORDER BY name', (account,))}
             for d in devices.values():
-                d.update(estimated=0.0, tokens=0, weight=0.0, unknown_tokens=0,
+                d.update(estimated=0.0, settled=0.0, tokens=0, weight=0.0, unknown_tokens=0,
                          online=now-d['seen'] < 100 and bool(d['logged_in']))
             result = dict(account=account, epoch=dict(epoch) if epoch else None, devices=[],
                           unassigned=0.0, provisional=0.0, calibration=None, attribution_gaps=[],
+                          allocation='cycle_weighted_v1',
                           reset_pending=bool(db.execute('SELECT 1 FROM meta WHERE key=?', ('reset_candidate:'+account,)).fetchone()))
             if epoch:
                 # IDs survive deterministic rebuild and late initial-history reconciliation.
@@ -163,9 +164,37 @@ class Ledger:
                         d['weight'] += e['weight']
                         if not e['known']:
                             d['unknown_tokens'] += e['tokens']
+                # Allocation is a cycle-wide sharing policy, not a reconstruction
+                # of an official per-device bill. Late/new events revise all shares,
+                # even when the official percentage has not increased again.
+                weights = {}
+                for e in events:
+                    if e['tokens'] > 0:
+                        weights[e['device']] = weights.get(e['device'], 0) + e['weight']
+                total = sum(weights.values())
+                unknown = any(not e['known'] and e['tokens'] > 0 for e in events)
+                sole_device = len(weights) == 1
+                delta = max(0.0, epoch['used']-epoch['baseline'])
+                profiled = all(device in devices for device in weights)
+                if not profiled or not weights or (not sole_device and (total <= 0 or unknown)):
+                    result['unassigned'] = delta
+                    if delta:
+                        result['attribution_gaps'].append(dict(start=epoch['started'], end=epoch['observed_at'],
+                            delta=delta, reason='unknown_weight' if unknown else 'missing_tokens',
+                            devices=sorted(weights), unknown_models=sorted({e['model'] for e in events if not e['known']})))
+                else:
+                    pending = sum(s['delta'] for s in segments if now-s['end'] < 120
+                                  or any(d['scan_at'] < s['end'] and d['online'] for d in devices.values()))
+                    result['provisional'] = min(delta, pending)
+                    for device, weight in weights.items():
+                        ratio = 1.0 if sole_device else weight/total
+                        devices[device]['estimated'] = delta*ratio
+                        devices[device]['settled'] = (delta-result['provisional'])*ratio
                 coefficients = []
                 index = 0
-                for s in db.execute('SELECT * FROM segments WHERE epoch=? ORDER BY end', (epoch['id'],)):
+                # Time-aligned samples remain useful for calibration only; they no
+                # longer decide which device owns an individual quota increment.
+                for s in segments:
                     eligible = []
                     while index < len(events) and events[index]['ts'] <= s['end']:
                         if events[index]['ts'] > s['start']:
@@ -176,25 +205,6 @@ class Ledger:
                     for e in eligible:
                         weights[e['device']] = weights.get(e['device'], 0) + e['weight']
                     total = sum(weights.values())
-                    # A sole device needs no model conversion ratio. With multiple
-                    # devices an unknown weight still cannot be silently guessed.
-                    sole_device = len(weights) == 1 and sum(e['tokens'] for e in eligible) > 0
-                    if not sole_device and (total <= 0 or unknown):
-                        result['unassigned'] += s['delta']
-                        result['attribution_gaps'].append(dict(start=s['start'], end=s['end'], delta=s['delta'],
-                            reason='unknown_weight' if unknown else 'missing_tokens',
-                            devices=sorted(weights), unknown_models=sorted({e['model'] for e in eligible if not e['known']})))
-                        continue
-                    provisional = now-s['end'] < 120 or any(d['scan_at'] < s['end'] and d['online'] for d in devices.values())
-                    for device, weight in weights.items():
-                        if device in devices:
-                            share = s['delta'] if sole_device else s['delta'] * weight/total
-                            devices[device]['estimated'] += share
-                            if not provisional:
-                                devices[device]['settled'] = devices[device].get('settled', 0) + share
-                    # Recent windows and missing reports remain revisable after delayed uploads.
-                    if provisional:
-                        result['provisional'] += s['delta']
                     if len(weights) == 1 and not unknown and total > 0 and s['delta'] >= 2:
                         coefficients.append(s['delta']/total)
                 if coefficients:

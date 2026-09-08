@@ -23,6 +23,7 @@ from .tray import Tray
 from .limit_controls import CapDialog, LimitPanel, limit_presentation
 from .pair_status import PairPanel
 from .token_budget import budget_text
+from .sync_diagnostics import progress_text, report as sync_report
 
 BG, PANEL, FG, MUTED, ACCENT = '#101620', '#1a2432', '#e8eef8', '#8c9eb6', '#69d9bd'
 
@@ -278,7 +279,7 @@ class App:
                 self.account_tokens_label = ctk.CTkLabel(card, textvariable=self.account_tokens,
                     text_color=MUTED, font=('Microsoft YaHei UI', 10))
                 self.account_tokens_label.pack(anchor='w', padx=18, pady=(0, 4))
-            hints = {'global': '官方额度 + 已同步设备日志', 'local': '按本机加权 Token 分摊', 'reset': '以官方最新快照为准'}
+            hints = {'global': '官方额度 + 已同步设备日志', 'local': '按整个周期加权 Token 重算', 'reset': '以官方最新快照为准'}
             ctk.CTkLabel(card, text=hints[key], text_color=MUTED, font=('Microsoft YaHei UI', 10)).pack(anchor='w', padx=18, pady=(0, 14))
             self.cards[key] = value
         self.meter = Meter(self.overview)
@@ -313,6 +314,10 @@ class App:
         button(buttons, text='刷新', command=lambda: self.engine and self.engine.wakeup.set()).pack(side='left')
         button(buttons, text='匹配另一台设备', style='Accent.TButton', command=lambda: self.tabs.select(self.pair_tab)).pack(side='left', padx=8)
         button(buttons, text='从组中移除选中设备', command=self.remove_device).pack(side='left', padx=8)
+        button(buttons, text='导出同步诊断', command=self.export_sync_diagnostics).pack(side='left', padx=8)
+        self.sync_progress_label = tk.StringVar(value='账本同步：等待进度')
+        ttk.Label(self.overview, textvariable=self.sync_progress_label, style='Muted.TLabel',
+                  wraplength=1000).pack(anchor='w', pady=(10, 0))
         self.cycle_tokens = tk.StringVar(value='本额度周期 Token：—')
         ttk.Label(self.overview, textvariable=self.cycle_tokens, font=('Microsoft YaHei UI', 13, 'bold')).pack(anchor='w', pady=(18, 10))
         self.history_values = {}
@@ -454,7 +459,7 @@ class App:
                           '刷新时间：'+datetime.fromtimestamp(epoch['reset_at']).strftime('%Y-%m-%d %H:%M'), '']
                 for d in summary['devices']:
                     lines.append(f"{d['name']}   Token {number(d['tokens'])}   估算 {d['estimated']:.2f}% / 配额 {d['cap']:g}%")
-                lines += ['', '未归属额度逐段核对（不会按设备比例强行补齐）：']
+                lines += ['', '未归属额度核对（周期权重或记录不完整）：']
                 names = {d['id']: d['name'] for d in summary['devices']}
                 for gap in summary.get('attribution_gaps', []):
                     span = ' → '.join(datetime.fromtimestamp(gap[k]).strftime('%m-%d %H:%M:%S') for k in ('start', 'end'))
@@ -639,10 +644,10 @@ class App:
             '指整个账号完整周额度的 33 个百分点，不是当前剩余额度的 33%。账号余额不足时，不能凭本机配额增加官方额度。\n\n'
             '怎样估算\n'
             '按模型区分非缓存输入、缓存输入与输出 Token，以公开计价比例作为初始相对权重。'
-            '账号额度增量按同一时间段的设备权重分摊；这不是官方设备账单，无法承诺固定误差。\n\n'
+            '官方已用减去监测前基线，按整个额度周期的设备加权 Token 比例重新分摊。新增或补传 Token 会重算全部比例，无需等官方百分比再次上涨；这是一种组内分摊估算，不是官方设备账单。\n\n'
             '哪些用量不强行归属\n'
-            '首次监测前的消费单列为基线；没有对应 Token 或多设备混用未知权重模型的区间单列“未归属”。'
-            '只有一台设备有 Token 时，未知模型不再阻止设备归属。账号账本提供未归属的时间段及原因。'
+            '首次监测前的消费单列为基线；整个周期没有对应 Token 或多设备混用未知权重模型时，可分摊额度暂列“未归属”。'
+            '只有一台设备有 Token 时，未知模型不再阻止设备归属。账号账本提供未归属周期及原因。'
             'Spark 使用独立额度池，不混入主池。离线补传会修正历史估算。所有使用设备都应运行本工具。\n\n'
             '自动补记旧日志\n'
             '升级后自动重读本机已添加账号的历史时段，保留独立数值证据，不改动原始日志及旧采集游标。'
@@ -652,12 +657,12 @@ class App:
             '新版本还会只读索引本机 process_uuid、thread_id 与 turn_id，把连续运行区间绑定到已确认账号；'
             '重启和 account/updated 通知划分运行区间，旧请求尾部保留原归属。运行证据未索引完成或存在冲突时不扩散推断。'
             '这是额度快照相关性推断，不是逐请求账号证明；不会套用当前登录账号或今日快速模式回填旧记录。'
-            '缺少证据的记录保留待核对；其他设备需升级后各自扫描，本机不会代造远端 Token。\n\n'
+            '缺少证据的记录保留待核对，不代表已确认是 API 用量；导出同步诊断可查看证据缺失或冲突原因。两端都需升级以使用相同分摊规则，本机不会代造远端 Token。\n\n'
             '并发数的含义\n'
             '“活动会话”依据本机日志里的开始、完成与最近活动事件判断，并非服务端并发推理数。'
             '120 秒没有日志更新的未结束会话标记“待确认”；等待审批、断线或日志缺失会影响判断。\n\n'
             '限制和刷新\n'
-            '默认只提醒。自动限制以至少 120 秒前的已分摊用量为依据，因此会延迟且可能超额。'
+            '默认只提醒。自动限制将至少 120 秒前的额度增量按当前周期权重分摊，因此会延迟且可能超额；补传记录仍会修正比例。'
             '确认官方周期变化／提前重置后自动恢复；仅电脑时间到点不会清零。'
             '接口失败、登录过期或数据回退未确认时，不冒充刷新成功；可随时手动恢复。\n\n'
             '安全与恢复\n'
@@ -1158,6 +1163,17 @@ class App:
             self.engine.wakeup.set()
             self.render_limit(self.last_view)
 
+    def export_sync_diagnostics(self):
+        path = filedialog.asksaveasfilename(parent=self.root, title='导出同步诊断（不含密钥或对话内容）',
+            initialfile='CodexQuotaGuard-sync-diagnostics.json', defaultextension='.json',
+            filetypes=[('JSON', '*.json')])
+        if path:
+            try:
+                Path(path).write_text(json.dumps(sync_report(self.last_view, self.config['device_id']),
+                                                ensure_ascii=False, indent=2), encoding='utf-8')
+            except OSError as e:
+                messagebox.showerror('导出失败', str(e), parent=self.root)
+
     def render(self, view):
         self.last_view = view
         self.render_limit(view)
@@ -1165,6 +1181,7 @@ class App:
         self.show_detected_account(ident)
         self.account.set(f"{ident.get('label', '未识别账号')}    {ident.get('plan', '').upper()}    ·    本机：{self.config['name']}")
         self.mesh_label.set('连接诊断：'+view.get('mesh', ''))
+        self.sync_progress_label.set(progress_text(view.get('sync_progress', {})))
         connection = view.get('connection') or {}
         tailnet = connection.get('tailnet')
         self.tailnet_label.set('内嵌节点所属网络：'+(

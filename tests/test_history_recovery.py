@@ -277,6 +277,21 @@ def test_unresolved_quota_has_actionable_window_and_device_evidence(tmp_path):
     l.observe(snap(300, 22))
     s = l.summary(A, 500)
     assert s['unassigned'] == 2
-    assert [x['reason'] for x in s['attribution_gaps']] == ['missing_tokens', 'unknown_weight']
+    # Cycle-wide allocation reports one unresolved cycle, not independent windows.
+    assert [x['reason'] for x in s['attribution_gaps']] == ['unknown_weight']
     assert s['attribution_gaps'][0]['start'] == 100
-    assert set(s['attribution_gaps'][1]['devices']) == {'one', 'two'}
+    assert set(s['attribution_gaps'][0]['devices']) == {'one', 'two'}
+
+
+def test_unresolved_diagnostics_do_not_label_missing_evidence_as_api(tmp_path):
+    e, recovery, path = history(tmp_path)
+    path.write_text(path.read_text().replace('"used_percent": 21', '"used_percent": 22'))
+    recovery.scan(0)
+    result = recovery.reconcile(A, 0)
+    assert result['unresolved_events'] == 1
+    assert sum(v['tokens'] for v in result['unresolved_reasons'].values()) == result['unresolved_tokens']
+    assert all('api' not in reason for reason in result['unresolved_reasons'])
+    e.journal.append(A, 'quota', snap(165, 22), 165)
+    result = recovery.reconcile(A, 0)
+    assert result['unresolved_reasons'] == {}
+    assert result['recovered_events'] == 1

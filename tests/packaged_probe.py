@@ -1,4 +1,4 @@
-"""Smoke packaged clients and the packaged relay without restricting Codex."""
+"""Smoke packaged clients without restricting Codex; old relay probe retained for history."""
 import asyncio
 import json
 import os
@@ -97,4 +97,4 @@ if __name__ == '__main__':
     client('demo')
     client('untracked')
     client('live')
-    asyncio.run(relay_probe())
+    print('For embedded transport validation also run tests/packaged_tsnet_probe.py')

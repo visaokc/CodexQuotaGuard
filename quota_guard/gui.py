@@ -127,7 +127,7 @@ class DeviceTable(ctk.CTkFrame):
             row.grid_columnconfigure(i, weight=2 if i == 0 else 1, uniform='cols')
             label = ctk.CTkLabel(row, text=value, anchor='w' if i == 0 else 'center',
                                 font=('Microsoft YaHei UI', 12, 'bold' if i in (0, 5) else 'normal'),
-                                corner_radius=6, height=28)
+                                corner_radius=6, height=28, wraplength=80 if i == 2 else 0)
             label.grid(row=0, column=i, sticky='ew', padx=(10, 4), pady=17)
             label.bind('<Button-1>', lambda _, iid=iid: self._select(iid))
             labels.append(label)
@@ -312,6 +312,7 @@ class App:
         buttons.pack(fill='x')
         button(buttons, text='刷新', command=lambda: self.engine and self.engine.wakeup.set()).pack(side='left')
         button(buttons, text='匹配另一台设备', style='Accent.TButton', command=lambda: self.tabs.select(self.pair_tab)).pack(side='left', padx=8)
+        button(buttons, text='从组中移除选中设备', command=self.remove_device).pack(side='left', padx=8)
         self.cycle_tokens = tk.StringVar(value='本额度周期 Token：—')
         ttk.Label(self.overview, textvariable=self.cycle_tokens, font=('Microsoft YaHei UI', 13, 'bold')).pack(anchor='w', pady=(18, 10))
         self.history_values = {}
@@ -335,7 +336,7 @@ class App:
         cards = ttk.Frame(self.pair_tab)
         cards.pack(fill='x')
         for i, (num, title, desc, action, command) in enumerate([
-            ('01', '从这台设备发起', '生成设备组匹配码，发送给你自己的另一台设备。', '生成匹配码（发送）', self.send_pair),
+            ('01', '从这台设备发起', '完成内嵌 Tailscale 授权，再生成设备组匹配码。', '生成匹配码（发送）', self.send_tailscale),
             ('02', '加入已有设备组', '粘贴另一台设备的匹配码，保存配对并开始同步。', '输入匹配码（接收）', self.receive_pair)]):
             cards.columnconfigure(i, weight=1, uniform='pair')
             card = ctk.CTkFrame(cards, fg_color=PANEL, corner_radius=14, border_color='#2a3b4f', border_width=1)
@@ -350,7 +351,7 @@ class App:
         self.pair_panel.render(self.pair_flow, {})
         self.mesh_label = tk.StringVar(value='连接诊断：尚未启动')
         ctk.CTkLabel(self.pair_tab, textvariable=self.mesh_label, text_color=ACCENT, font=('Microsoft YaHei UI', 12)).pack(anchor='w', pady=(16, 6))
-        button(self.pair_tab, text='高级：自建服务（可选）  ▾', command=self.toggle_advanced).pack(anchor='w', pady=8)
+        button(self.pair_tab, text='授权登录 Tailscale（浏览器）', command=self.login_tailscale).pack(anchor='w', pady=8)
         self.advanced = ttk.Frame(self.pair_tab)
         self.url = self.entry(self.advanced, 'WSS 服务地址', self.config['rendezvous_url'])
         self.token = self.entry(self.advanced, '服务访问密钥', self.config['relay_token'], show='•')
@@ -360,8 +361,9 @@ class App:
                        fg_color='#309d82', hover_color='#24745f', font=('Microsoft YaHei UI', 12),
                        checkbox_width=18, checkbox_height=18).pack(anchor='w', pady=8)
         button(self.advanced, text='保存连接设置', command=self.save_connection).pack(anchor='w', pady=8)
-        ttk.Label(self.pair_tab, text='无需账号注册或填写网络参数。内置 Syncthing 自动发现设备，直连不可用时使用公共加密中转。\n'
-                  '匹配码只交给自己的设备；不上传 Codex 登录凭证或对话内容。双方需运行本工具并添加同一账号。',
+        ttk.Label(self.pair_tab, text='内嵌 Tailscale，无需另装客户端。两端首次需授权加入同一 Tailscale 网络，再交换新版匹配码。\n'
+                  '优先直连，失败由 Tailscale DERP 中转；不再使用 Syncthing 公共中转。路径以近期探测为准。\n'
+                  '旧设备组发起方刷新匹配码可保留账本；双方须升级并添加同一 Codex 账号。',
                   style='Muted.TLabel', wraplength=920, justify='left').pack(side='bottom', anchor='w', pady=12)
 
     def _accounts(self):
@@ -728,6 +730,105 @@ class App:
         except Exception as e:
             messagebox.showerror('连接设置', str(e), parent=self.root)
 
+    def send_tailscale(self):
+        if self.busy:
+            return
+        if not self.demo:
+            ident = identity(self.config['codex_home'])
+            if ident.get('mode') != 'account' or ident.get('account') not in self.config.get('tracked_accounts', {}):
+                messagebox.showinfo('先添加账号', '请先添加当前 Codex 订阅账号，再启动内嵌 Tailscale。', parent=self.root)
+                return
+        self.pair_request += 1
+        request = self.pair_request
+        self.config.update(tailscale_enabled=True, link_enabled=True, rendezvous_url='', pair_role='sender')
+        self.pair_flow = dict(stage='authorizing')
+        self.pair_panel.set_code('', '首次点击“授权登录 Tailscale”；登录后匹配码自动生成。')
+        if self.demo:
+            self.config['tailscale_ip'] = '100.64.0.1'
+            self.show_pair_code(create_code(self.config))
+            return
+        from .tsnet_mesh import TailscaleMesh
+        if self.engine and isinstance(self.engine.mesh, TailscaleMesh):
+            save_config(self.folder/'settings.json', self.config)
+        else:
+            self.persist_restart()
+        self.root.after(500, lambda: self.wait_tailscale(request))
+
+    def wait_tailscale(self, request):
+        if self.exited or request != self.pair_request:
+            return
+        from .tsnet_node import tail_ip
+        mesh = self.engine.mesh if self.engine else None
+        state = mesh.connection_state() if mesh else {}
+        ips = [ip for ip in state.get('ips', []) if tail_ip(ip)]
+        if state.get('ready') and ips:
+            self.config['tailscale_ip'] = ips[0]
+            save_config(self.folder/'settings.json', self.config)
+            self.show_pair_code(create_code(self.config))
+        else:
+            self.root.after(1000, lambda: self.wait_tailscale(request))
+
+    def remove_device(self):
+        selected = self.table.selection()
+        engine = self.engine
+        if not selected or not engine:
+            return
+        peer = selected[0]
+        if peer == self.config['device_id']:
+            messagebox.showinfo('移除设备', '不能在此移除本机，请选择其他设备。', parent=self.root)
+            return
+        with engine.view_lock:
+            summary = engine.view.get('summary') or {}
+            device = next((dict(d) for d in summary.get('devices', []) if d['id'] == peer), None)
+            account = summary.get('account')
+        if not device or device.get('removed'):
+            return
+        if messagebox.askokcancel('确认从设备组移除',
+                f"确认将设备「{device['name']}」从整个设备组移除？\n设备 ID：{peer}\n\n"
+                '其他成员会同步此移除记录，离线成员联网后生效。\n'
+                '停止该设备后续账本同步，保留已有历史用量。\n'
+                '该设备需重新输入匹配码才能加入；这不会删除 Tailscale 网络中的设备。',
+                default='cancel', icon='warning', parent=self.root):
+            engine.commands.put(('remove_device', dict(account=account, device=peer)))
+            engine.wakeup.set()
+
+    def login_tailscale(self):
+        if self.demo:
+            return
+        from .tsnet_node import auth_url
+        mesh = self.engine.mesh if self.engine else None
+        state = mesh.connection_state() if mesh else {}
+        url = state.get('auth_url', '')
+        if url and auth_url(url):
+            import webbrowser
+            webbrowser.open(url)
+        elif state.get('ready'):
+            messagebox.showinfo('Tailscale', '本机节点已经授权并就绪。另一台也需授权加入同一 Tailscale 网络。', parent=self.root)
+        elif mesh and state.get('state') == 'NeedsLogin' and getattr(mesh, 'node', None):
+            if self.busy:
+                return
+            def request_login():
+                mesh.node.request('login')
+                for _ in range(15):
+                    value = mesh.node.request('status').get('auth_url', '')
+                    if value and auth_url(value):
+                        return value
+                    if self.exited:
+                        return ''
+                    time.sleep(1)
+                return ''
+            def open_login(value):
+                if value:
+                    import webbrowser
+                    webbrowser.open(value)
+                else:
+                    messagebox.showinfo('Tailscale', '尚未取得授权链接，请检查网络后重试。', parent=self.root)
+            self.background(request_login, open_login)
+        elif mesh:
+            messagebox.showinfo('Tailscale', '节点已启动，正在连接或恢复本地通信。无需重复登录，请等待状态更新。', parent=self.root)
+        else:
+            messagebox.showinfo('Tailscale', '请先生成或接收匹配码以启动节点，等待几秒后再点击授权登录。', parent=self.root)
+
     def send_pair(self):
         if self.busy or self.pair_flow.get('stage') == 'preparing':
             return
@@ -797,7 +898,7 @@ class App:
         if self.busy:
             return
         if self.pair_flow.get('stage') in ('failed', 'ready', 'idle') or self.config.get('pair_role') == 'sender':
-            self.send_pair()
+            self.send_tailscale()
         else:
             self.pair_flow = dict(stage='saved')
             if not self.demo:
@@ -890,9 +991,13 @@ class App:
             if self.busy:
                 raise ValueError('上一项后台操作尚未结束，请稍后匹配。')
             pair = read_code(code)
+            if not self.demo and not pair.get('tailscale_enabled'):
+                raise ValueError('旧版匹配码不再用于连接。请让原设备组发起方升级、授权 Tailscale 后生成 CQG4 匹配码；不要新建组或清空账本。')
             if not pair.get('link_enabled') and not messagebox.askokcancel('确认加入设备组', '将连接到：\n'+pair['rendezvous_url']+'\n\n同组、同 Codex 账号的设备可交换用量和状态。', parent=self.root):
                 return
             self.config.update(pair)
+            import uuid
+            self.config['tailscale_join_request'] = uuid.uuid4().hex
             self.config['pair_role'] = 'receiver'
             self.url.set(pair['rendezvous_url'])
             self.token.set(pair['relay_token'])
@@ -1040,7 +1145,7 @@ class App:
             return
         e = summary['epoch']
         local = next((d for d in summary['devices'] if d['id'] == self.config['device_id']), {})
-        self.cycle_tokens.set(f"本额度周期 Token：本机 {number(local.get('tokens', 0))}   ·   已配对设备合计 {number(sum(d['tokens'] for d in summary['devices']))}")
+        self.cycle_tokens.set(f"本额度周期 Token：本机 {number(local.get('tokens', 0))}   ·   已配对设备合计 {number(sum(d['tokens'] for d in summary['devices'] if not d.get('removed')))}")
         for unit, value in self.history_values.items():
             value.set(number((view.get('history') or {}).get('current', {}).get(unit, 0)))
         self.cards['global'].set(f"{e['used']:.0f}%")
@@ -1057,6 +1162,8 @@ class App:
                            f"\n按运行实例补记 {number((view.get('recovery') or {}).get('runtime_tokens', 0))} Token"))
         old = set(self.table.get_children())
         for d in summary['devices']:
+            if d.get('removed'):
+                continue
             name = d['name']+('（本机）' if d['id'] == self.config['device_id'] else '')
             unknown = d.get('unbound_active', 0)
             state = ('Codex 使用中' if d['active'] else '活动·待归属' if unknown else '暂无近期活动') if d['online'] else '离线/已切换'

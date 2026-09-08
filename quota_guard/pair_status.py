@@ -11,9 +11,12 @@ def presentation(flow, view, now=None):
     peers, receipts = view.get('peers', {}), view.get('sync_receipts', {})
     connection = view.get('connection', {})
     recent = {p: receipts[p] for p in peers if p in receipts and now-receipts[p] < 90}
-    steps = [stage in ('ready', 'saved') or bool(peers), bool(connection.get('relay_ready') or peers), bool(peers), bool(recent)]
+    steps = [stage in ('ready', 'saved') or bool(peers), bool(connection.get('ready') or connection.get('relay_ready') or peers), bool(peers), bool(recent)]
     color = '#69d9bd'
-    if stage == 'preparing':
+    if stage == 'authorizing':
+        title = '等待内嵌 Tailscale 就绪'
+        detail = '首次请点击“授权登录 Tailscale”，在浏览器将两端加入同一私人网络；无需另装客户端。授权完成后自动生成匹配码。'
+    elif stage == 'preparing':
         title = '正在生成匹配码 · '+str(flow.get('elapsed', 0))+' 秒'
         detail = '正在准备本机身份和公共连接。完成后匹配码会显示在下方；现在不需要对方输入。'
     elif stage == 'failed':
@@ -39,7 +42,19 @@ def presentation(flow, view, now=None):
     else:
         title, detail = '尚未开始配对', '发起方生成并复制匹配码；接收方粘贴确认。只有显示已连接并收到同步数据，才说明同步链路已工作。'
     if stage not in ('preparing', 'failed') and not peers:
-        if connection.get('phase') == 'retrying':
+        if connection.get('transport') == 'tailscale':
+            state = connection.get('state')
+            if connection.get('phase') == 'retrying':
+                detail += '\n内嵌 Tailscale 启动异常，正在重试；具体原因见连接诊断。'
+            elif state == 'NeedsLogin':
+                detail += '\n需要浏览器授权：点击“授权登录 Tailscale”。'
+            elif state == 'NeedsMachineAuth':
+                detail += '\n等待 Tailscale 网络管理员批准此设备。'
+            elif connection.get('ready'):
+                detail += '\nTailscale 节点就绪，尚未收到同账号对端握手；请确认双方已授权、升级并交换 CQG4 匹配码。'
+            else:
+                detail += '\n正在连接 Tailscale 控制服务；不会退回旧公共中转。'
+        elif connection.get('phase') == 'retrying':
             error = connection.get('error', '连接失败')
             explanations = {'TimeoutError': '连接请求超时，请检查网络／代理',
                 'URLError': '连接组件接口暂时不可达', 'OSError': '连接组件或网络访问异常',

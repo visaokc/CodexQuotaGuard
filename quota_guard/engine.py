@@ -8,7 +8,7 @@ import time
 from .firewall import Firewall
 from .journal import Journal
 from .ledger import Ledger
-from .mesh import make_mesh
+from .transport import make_mesh
 from .meter import Scanner
 from .quota import identity, read_quota
 from .recovery import HistoryRecovery
@@ -217,6 +217,12 @@ class Engine:
                 target = payload.pop('account')
                 if target in self.tracked:
                     self.journal.append(target, 'cap', payload, now)
+            elif kind == 'remove_device':
+                if (self.mesh and payload['account'] == ident.get('account')
+                        and payload['device'] != self.config['device_id']):
+                    known = {d['id'] for d in self.ledger.summary(payload['account'], now)['devices']}
+                    if payload['device'] in known:
+                        self.mesh.remove_device(payload['device'])
         if not self.is_tracked(ident):
             if self.blocked:
                 self.restore()
@@ -236,6 +242,9 @@ class Engine:
             peer, message = self.inbox.get_nowait()
             try:
                 if message.get('account') != account:
+                    continue
+                removed = self.mesh.removed_devices() if self.mesh and hasattr(self.mesh, 'removed_devices') else set()
+                if peer in removed or self.config['device_id'] in removed:
                     continue
                 if message['type'] == 'sync':
                     vector = message.get('vector', {})
@@ -328,6 +337,11 @@ class Engine:
             for peer in self.mesh.peer_states():
                 self.mesh.send(peer, message)
         summary = self.ledger.summary(account, now)
+        removed = self.mesh.removed_devices() if self.mesh and hasattr(self.mesh, 'removed_devices') else set()
+        for device in summary['devices']:
+            device['removed'] = device['id'] in removed
+            if device['removed']:
+                device['online'] = False
         self.db.put('last_summary', summary)
         if not recovery_error:
             self.enforce(summary, now)

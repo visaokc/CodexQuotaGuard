@@ -6,7 +6,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from PyInstaller.archive.readers import CArchiveReader
 from quota_guard import __version__
-from quota_guard.autolink import BINARY_SHA256
+import json
 
 root = Path(__file__).resolve().parents[1]
 client = CArchiveReader(str(root/'dist'/__version__/'Codex配额管家.exe'))
@@ -17,8 +17,12 @@ for path in (root/'quota_guard').glob('*.py'):
         continue
     actual = pyz.extract(module)
     assert actual == compile(path.read_bytes(), actual.co_filename, 'exec'), module+' differs from source'
-native = client.extract('vendor\\syncthing\\syncthing.exe')
-assert hashlib.sha256(native).hexdigest() == BINARY_SHA256
+native = client.extract('vendor\\tsnet\\cqg-tsnet.exe')
+manifest = json.loads(client.extract('vendor\\tsnet\\manifest.json'))
+assert hashlib.sha256(native).hexdigest() == manifest['sha256']
+assert native == (root/'vendor'/'tsnet'/'cqg-tsnet.exe').read_bytes()
+assert not any('syncthing.exe' in p or p.startswith(('av.', 'av\\', 'pylibsrtp\\')) for p in client.toc)
+assert 'quota_guard.tsnet_mesh' in pyz.toc and 'quota_guard.mesh' not in pyz.toc
 helper = root/'work'/'updater'/'CodexQuotaUpdater.exe'
 assert client.extract('vendor\\CodexQuotaUpdater.exe') == helper.read_bytes()
 archive = CArchiveReader(str(helper)).open_embedded_archive('PYZ.pyz')

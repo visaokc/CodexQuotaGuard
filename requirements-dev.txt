@@ -2,3 +2,5 @@
 pyinstaller==6.20.0
 pytest==8.4.2
 pillow==12.1.1
+aiortc==1.14.0
+websockets==15.0.1

@@ -22,6 +22,14 @@ def validate_url(url, local_test=False):
 
 
 def create_code(config):
+    if config.get('tailscale_enabled'):
+        from .tsnet_node import tail_ip
+        device, ip = config['device_id'], config.get('tailscale_ip')
+        if not tail_ip(ip):
+            raise ValueError('请先完成内嵌 Tailscale 授权，等待节点就绪')
+        data = json.dumps(dict(version=4, secret=config['group_secret'], device=device, ip=ip),
+                          sort_keys=True, separators=(',', ':')).encode()
+        return 'CQG4.'+base64.urlsafe_b64encode(data).decode().rstrip('=')+'.'+hashlib.sha256(data).hexdigest()[:12]
     if config.get('link_enabled'):
         from .autolink import DEVICE
         peers = list(dict.fromkeys([config.get('link_device', ''), *config.get('link_peers', [])]))
@@ -46,9 +54,17 @@ def read_code(text):
     try:
         prefix, encoded, checksum = ''.join(text.split()).split('.')
         data = base64.urlsafe_b64decode(encoded+'='*(-len(encoded) % 4))
-        if prefix not in ('CQG1', 'CQG2') or checksum != hashlib.sha256(data).hexdigest()[:12]:
+        if prefix not in ('CQG1', 'CQG2', 'CQG4') or checksum != hashlib.sha256(data).hexdigest()[:12]:
             raise ValueError()
         payload = json.loads(data)
+        if prefix == 'CQG4':
+            from .tsnet_node import tail_ip
+            secret, peer, ip = payload['secret'], payload['device'], payload['ip']
+            if payload['version'] != 4 or not isinstance(secret, str) or not 32 <= len(secret) <= 128 \
+                    or not isinstance(peer, str) or not 1 <= len(peer) <= 100 or not tail_ip(ip):
+                raise ValueError()
+            return dict(link_enabled=True, tailscale_enabled=True, tailscale_peers={peer: ip},
+                        group_secret=secret, rendezvous_url='', relay_token='', fingerprint='')
         if prefix == 'CQG2':
             from .autolink import DEVICE, relay_address
             peers, secret = payload['peers'], payload['secret']

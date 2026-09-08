@@ -285,8 +285,13 @@ class Engine:
         # An interrupted or identity-racing scan must not authorize restart replay.
         self.db.put('scanner_scope', None)
         self.scanner.scan(account, self.config['multiplier'] * ident['multiplier'])
-        self.recovery.scan(min(p['added_at'] for p in self.tracked.values()))
-        recovered = self.recovery.reconcile(account, self.tracked[account]['added_at'], self.config['multiplier'])
+        recovery_error = ''
+        recovered = self.db.get('history_recovery:'+account, {})
+        try:
+            self.recovery.scan(min(p['added_at'] for p in self.tracked.values()))
+            recovered = self.recovery.reconcile(account, self.tracked[account]['added_at'], self.config['multiplier'])
+        except Exception as e:
+            recovery_error = '历史补记异常：'+type(e).__name__+'；稍后重试'
         if self.scope_changed(ident, now):
             self.scanner.reject_since(checkpoint)
             return
@@ -294,7 +299,11 @@ class Engine:
         active, uncertain = self.scanner.activity(now, account)
         unbound_active, unbound_uncertain = self.scanner.activity(now, '')
         self.publish_events(account, now)
-        self.recover_inactive(account, now)
+        if not recovery_error:
+            try:
+                self.recover_inactive(account, now)
+            except Exception as e:
+                recovery_error = '历史补记异常：'+type(e).__name__+'；稍后重试'
         presence = dict(device=self.config['device_id'], account=account, at=now, scan_at=now,
                         active=active, uncertain=uncertain,
                         unbound_active=unbound_active, unbound_uncertain=unbound_uncertain)
@@ -306,7 +315,8 @@ class Engine:
                 self.mesh.send(peer, message)
         summary = self.ledger.summary(account, now)
         self.db.put('last_summary', summary)
-        self.enforce(summary, now)
+        if not recovery_error:
+            self.enforce(summary, now)
         if self.scope_changed(ident, now):
             return
         with self.view_lock:
@@ -314,7 +324,8 @@ class Engine:
                 recovery=recovered,
                 status='监测中 · 所有设备用量均为估算' if self.mesh else '本机监测中 · 尚未配置异地匹配服务',
                 active=active, uncertain=uncertain, unbound_active=unbound_active,
-                unbound_uncertain=unbound_uncertain, blocked=self.blocked, error=self.quota_error,
+                unbound_uncertain=unbound_uncertain, blocked=self.blocked,
+                error=' | '.join(value for value in (self.quota_error, recovery_error) if value),
                 mesh=self.mesh.status if self.mesh else '点击“生成匹配码”即可自动连接，无需填写参数',
                 pair_scope=True, sync_receipts=dict(self.sync_receipts),
                 connection=self.mesh.connection_state() if self.mesh and hasattr(self.mesh, 'connection_state') else {},

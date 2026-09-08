@@ -1060,6 +1060,8 @@ class App:
             name = d['name']+('（本机）' if d['id'] == self.config['device_id'] else '')
             unknown = d.get('unbound_active', 0)
             state = ('Codex 使用中' if d['active'] else '活动·待归属' if unknown else '暂无近期活动') if d['online'] else '离线/已切换'
+            if not d['online'] and d['id'] in view.get('peers', {}):
+                state = '连接在线·监测状态过期'
             route = '本机' if d['id'] == self.config['device_id'] else view.get('peers', {}).get(d['id'], {}).get('route', '未连接')
             active = (str(d['active'])+(' + ?'+str(d['uncertain']) if d['uncertain'] else '')) if d['online'] else '—'
             if d['online'] and unknown:

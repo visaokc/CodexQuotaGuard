@@ -17,6 +17,7 @@ class RuntimeEvidence:
         self.source = hashlib.sha256((str(self.home.resolve())+'|'+device).encode()).hexdigest()
         self.available, self.complete = False, True
         self.keys, self.owners, self.witnesses = {}, defaultdict(set), defaultdict(list)
+        self.provider_conflicts = set()
         with self.db.connect() as db:
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS runtime_cursors (
@@ -84,6 +85,7 @@ class RuntimeEvidence:
 
     def prepare(self, rows, existing, scope_cuts=()):
         self.keys, self.owners, self.witnesses = {}, defaultdict(set), defaultdict(list)
+        self.provider_conflicts = set()
         turns, cuts = defaultdict(list), defaultdict(list)
         with self.db.connect() as db:
             for r in db.execute('SELECT * FROM runtime_turns WHERE source=?', (self.source,)):
@@ -117,7 +119,7 @@ class RuntimeEvidence:
                 if p.get('provider', 'openai') != 'openai':
                     # Explicit API/provider evidence defeats an account-only run
                     # inference even if an auth notification was not retained.
-                    self.owners[self.keys[row['id']]].add('provider_conflict')
+                    self.provider_conflicts.add(self.keys[row['id']])
             elif has_turn:
                 self.keys[row['id']] = None  # Ambiguous runtime: never guess one.
         for eid, event in existing.items():
@@ -140,6 +142,8 @@ class RuntimeEvidence:
         key = self.keys[eid]
         if not key:
             return dict(reason='ambiguous_runtime')
+        if key in self.provider_conflicts:
+            return dict(reason='identity_conflict')
         owners = self.owners[key]
         if len(owners) != 1:
             return dict(reason='identity_conflict' if owners else 'unbound_runtime')

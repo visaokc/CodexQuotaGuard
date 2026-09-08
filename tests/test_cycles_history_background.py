@@ -9,7 +9,7 @@ from quota_guard.engine import Engine
 from quota_guard.gui import number
 from quota_guard.storage import Database, defaults
 from quota_guard import startup
-from test_account_scope import ident
+from test_account_scope import ident, setup
 from test_core import A, B, FakeFirewall
 
 
@@ -137,3 +137,19 @@ def test_hidden_mode_does_not_wake_for_every_peer_packet(tmp_path):
     e.background_mode = False
     e.receive('peer', dict(type='sync'))
     assert e.wakeup.is_set()
+
+
+def test_unchanged_quota_does_not_fill_replication_history(tmp_path):
+    e, _, step, used, *_ = setup(tmp_path)
+    step(100)
+    step(101)
+    with e.group_db.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM facts WHERE kind='quota'").fetchone()[0] == 1
+        assert db.execute('SELECT observed_at FROM epochs ORDER BY id DESC LIMIT 1').fetchone()[0] == 101
+    step(701)
+    with e.group_db.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM facts WHERE kind='quota'").fetchone()[0] == 2
+    used[A] += 1
+    step(702)
+    with e.group_db.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM facts WHERE kind='quota'").fetchone()[0] == 3

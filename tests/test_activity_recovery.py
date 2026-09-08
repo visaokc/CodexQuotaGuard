@@ -74,6 +74,25 @@ def test_completed_turn_is_not_reopened_by_trailing_accounting(tmp_path):
     assert scanner.activity(122, A) == (1, 0)
 
 
+def test_current_runtime_evidence_marks_activity_without_start_event(tmp_path):
+    scanner, path = fixture(tmp_path)
+    scanner.seed()
+    with path.open('a') as f:
+        f.write(line('event_msg', dict(type='task_complete'), 100))
+    scanner.scan(A)
+    assert scanner.activity(101, A) == (0, 0)
+    with path.open('a') as f:
+        f.write(line('turn_context', dict(model='gpt-6-astra'), 110)+
+                line('response_item', dict(type='function_call'), 111))
+    scanner.scan(A)
+    assert scanner.activity(112, A) == (1, 0)
+    with path.open('a') as f:
+        f.write(line('event_msg', dict(type='task_complete'), 113)+
+                line('event_msg', dict(type='token_usage_record'), 114))
+    scanner.scan(A)
+    assert scanner.activity(115, A) == (0, 0)
+
+
 def test_unbound_activity_reaches_authenticated_peer_presence_without_tokens(tmp_path):
     from test_account_scope import setup, append
     from quota_guard.journal import Journal

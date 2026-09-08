@@ -12,6 +12,11 @@ from .storage import atomic_json
 
 
 class FileMesh:
+    # AES-GCM ciphertext is base64 encoded, so keep cleartext well below the
+    # authenticated mailbox's 240 KiB envelope limit.
+    history_limit = 400
+    history_bytes = 160*1024
+
     def __init__(self, config, account, on_message, local_test=False):
         self.config, self.account = dict(config), account
         self.device = config['device_id']

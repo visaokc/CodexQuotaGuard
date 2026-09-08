@@ -40,18 +40,18 @@ class Journal:
                     vectors[row['origin']] = row['seq']
         return vectors
 
-    def since(self, account, vector, limit=60):
+    def since(self, account, vector, limit=60, byte_limit=24000):
         result = []
         with self.db.connect() as db:
             for row in db.execute('SELECT * FROM facts WHERE account=? ORDER BY origin,seq', (account,)):
                 if row['seq'] > vector.get(row['origin'], 0):
                     item = dict(account=row['account'], origin=row['origin'], seq=row['seq'],
                                 ts=row['ts'], kind=row['kind'], payload=json.loads(row['payload']))
-                    if result and len(json.dumps(result+[item])) > 28000:
+                    if result and len(json.dumps(result+[item], separators=(',', ':')).encode()) > byte_limit:
                         break
                     result.append(item)
                     # Keep below the WebRTC negotiated SCTP message limit after encryption.
-                    if len(result) >= limit or len(canonical(result)) > 24000:
+                    if len(result) >= limit or len(json.dumps(result, separators=(',', ':')).encode()) > byte_limit:
                         break
         return result
 
@@ -84,8 +84,8 @@ class Journal:
             if r['kind'] == 'profile' and (p['device'] != r['origin'] or len(p['name']) > 80):
                 raise ValueError('设备描述无效')
 
-    def merge(self, account, records):
-        if len(records) > 60:
+    def merge(self, account, records, limit=60):
+        if len(records) > limit:
             raise ValueError('同步批次过大')
         quota_changed = False
         changes = []

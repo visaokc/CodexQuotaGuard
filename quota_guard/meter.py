@@ -123,7 +123,18 @@ class Scanner:
 
     @staticmethod
     def _activity_record(obj, state, event_time):
-        if obj.get('type') != 'event_msg' or event_time < state.get('activity', 0):
+        if event_time < state.get('activity', 0):
+            return
+        if obj.get('type') == 'turn_context':
+            payload = obj.get('payload') or {}
+            state.update(active=True, activity=event_time, closed_turn=None,
+                         activity_turn=payload.get('turn_id'))
+            return
+        if obj.get('type') == 'response_item':
+            if not state.get('closed_turn'):
+                state.update(active=True, activity=event_time)
+            return
+        if obj.get('type') != 'event_msg':
             return
         payload = obj.get('payload') or {}
         kind = payload.get('type')
@@ -134,7 +145,7 @@ class Scanner:
             if turn and state.get('activity_turn') and turn != state['activity_turn']:
                 return
             state.update(active=False, activity=event_time, closed_turn=turn or True)
-        elif kind in ('token_count', 'item_completed', 'agent_message'):
+        elif kind in ('token_count', 'token_usage_record', 'item_completed', 'agent_message'):
             turn = payload.get('turn_id')
             if state.get('closed_turn') and (not turn or turn == state['closed_turn']):
                 return  # Trailing accounting does not reopen an explicitly ended turn.

@@ -8,8 +8,10 @@ import pytest
 
 from quota_guard.autolink import LinkNode, proof
 from quota_guard.file_mesh import FileMesh
+from quota_guard.journal import Journal
+from quota_guard.ledger import Ledger
 from quota_guard.pairing import Cipher
-from quota_guard.storage import defaults
+from quota_guard.storage import Database, defaults
 from test_account_scope import setup
 from test_auto_pair import ONE, TWO
 from test_core import A
@@ -73,6 +75,34 @@ class Mesh:
         self.sent.append((peer, message))
 
 
+def test_file_transport_uses_large_bounded_history_pages(tmp_path):
+    db = Database(tmp_path/'group.sqlite')
+    journal = Journal(db, Ledger(db), 'one')
+    for n in range(300):
+        journal.append(A, 'profile', dict(device='one', name='设备名称'*15, cap=20+n % 10), n+1)
+    ordinary = journal.since(A, {})
+    expanded = journal.since(A, {}, limit=FileMesh.history_limit, byte_limit=FileMesh.history_bytes)
+    assert 0 < len(ordinary) <= 60
+    assert len(expanded) > len(ordinary)
+    envelope = Cipher('s'*43, 'account-policy-v2:'+A).seal(
+        'one', 'two', 'app', dict(type='facts', account=A, records=expanded))
+    assert len(json.dumps(envelope)) < 240*1024
+
+
+def test_engine_uses_file_transport_history_capacity(tmp_path):
+    e, _, step, *_ = setup(tmp_path)
+    step(100)
+    for n in range(200):
+        e.journal.append(A, 'cap', dict(device='one', cap=20+n % 10), 101+n)
+    e.mesh = Mesh()
+    e.mesh.history_limit = FileMesh.history_limit
+    e.mesh.history_bytes = FileMesh.history_bytes
+    e.receive('peer', dict(type='sync', account=A, records=[], vector={}))
+    step(400)
+    facts = next(message for _, message in e.mesh.sent if message['type'] == 'facts')
+    assert len(facts['records']) > 60
+
+
 def test_background_bootstrap_wakes_and_new_facts_ack_without_periodic_delay(tmp_path):
     e, _, step, *_ = setup(tmp_path)
     step(100)
@@ -114,6 +144,36 @@ def test_background_new_peer_sync_wakes_but_known_idle_heartbeats_do_not(tmp_pat
     assert not e.wakeup.is_set()
     e.receive('peer', dict(message, vector={'peer': 1}))
     assert e.wakeup.is_set(), 'History vector progress must wake a hidden sender'
+
+
+def test_visible_monitor_broadcasts_presence_within_three_seconds(tmp_path):
+    e, _, step, *_ = setup(tmp_path)
+    step(100)
+    e.mesh = Mesh()
+    e.last_broadcast = 100
+    step(103)
+    assert any(message['type'] == 'sync' and message['presence']['at'] == 103
+               for _, message in e.mesh.sent)
+
+
+@pytest.mark.parametrize('background,maximum', [(False, 2), (True, 5)])
+def test_monitor_poll_interval_keeps_activity_status_timely(tmp_path, background, maximum):
+    e, *_ = setup(tmp_path)
+    waits = []
+    class Wake:
+        def wait(self, timeout):
+            waits.append(timeout)
+            e.stop_event.set()
+        def clear(self):
+            pass
+        def set(self):
+            pass
+    e.wakeup = Wake()
+    e.background_mode = background
+    e.scanner.seed = Mock()
+    e.step = Mock()
+    e.run()
+    assert waits == [maximum]
 
 
 @pytest.mark.parametrize('same_group', [True, False])

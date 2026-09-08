@@ -51,7 +51,5 @@ def compact_tokens(value):
 
 def budget_text(budget):
     budget = budget or {}
-    used, total = budget.get('used_tokens'), budget.get('total_tokens')
-    left = '—' if used is None else '≈'+compact_tokens(used)
-    right = '待校准' if total is None else '≈'+compact_tokens(total)
-    return f'本周期 Token：{left} / {right}'
+    sampled = budget.get('sampled_tokens')
+    return '本周期已同步 Token：'+('—' if sampled is None else compact_tokens(sampled))

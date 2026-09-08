@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 $python = Join-Path $PSScriptRoot 'work\venv\Scripts\python.exe'
-$dist = Join-Path $PSScriptRoot 'dist\0.2.5'
+$dist = Join-Path $PSScriptRoot 'dist\0.2.6'
 if (-not (Test-Path -LiteralPath $python)) { throw '先按 README 创建 work\venv 并安装 requirements-dev.txt' }
 & $python -m pytest tests -q
 if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }

@@ -42,7 +42,7 @@ def test_all_devices_including_offline_not_other_accounts(tmp_path):
     result = budget(ledger)
     assert result['used_tokens'] == 10000000
     assert result['total_tokens'] == 50000000
-    assert budget_text(result) == '本周期 Token：≈10.00M / ≈50.00M'
+    assert budget_text(result) == '本周期已同步 Token：10.00M'
 
 
 def test_baseline_uses_matching_percent_delta(tmp_path):
@@ -92,10 +92,20 @@ def test_event_without_device_profile_is_counted(tmp_path):
 def test_zero_percent_and_missing_sample_are_not_fixed_budgets(tmp_path):
     ledger = setup_ledger(tmp_path)
     assert budget(ledger)['total_tokens'] is None
-    assert budget_text(budget(ledger)) == '本周期 Token：— / 待校准'
+    assert budget_text(budget(ledger)) == '本周期已同步 Token：0.00k'
     observe(ledger, 10)
     assert budget(ledger)['total_tokens'] is None
-    assert budget_text(None) == '本周期 Token：— / 待校准'
+    assert budget_text(None) == '本周期已同步 Token：—'
+
+
+def test_displayed_usage_never_falls_below_synchronized_device_logs(tmp_path):
+    ledger = setup_ledger(tmp_path)
+    upload(ledger, 'local', 10_000_000)
+    observe(ledger, 10)
+    upload(ledger, 'remote', 10_000_000, at=300)
+    result = budget(ledger, now=500)
+    assert result['used_tokens'] < result['sampled_tokens']
+    assert budget_text(result) == '本周期已同步 Token：20.00M'
 
 
 def test_nonzero_baseline_without_delta_cannot_infer_full_cycle(tmp_path):

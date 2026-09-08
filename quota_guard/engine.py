@@ -42,6 +42,7 @@ class Engine:
         self.sync_vectors = {}
         self.blocked = bool(self.db.get('block_state'))
         self.last_identity, self.last_snapshot = None, None
+        self.last_quota_publish = 0
         self.last_read = 0
         self.last_broadcast = 0
         self.notice_key = None
@@ -82,7 +83,7 @@ class Engine:
                         self.view['error'] = str(e)
                         self.view['status'] = '监测异常；未将错误视为额度重置'
                 # Keep account/API switches responsive even when hidden and restricted.
-                self.wakeup.wait(2 if self.blocked else 30 if self.background_mode else 5)
+                self.wakeup.wait(2 if self.blocked or not self.background_mode else 5)
                 self.wakeup.clear()
         except Exception as e:
             with self.view_lock:
@@ -98,6 +99,7 @@ class Engine:
             self.mesh.close()
             self.mesh = None
         self.last_snapshot, self.last_read = None, 0
+        self.last_quota_publish = 0
         self.quota_error = ''
         self.quota_error_since = None
         self.quota_error_notified = False
@@ -244,12 +246,15 @@ class Engine:
                     if message.get('presence'):
                         self.journal.presence(account, peer, message['presence'], now)
                     if self.mesh:
-                        batch = self.journal.since(account, vector)
+                        batch = self.journal.since(account, vector,
+                            limit=getattr(self.mesh, 'history_limit', 60),
+                            byte_limit=getattr(self.mesh, 'history_bytes', 24000))
                         if batch:
                             self.mesh.send(peer, dict(type='facts', account=account, records=batch))
                     self.sync_vectors[peer] = dict(vector)
                 elif message['type'] == 'facts':
-                    sync_due |= bool(self.journal.merge(account, message['records']))
+                    sync_due |= bool(self.journal.merge(account, message['records'],
+                        limit=getattr(self.mesh, 'history_limit', 60)))
                 elif message['type'] == 'peer_ready':
                     sync_due = True
                 elif message['type'] == 'bye':
@@ -265,11 +270,20 @@ class Engine:
                 snap = self.quota_reader(self.config['codex_home'])
                 if snap['account'] != account or self.scope_key(self.identity_reader(self.config['codex_home'])) != self.scope_key(ident):
                     raise RuntimeError('查询期间账号发生切换，等待下一次确认')
+                previous = self.last_snapshot
                 self.last_snapshot = snap
                 self.quota_error = ''
                 self.quota_error_since = None
                 self.quota_error_notified = False
-                self.journal.append(account, 'quota', snap, snap['at'])
+                changed = (not previous or previous['used'] != snap['used']
+                           or previous['reset_at'] != snap['reset_at'])
+                if changed or snap['at']-self.last_quota_publish >= 600:
+                    self.journal.append(account, 'quota', snap, snap['at'])
+                    self.last_quota_publish = snap['at']
+                else:
+                    # Keep local freshness without filling replicated history
+                    # with an identical official snapshot every polling cycle.
+                    self.ledger.observe(snap)
             except Exception as e:
                 self.quota_error = str(e)
                 if self.quota_error_since is None:
@@ -308,7 +322,7 @@ class Engine:
                         active=active, uncertain=uncertain,
                         unbound_active=unbound_active, unbound_uncertain=unbound_uncertain)
         self.journal.presence(account, self.config['device_id'], presence, now)
-        if self.mesh and (sync_due or now-self.last_broadcast >= 5):
+        if self.mesh and (sync_due or now-self.last_broadcast >= 2):
             self.last_broadcast = now
             message = dict(type='sync', account=account, records=[], vector=self.journal.vector(account), presence=presence)
             for peer in self.mesh.peer_states():

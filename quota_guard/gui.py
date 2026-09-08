@@ -278,7 +278,7 @@ class App:
                 self.account_tokens_label = ctk.CTkLabel(card, textvariable=self.account_tokens,
                     text_color=MUTED, font=('Microsoft YaHei UI', 10))
                 self.account_tokens_label.pack(anchor='w', padx=18, pady=(0, 4))
-            hints = {'global': '账号共享估算 · 已用 / 总 Token', 'local': '按本机加权 Token 分摊', 'reset': '以官方最新快照为准'}
+            hints = {'global': '官方额度 + 已同步设备日志', 'local': '按本机加权 Token 分摊', 'reset': '以官方最新快照为准'}
             ctk.CTkLabel(card, text=hints[key], text_color=MUTED, font=('Microsoft YaHei UI', 10)).pack(anchor='w', padx=18, pady=(0, 14))
             self.cards[key] = value
         self.meter = Meter(self.overview)
@@ -1050,7 +1050,7 @@ class App:
         self.detail.set(f"账号剩余 {100-e['used']:.0f}%   ·   监测前基线 {e['baseline']:.0f}%   ·   未归属 {summary['unassigned']:.2f}%   ·   待稳定分摊 {summary['provisional']:.2f}%"
                         + ('   ·   正在确认重置' if summary['reset_pending'] else '')
                         + ('\n本机旧日志扫描中…' if (view.get('recovery') or {}).get('scanning') else
-                           f"\n本机自动补记 {number((view.get('recovery') or {}).get('recovered_tokens', 0))} Token"
+                           f"\n本机历史累计补记 {number((view.get('recovery') or {}).get('recovered_tokens', 0))} Token"
                            f"（含推断 {number((view.get('recovery') or {}).get('inferred_tokens', 0))}）"
                            f"   ·   本机日志待核对 {number((view.get('recovery') or {}).get('unresolved_tokens', 0))} Token")
                         + ('\n运行身份索引中…' if ((view.get('recovery') or {}).get('runtime') or {}).get('scanning') else

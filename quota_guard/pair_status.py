@@ -45,7 +45,7 @@ def presentation(flow, view, now=None):
         if connection.get('transport') == 'tailscale':
             state = connection.get('state')
             if connection.get('phase') == 'retrying':
-                detail += '\n内嵌 Tailscale 启动异常，正在重试；具体原因见连接诊断。'
+                detail += '\n本地节点通信异常，正在恢复；这不等于账号未授权，具体原因见连接诊断。'
             elif state == 'NeedsLogin':
                 detail += '\n需要浏览器授权：点击“授权登录 Tailscale”。'
             elif state == 'NeedsMachineAuth':

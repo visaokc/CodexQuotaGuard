@@ -14,7 +14,7 @@ draw.text((128, 113), 'C', font=font, fill='#142c29', anchor='mm')
 image.save(assets/'app.ico', sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
 licenses = root/'licenses'
 licenses.mkdir(exist_ok=True)
-notices = ['Tailscale tsnet v1.102.3 | BSD-3-Clause | See licenses/tsnet for upstream and dependency notices.', 'Third-party software packaged with Codex Quota Guard 0.3.0', '',
+notices = ['Tailscale tsnet v1.102.3 | BSD-3-Clause | See licenses/tsnet for upstream and dependency notices.', 'Third-party software packaged with Codex Quota Guard 0.3.1', '',
            'Project implementation is original. Token Monitor and Cockpit Tools were read as references, not vendored.',
            'Python and Tcl/Tk are bundled by PyInstaller. See corresponding license files.', '']
 for name in ('cryptography', 'customtkinter', 'darkdetect', 'cffi', 'pycparser',

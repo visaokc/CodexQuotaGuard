@@ -92,6 +92,13 @@ func (b *bridge) control(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method", 405)
 		return
 	}
+	// urllib sends Connection: close. Drain the bounded request body before
+	// replying so Windows does not reset a socket with unread incoming bytes.
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxMessage+1024))
+	if err != nil {
+		http.Error(w, "request too large", 413)
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	lc, err := b.s.LocalClient()
@@ -113,10 +120,21 @@ func (b *bridge) control(w http.ResponseWriter, r *http.Request) {
 		if b.diagnostics != nil {
 			b.diagnostics.save(st.BackendState, st.AuthURL != "", len(st.TailscaleIPs), len(st.Health))
 		}
-		writeJSON(w, map[string]any{"state": st.BackendState, "ips": st.TailscaleIPs, "auth_url": st.AuthURL, "ready": ready})
+		tailnet := ""
+		if st.CurrentTailnet != nil {
+			tailnet = st.CurrentTailnet.Name
+		}
+		writeJSON(w, map[string]any{"state": st.BackendState, "ips": st.TailscaleIPs, "auth_url": st.AuthURL, "ready": ready,
+			"tailnet": tailnet, "peer_count": len(st.Peer)})
 	case "/login":
 		if err := lc.StartLoginInteractive(ctx); err != nil {
 			http.Error(w, "login unavailable", 503)
+			return
+		}
+		writeJSON(w, map[string]bool{"ok": true})
+	case "/logout":
+		if err := lc.Logout(ctx); err != nil {
+			http.Error(w, "logout unavailable", 503)
 			return
 		}
 		writeJSON(w, map[string]bool{"ok": true})
@@ -134,7 +152,7 @@ func (b *bridge) control(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, out)
 	case "/send", "/route":
 		var p packet
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxMessage+1024)).Decode(&p); err != nil {
+		if err := json.NewDecoder(bytes.NewReader(raw)).Decode(&p); err != nil {
 			http.Error(w, "request", 400)
 			return
 		}

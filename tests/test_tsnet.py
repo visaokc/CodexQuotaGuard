@@ -319,3 +319,35 @@ def test_removed_device_can_get_membership_reply_from_new_pair_target(tmp_path):
     assert not c.peer_states()
     c.send('b', dict(type='facts'))
     assert not c.pending
+
+def test_switch_tailnet_requires_confirmation_and_preserves_app_data(monkeypatch, tmp_path):
+    from quota_guard.gui import App
+    app = Mock(demo=False, busy=False, exited=False)
+    app.pair_request = 0
+    app.folder = tmp_path
+    app.config = dict(group_secret='keep-group', device_id='keep-device', tailscale_ip='100.64.0.1')
+    saved = Mock()
+    opened = Mock()
+    monkeypatch.setattr('quota_guard.gui.save_config', saved)
+    monkeypatch.setattr('webbrowser.open', opened)
+    app.engine.mesh.connection_state.return_value = {'tailnet':'old-network'}
+    confirm = Mock(return_value=False)
+    monkeypatch.setattr('quota_guard.gui.messagebox.askokcancel', confirm)
+    App.switch_tailscale_network(app)
+    app.background.assert_not_called()
+    assert confirm.call_args.kwargs['default']=='cancel'
+    confirm.return_value=True
+    node=app.engine.mesh.node
+    node.request.side_effect=[{'ok':True},{'ok':True},{'auth_url':'https://login.tailscale.com/a/test'}]
+    App.switch_tailscale_network(app)
+    work=app.background.call_args.args[0]
+    assert work()=='https://login.tailscale.com/a/test'
+    assert [c.args[0] for c in node.request.call_args_list]==['logout','login','status']
+    assert app.pair_request == 1
+    app.pair_panel.set_code.assert_called_once()
+    done = app.background.call_args.args[1]
+    done('https://login.tailscale.com/a/test')
+    assert app.config == dict(group_secret='keep-group', device_id='keep-device')
+    saved.assert_called_once()
+    opened.assert_called_once_with('https://login.tailscale.com/a/test')
+    app.persist_restart.assert_not_called()

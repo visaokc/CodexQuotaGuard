@@ -24,6 +24,7 @@ class TailscaleMesh:
         self.status = '内嵌 Tailscale · 正在启动'
         self.diagnostics = dict(phase='starting', transport='tailscale')
         self.peers, self.pending = {}, {}
+        self.peer_error = ''
         group = hashlib.sha256(config['group_secret'].encode()).hexdigest()[:20]
         self.peer_file = Path(config['_data_dir'])/('tailscale-peers-'+group+'.json')
         self.removed_file = Path(config['_data_dir'])/('tailscale-removed-'+group+'.json')
@@ -215,7 +216,8 @@ class TailscaleMesh:
                         with self.lock:
                             self.diagnostics = dict(phase='waiting' if running else 'starting', transport='tailscale',
                                 ready=bool(running), state=st.get('state'), auth_url=st.get('auth_url', ''),
-                                ips=st.get('ips') or [], checked_at=now)
+                                ips=st.get('ips') or [], checked_at=now, tailnet=st.get('tailnet', ''),
+                                tailnet_peer_count=st.get('peer_count'))
                         last_status = now
                     if not self.diagnostics.get('ready'):
                         self.status = '内嵌 Tailscale · '+{'NeedsLogin':'请点击授权登录', 'NeedsMachineAuth':'等待管理员批准设备',
@@ -249,10 +251,14 @@ class TailscaleMesh:
                                 continue
                             try:
                                 self.node.request('send', dict(ip=ip, envelope=envelope))
-                            except OSError:
+                            except OSError as e:
                                 with self.lock:
                                     self.peers.pop(peer, None)
+                                    self.peer_error = ('匹配地址不在当前节点可见的 tailnet 中，请核对两端内嵌节点所属网络'
+                                        if getattr(e, 'code', None) == 400 else '对端同步端口不可达，请检查对端节点、网络或访问规则')
                                 break
+                            else:
+                                self.peer_error = ''
                         if peer in self.peer_states() and now-self.peers[peer].get('route_at', 0)>=15:
                             try:
                                 probe = self.node.request('route', dict(ip=ip))
@@ -264,6 +270,10 @@ class TailscaleMesh:
                         last_hello = now
                     self.status = ('本机已从设备组移除 · 已停止账本同步' if self.device in self.removed_devices()
                                    else f'内嵌 Tailscale · {len(self.peer_states())} 台同账号设备在线')
+                    if not self.peer_states() and self.peer_error:
+                        self.status += ' · '+self.peer_error
+                    if self.diagnostics.get('tailnet'):
+                        self.status += ' · 网络：'+self.diagnostics['tailnet']
                     self.stop.wait(.5)
             except Exception as e:
                 self._diagnostic('node_failed', e)

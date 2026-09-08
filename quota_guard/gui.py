@@ -350,8 +350,12 @@ class App:
         self.pair_panel.pack(fill='x', pady=(18, 6))
         self.pair_panel.render(self.pair_flow, {})
         self.mesh_label = tk.StringVar(value='连接诊断：尚未启动')
+        self.tailnet_label = tk.StringVar(value='内嵌节点所属网络：尚未连接')
+        ctk.CTkLabel(self.pair_tab, textvariable=self.tailnet_label, text_color=FG,
+                     font=('Microsoft YaHei UI', 12), wraplength=850, justify='left').pack(anchor='w', pady=(12, 0))
         ctk.CTkLabel(self.pair_tab, textvariable=self.mesh_label, text_color=ACCENT, font=('Microsoft YaHei UI', 12)).pack(anchor='w', pady=(16, 6))
         button(self.pair_tab, text='授权登录 Tailscale（浏览器）', command=self.login_tailscale).pack(anchor='w', pady=8)
+        button(self.pair_tab, text='换账号 / 切换 Tailscale 网络', command=self.switch_tailscale_network).pack(anchor='w', pady=4)
         self.advanced = ttk.Frame(self.pair_tab)
         self.url = self.entry(self.advanced, 'WSS 服务地址', self.config['rendezvous_url'])
         self.token = self.entry(self.advanced, '服务访问密钥', self.config['relay_token'], show='•')
@@ -792,6 +796,46 @@ class App:
             engine.commands.put(('remove_device', dict(account=account, device=peer)))
             engine.wakeup.set()
 
+    def switch_tailscale_network(self):
+        if self.demo or self.busy:
+            return
+        mesh = self.engine.mesh if self.engine else None
+        node = getattr(mesh, 'node', None)
+        if not node:
+            messagebox.showinfo('Tailscale', '请先启动匹配节点。', parent=self.root)
+            return
+        network = mesh.connection_state().get('tailnet') or '当前网络'
+        if not messagebox.askokcancel('切换 Tailscale 网络',
+                f'将退出本工具内嵌节点的 Tailscale 网络：{network}\n\n'
+                '保留应用匹配关系与历史账本，暂时中断同步。\n'
+                '随后在浏览器中选择双方要加入的同一网络。\n'
+                '要换账号，请在授权页选择“使用其他账号登录”。\n'
+                '切换后地址可能变化，需要重新生成并交换匹配码。',
+                default='cancel', icon='warning', parent=self.root):
+            return
+        self.pair_request += 1
+        self.pair_flow = dict(stage='authorizing')
+        self.pair_panel.set_code('', '正在切换授权。完成后请重新生成匹配码，旧地址可能已失效。')
+        def work():
+            from .tsnet_node import auth_url
+            node.request('logout')
+            node.request('login')
+            for _ in range(30):
+                value = node.request('status').get('auth_url', '')
+                if value and auth_url(value):
+                    return value
+                if self.exited:
+                    return ''
+                time.sleep(1)
+            raise RuntimeError('尚未取得新授权链接，请稍后点击授权登录。')
+        def done(value):
+            self.config.pop('tailscale_ip', None)
+            save_config(self.folder/'settings.json', self.config)
+            if value:
+                import webbrowser
+                webbrowser.open(value)
+        self.background(work, done)
+
     def login_tailscale(self):
         if self.demo:
             return
@@ -1121,6 +1165,11 @@ class App:
         self.show_detected_account(ident)
         self.account.set(f"{ident.get('label', '未识别账号')}    {ident.get('plan', '').upper()}    ·    本机：{self.config['name']}")
         self.mesh_label.set('连接诊断：'+view.get('mesh', ''))
+        connection = view.get('connection') or {}
+        tailnet = connection.get('tailnet')
+        self.tailnet_label.set('内嵌节点所属网络：'+(
+            str(tailnet)+'\n两边账号可以不同，但节点必须加入同一网络；接受邀请不会自动迁移已有节点。'
+            if tailnet and connection.get('state') == 'Running' else '尚未确认（等待节点授权或连接）'))
         if self.pair_flow.get('stage') == 'preparing':
             self.pair_flow['elapsed'] = int(time.monotonic()-self.pair_flow['started'])
         self.pair_panel.render(self.pair_flow, view)

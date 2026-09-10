@@ -290,3 +290,25 @@ def test_pie_recent_hour_and_six_hours_are_exact_rolling_windows(tmp_path):
     assert later['windows']['pie_hour']['start'] == now+1-3600
     assert chart_data(later, 'pie_hour', metric='tokens')['total'] == 10
     assert chart_data(later, 'pie_six_hours', metric='tokens')['total'] == 70
+
+
+def test_official_increment_allocation_uses_weights_event_dates_and_reset_cycles(tmp_path):
+    from datetime import datetime
+    db = Database(tmp_path/'quota-chart.sqlite')
+    midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    with db.connect() as conn:
+        first = conn.execute("INSERT INTO epochs(account,started,baseline,used,reset_at,observed_at,reason) VALUES ('a',?,0,10,?,?, 'reset')", (midnight-100, midnight+1000, midnight+20)).lastrowid
+        second = conn.execute("INSERT INTO epochs(account,started,baseline,used,reset_at,observed_at,reason) VALUES ('a',?,0,4,?,?, 'reset')", (midnight+30, midnight+2000, midnight+60)).lastrowid
+        conn.execute('INSERT INTO segments(epoch,start,end,delta) VALUES (?,?,?,?)', (first,midnight-100,midnight+20,10))
+        conn.execute('INSERT INTO segments(epoch,start,end,delta) VALUES (?,?,?,?)', (second,midnight+30,midnight+60,4))
+        for id,device,ts,tokens,weight in [('old','one',midnight-10,100,1),('new','two',midnight+10,100,3),('reset','one',midnight+40,90000000,2)]:
+            conn.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?,?)',(id,device,'a',ts,'model',tokens,weight,1))
+    data = usage(db,'a',midnight+100)
+    rows=data['windows']['today']['quota_rows']
+    assert data['windows']['today']['quota_ready']
+    assert {r['device']:r['quota'] for r in rows} == {'two':7.5,'one':4}
+    assert sum(r['quota'] for r in data['windows']['cycle']['quota_rows']) == 4
+    assert sum(r['quota'] for r in data['windows']['total']['quota_rows']) == 14
+    with db.connect() as conn:
+        conn.execute("UPDATE events SET known=0 WHERE id='reset'")
+    assert not usage(db,'a',midnight+100)['windows']['today']['quota_ready']

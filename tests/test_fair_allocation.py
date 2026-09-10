@@ -165,3 +165,42 @@ def test_removed_profile_does_not_reduce_active_caps_or_leave_stale_cache(tmp_pa
         assert conn.execute("SELECT 1 FROM devices WHERE id='old'").fetchone()
     restored = {d['id']: d for d in l.summary(A, 200)['devices']}
     assert restored['one']['fair_base_cap'] == pytest.approx(50/133*100)
+
+
+@pytest.mark.parametrize('after,reason,carry', [(1,'重置卡重置',15),(2,'官方临时重置',0),(3,'官方临时重置',0),(None,'提前重置原因未确认',0)])
+def test_reset_credit_counts_classify_early_reset_and_skip_official_debt(tmp_path,after,reason,carry):
+    db,l,a,b=setup(tmp_path)
+    a.append(A,'quota',dict(snap(120,0),reset_credits=1),120)
+    a.append(A,'quota',dict(snap(130,0),reset_credits=2),130)
+    assert len(l.summary(A,135)['devices']) == 2
+    with db.connect() as conn:
+        assert conn.execute('SELECT COUNT(*) FROM epochs').fetchone()[0] == 1
+    use(a,b,150,130,70)
+    a.append(A,'quota',dict(snap(200,100),reset_credits=2),200)
+    for at in (300,320):
+        a.append(A,'quota',dict(snap(at,0,700000),reset_credits=after),at)
+    assert l.summary(A,321)['epoch']['reason'] == reason
+    assert balances(l) == pytest.approx({'one':carry,'two':-carry})
+    a.project(A)
+    assert balances(l) == pytest.approx({'one':carry,'two':-carry})
+
+
+def test_natural_reset_with_unchanged_cards_still_settles_debt(tmp_path):
+    db,l,a,b=setup(tmp_path)
+    use(a,b,150,130,70)
+    a.append(A,'quota',dict(snap(9990,100),reset_credits=2),9990)
+    a.append(A,'quota',dict(snap(10001,0,700000),reset_credits=2),10001)
+    assert l.summary(A,10002)['epoch']['reason']=='已确认周期刷新'
+    assert balances(l)==pytest.approx({'one':15,'two':-15})
+
+
+def test_official_temporary_reset_retains_existing_carry(tmp_path):
+    db,l,a,b=setup(tmp_path)
+    use(a,b,150,130,70)
+    a.append(A,'quota',snap(10001,0,700000),10001)
+    assert balances(l)==pytest.approx({'one':15,'two':-15})
+    a.append(A,'quota',dict(snap(10020,0,700000),reset_credits=2),10020)
+    use(a,b,10100,130,70,reset=700000)
+    for at in (10200,10220):
+        a.append(A,'quota',dict(snap(at,0,1400000),reset_credits=2),at)
+    assert balances(l)==pytest.approx({'one':15,'two':-15})

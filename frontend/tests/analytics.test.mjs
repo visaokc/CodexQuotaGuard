@@ -39,13 +39,13 @@ test('all-user chart series preserve each bucket, device color and stacked total
   assert.deepEqual(result.points,[200,200,70]);
   assert.equal(result.total,470);
   assert.deepEqual(result.series,[
-    {id:'fixture-peer',label:'Peer',color:COLORS[0],points:[50,200,0]},
-    {id:'fixture-local',label:'Local',color:COLORS[1],points:[150,0,70]},
+    {id:'fixture-peer',label:'Peer',color:COLORS[0],points:[50,200,0],quotaPoints:[0,0,0]},
+    {id:'fixture-local',label:'Local',color:COLORS[1],points:[150,0,70],quotaPoints:[0,0,0]},
   ]);
   for(let i=0;i<result.points.length;i++)assert.equal(result.series.reduce((sum,item)=>sum+item.points[i],0),result.points[i]);
   for(const item of result.series)assert.equal(item.points.reduce((sum,value)=>sum+value,0),result.totals[item.id]);
   const selected=aggregate(data,'day','gpt-6-astra','fixture-local');
-  assert.deepEqual(selected.series,[{id:'fixture-local',label:'Local',color:COLORS[1],points:[120,0,70]}]);
+  assert.deepEqual(selected.series,[{id:'fixture-local',label:'Local',color:COLORS[1],points:[120,0,70],quotaPoints:[0,0,0]}]);
   assert.deepEqual(selected.points,[120,0,70]);
   assert.equal(selected.total,190);
   data.view.analytics.account='another-account';
@@ -153,4 +153,15 @@ test('compensation display adds signed carry without changing ordinary use or to
   assert.equal(quotaValue({...lender,estimated:10},'account'),10);
   assert.equal(quotaValue({...lender,estimated:10}),20);
   assert.equal(borrower.tokens,0);
+});
+
+
+test('chart quota uses official allocation and personal cap, independent of token budget',()=>{
+  const data=fixture();
+  data.view.analytics.windows.today.quota_rows=[{device:'fixture-local',model:'gpt-5.5',bucket:0,quota:14},{device:'fixture-peer',model:'gpt-5.5',bucket:0,quota:2}];
+  assert.deepEqual(aggregate(data,'today').quotaTotals,{'fixture-local':14,'fixture-peer':2});
+  data.settings.quota_display='personal';
+  assert.deepEqual(aggregate(data,'today').quotaTotals,{'fixture-local':28,'fixture-peer':4});
+  data.view.analytics.cycles[0].total_tokens=1;
+  assert.equal(aggregate(data,'today','gpt-5.5','fixture-local').quotaPoints[0],28);
 });

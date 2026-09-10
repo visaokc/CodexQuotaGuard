@@ -98,6 +98,16 @@ class Ledger:
             self.fairness_cache.pop(account, None)
             row = db.execute('SELECT * FROM epochs WHERE account=? ORDER BY id DESC LIMIT 1', (account,)).fetchone()
             reason = None
+            card_key = 'reset_credits:'+account
+            saved_card = db.execute('SELECT value FROM meta WHERE key=?', (card_key,)).fetchone()
+            prior_card = json.loads(saved_card[0]) if saved_card else {}
+            count = snap.get('reset_credits')
+            if row is not None and at <= row['observed_at']:
+                return
+            if row is not None and reset < row['reset_at']-120:
+                return
+            if type(count) is int and count >= 0:
+                db.execute('INSERT OR REPLACE INTO meta VALUES (?,?)', (card_key, json.dumps(dict(count=count, at=at))))
             if row is None:
                 reason = '首次连接；此前用量不归属任何设备'
             elif at <= row['observed_at']:
@@ -117,11 +127,24 @@ class Ledger:
                     scheduled = at >= row['reset_at'] and advanced
                     if scheduled or (compatible and at-candidate['at'] >= 15):
                         reason = '已确认周期刷新' if scheduled else '连续快照确认提前重置／额度回退'
+                        before = candidate.get('card_before', prior_card)
+                        if type(count) is int:
+                            if before and 0 <= at-before['at'] <= 1800 and count < before['count']:
+                                reason = '重置卡重置'
+                            elif scheduled:
+                                reason = '已确认周期刷新'
+                            elif before and 0 <= at-before['at'] <= 1800 and count >= before['count']:
+                                reason = '官方临时重置'
+                            else:
+                                reason = '提前重置原因未确认'
+                        if ('reset_credits' in snap or prior_card) and count is None and not scheduled:
+                            reason = '提前重置原因未确认'
                         db.execute('UPDATE epochs SET ended=? WHERE id=?', (at, row['id']))
                         db.execute('DELETE FROM meta WHERE key=?', (key,))
                     else:
                         db.execute('INSERT OR REPLACE INTO meta VALUES (?,?)',
-                                   (key, json.dumps(dict(reset=reset, at=candidate.get('at', at) if compatible else at))))
+                                   (key, json.dumps(dict(reset=reset, at=candidate.get('at', at) if compatible else at,
+                                                                    card_before=candidate.get('card_before', prior_card) if compatible else prior_card))))
                         return
                 else:
                     db.execute('DELETE FROM meta WHERE key=?', ('reset_candidate:'+account,))

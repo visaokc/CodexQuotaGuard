@@ -32,6 +32,9 @@ def allocation(db, account, devices, removed=()):
     local_start = db.execute('SELECT value FROM meta WHERE key=?', ('statistics_start:'+account,)).fetchone()
     start = min(starts) if starts else float(json.loads(local_start[0])) if local_start else 0.
     for epoch in db.execute('SELECT * FROM epochs WHERE account=? AND ended IS NOT NULL AND started>=? ORDER BY started,reset_at', (account, start)):
+        following = db.execute('SELECT reason FROM epochs WHERE account=? AND started>=? ORDER BY started,id LIMIT 1', (account, epoch['ended'])).fetchone()
+        if following and following['reason'] in ('官方临时重置', '提前重置原因未确认'):
+            continue
         # Unknown usage before attachment must not be charged to another user.
         if epoch['baseline'] > .001:
             continue

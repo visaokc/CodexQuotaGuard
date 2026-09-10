@@ -80,6 +80,8 @@ class Journal:
             if (p['account'] != account or not all(math.isfinite(p[k]) for k in ('used', 'reset_at', 'at'))
                     or not 0 <= p['used'] <= 100 or abs(p['at']-r['ts']) > 60):
                 raise ValueError('额度快照无效')
+            if p.get('reset_credits') is not None and (type(p['reset_credits']) is not int or p['reset_credits'] < 0):
+                raise ValueError('重置卡数量无效')
         elif r['kind'] in ('cap', 'profile'):
             if p['device'] != r['origin']:
                 raise ValueError('每个设备只能设置自己的配额')
@@ -142,14 +144,14 @@ class Journal:
                 if quotas:
                     db.execute('DELETE FROM segments WHERE epoch IN (SELECT id FROM epochs WHERE account=?)', (account,))
                     db.execute('DELETE FROM epochs WHERE account=?', (account,))
-                    db.execute('DELETE FROM meta WHERE key=?', ('reset_candidate:'+account,))
+                    db.execute('DELETE FROM meta WHERE key IN (?,?)', ('reset_candidate:'+account, 'reset_credits:'+account))
             if quotas:
                 with self.db.connect() as db:
                     snapshots = [json.loads(r[0]) for r in db.execute("SELECT payload FROM facts WHERE account=? AND kind='quota' ORDER BY ts,origin,seq", (account,))]
                 reduced = []
                 for snap in snapshots:
-                    key = (snap['used'], snap['reset_at'])
-                    if len(reduced) >= 2 and key == (reduced[-1]['used'], reduced[-1]['reset_at']) == (reduced[-2]['used'], reduced[-2]['reset_at']):
+                    key = (snap['used'], snap['reset_at'], snap.get('reset_credits'))
+                    if len(reduced) >= 2 and key == (reduced[-1]['used'], reduced[-1]['reset_at'], reduced[-1].get('reset_credits')) == (reduced[-2]['used'], reduced[-2]['reset_at'], reduced[-2].get('reset_credits')):
                         reduced[-1] = snap
                     else:
                         reduced.append(snap)

@@ -14,6 +14,29 @@ def quota_display(used, cap, personal=False):
     return (used/cap*100 if cap > 0 else None), 100
 
 
+
+def quota_events(db, account, now):
+    """Allocate observed official increments to event times, never raw-token capacity."""
+    events = list(db.execute('SELECT * FROM events WHERE account=? AND ts<=? ORDER BY ts', (account, now)))
+    segments = list(db.execute('SELECT s.* FROM segments s JOIN epochs e ON e.id=s.epoch WHERE e.account=? AND s.end<=? ORDER BY s.end', (account, now)))
+    result, gaps, index = [], [], 0
+    for segment in segments:
+        rows = []
+        while index < len(events) and events[index]['ts'] <= segment['end']:
+            event = events[index]
+            if event['ts'] > segment['start'] and event['tokens'] > 0:
+                rows.append(event)
+            index += 1
+        total = sum(row['weight'] for row in rows)
+        if not rows or total <= 0 or any(not row['known'] for row in rows):
+            gaps.append((segment['start'], segment['end']))
+            continue
+        for row in rows:
+            result.append(dict(device=row['device'], model=row['model'], ts=row['ts'],
+                               quota=segment['delta']*row['weight']/total))
+    return result, gaps
+
+
 def usage(database, account, now=None):
     now = time.time() if now is None else now
     result = {'account': account, 'at': now, 'windows': {}, 'models': []}
@@ -63,6 +86,22 @@ def usage(database, account, now=None):
             result['windows'][name] = dict(start=start, step=step, count=count,
                                            rows=[dict(row) for row in rows])
             models.update(row['model'] for row in rows)
+        allocated, gaps = quota_events(db, account, now)
+        observed = db.execute('SELECT 1 FROM epochs WHERE account=? LIMIT 1', (account,)).fetchone() is not None
+        pending = db.execute('SELECT 1 FROM meta WHERE key=?', ('reset_candidate:'+account,)).fetchone() is not None
+        for name, window in result['windows'].items():
+            start, step = max(baseline, window['start']), window['step']
+            grouped = {}
+            for row in allocated:
+                if row['ts'] < start or row['ts'] >= now or row['ts'] <= baseline:
+                    continue
+                if name == 'cycle' and row['ts'] <= window['start']:
+                    continue
+                bucket = min(window['count']-1, int((row['ts']-window['start'])/step))
+                key = (row['device'], row['model'], bucket)
+                grouped[key] = grouped.get(key, 0.) + row['quota']
+            window['quota_rows'] = [dict(device=d, model=m, bucket=b, quota=q) for (d, m, b), q in grouped.items()]
+            window['quota_ready'] = observed and not pending and not any(end > start and begin < now for begin, end in gaps)
     result['models'] = sorted(models)
     return result
 

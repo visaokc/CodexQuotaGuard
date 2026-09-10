@@ -62,7 +62,7 @@ try{
   assert.ok((await page.getByTestId('cycle-budget').innerText()).includes('450.00M'));
   assert.equal(await page.locator('.donut-tooltip').count(),0);
   assert.deepEqual(await page.locator('.donut-share').allTextContents(),['18.1%','33.0%']);
-  await page.evaluate(()=>{const data=structuredClone(window.__fixture);data.view.analytics.cycles[0].total_tokens=0;window.__CQG_TEST__.applySnapshot(data);});
+  await page.evaluate(()=>{const data=structuredClone(window.__fixture);for(const w of Object.values(data.view.analytics.windows))w.quota_ready=false;window.__CQG_TEST__.applySnapshot(data);});
   assert.deepEqual(await page.locator('.donut-share').allTextContents(),['—','—']);
   assert.equal(await page.locator('.trend-legend-share').innerText(),'—');
   await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
@@ -111,6 +111,7 @@ try{
     window.__CQG_TEST__.applySnapshot(data);
   });
   assert.ok((await page.getByTestId('cycle-reference').first().innerText()).includes('500.00M'));
+  assert.equal(await page.getByTestId('cycle-reset-tag').first().innerText(),'原因未确认');
   assert.ok((await page.getByTestId('cycle-reference').first().innerText()).includes('预计减少 ≈ 50.00M Token · 10.0%'));
   await page.screenshot({path:path.join(artifacts,'cycle-reference-average.png')});
   await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
@@ -345,6 +346,7 @@ try{
   await page.evaluate(()=>{
     const data=structuredClone(window.__fixture);
     for(const row of data.view.analytics.windows.day.rows)if(row.device==='fixture-local'&&row.model==='gpt-5.5')row.tokens=row.bucket===12?9e6:1000;
+    for(const w of Object.values(data.view.analytics.windows))w.quota_rows=w.rows.map(r=>({device:r.device,model:r.model,bucket:r.bucket,quota:r.tokens/450e6*100}));
     window.__fixture=data;window.__CQG_TEST__.applySnapshot(data);
   });await page.waitForTimeout(400);
   async function hoverAt(fraction){await page.evaluate(fraction=>{const hit=document.querySelector('[data-testid="trend-hit"]'),r=hit.getBoundingClientRect();hit.dispatchEvent(new PointerEvent('pointermove',{clientX:r.left+r.width*fraction,clientY:r.top+30,bubbles:true}));},fraction);await page.waitForTimeout(170);return page.locator('.chart-tooltip').boundingBox();}
@@ -378,7 +380,7 @@ try{
   const gap=await page.locator('.tooltip-series-row').first().evaluate(row=>row.querySelector('.tooltip-series-value').getBoundingClientRect().left-row.querySelector('.tooltip-series-name').getBoundingClientRect().right);
   assert.ok(gap<=6.5,'short names do not stretch away from tokens');
   await page.screenshot({path:path.join(artifacts,'tooltip-quota-percent.png')});
-  await page.evaluate(()=>{const data=structuredClone(window.__fixture);data.view.analytics.cycles[0].total_tokens=0;window.__CQG_TEST__.applySnapshot(data);});
+  await page.evaluate(()=>{const data=structuredClone(window.__fixture);for(const w of Object.values(data.view.analytics.windows))w.quota_ready=false;window.__CQG_TEST__.applySnapshot(data);});
   await hoverAt(0);
   assert.equal(await page.locator('.tooltip-total-percent').innerText(),'—');
   assert.deepEqual(await page.locator('.tooltip-user-percent').allTextContents(),['—','—']);

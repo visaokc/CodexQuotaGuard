@@ -70,3 +70,5 @@
 .cycle-metrics{grid-template-columns:1.2fr 1fr .9fr .9fr}.cycle-comparison strong.decreased{color:#e8bf75}.cycle-comparison strong.increased{color:#7acda7}[data-theme=light] .cycle-comparison strong.decreased{color:#997028}[data-theme=light] .cycle-comparison strong.increased{color:#258358}
 
 .chart-tooltip .tooltip-total-percent{font-size:11px;color:inherit}.tooltip-series-value{text-align:right}.tooltip-user-percent{font-weight:600;text-align:right;font-variant-numeric:tabular-nums}
+
+.cycle-reset-tag{display:inline-block;border:1px solid #64748b66;border-radius:5px;padding:2px 7px;margin-bottom:8px;color:var(--muted);font-size:10px;line-height:16px}

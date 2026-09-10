@@ -77,7 +77,7 @@ def _view(value):
     result['analytics'] = _pick(analytics, ('account', 'at', 'models', 'cycle_start', 'statistics_start'))
     result['analytics']['cycles'] = []
     for row in analytics.get('cycles', []):
-        safe = _pick(row, ('id', 'started', 'ended', 'reset_at', 'used_percent', 'baseline_percent',
+        safe = _pick(row, ('id', 'started', 'ended', 'reset_at', 'reset_type', 'used_percent', 'baseline_percent',
             'sampled_tokens', 'total_tokens', 'source', 'sample_tokens', 'sample_percent', 'is_current', 'change_percent', 'reference_count', 'reference_total_tokens',
             'reference_starts', 'reduction_tokens', 'reduction_percent'))
         safe['models'] = [_pick(m, ('model', 'tokens')) for m in row.get('models', [])]
@@ -86,7 +86,8 @@ def _view(value):
     for key in ('cycle', 'total', 'today', 'pie_hour', 'pie_six_hours', 'hour', 'hour_curve', 'day', 'week', 'month'):
         source = analytics.get('windows', {}).get(key)
         if source:
-            window = _pick(source, ('start', 'step', 'count'))
+            window = _pick(source, ('start', 'step', 'count', 'quota_ready'))
+            window['quota_rows'] = [_pick(r, ('device', 'model', 'bucket', 'quota')) for r in source.get('quota_rows', [])]
             window['rows'] = [_pick(r, ('device', 'model', 'bucket', 'tokens', 'weight', 'unknown')) for r in source.get('rows', [])]
             result['analytics']['windows'][key] = window
     result['recovery'] = _pick(value.get('recovery'), ('scanning', 'recovered_events', 'recovered_tokens',

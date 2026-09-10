@@ -60,8 +60,8 @@ export function aggregate(snapshot, window, model='', device='') {
   const data=snapshot.view?.analytics||{}, account=snapshot.view?.identity?.account;
   const active=devicesFor(snapshot), valid=new Set(active.map(d=>d.id));
   const source=data.account===account ? data.windows?.[window]||{} : {};
-  const points=Array(Math.max(1,source.count||1)).fill(0), totals={};
-  const series=active.filter(d=>!device||device===d.id).map(d=>({id:d.id,label:d.label,color:d.color,points:points.slice()}));
+  const points=Array(Math.max(1,source.count||1)).fill(0), totals={},quotaPoints=points.slice(),quotaTotals={};
+  const series=active.filter(d=>!device||device===d.id).map(d=>({id:d.id,label:d.label,color:d.color,points:points.slice(),quotaPoints:points.slice()}));
   const byDevice=new Map(series.map(item=>[item.id,item]));
   for(const row of source.rows||[]) {
     if(!valid.has(row.device)||(model&&row.model!==model)||(device&&row.device!==device)) continue;
@@ -72,13 +72,22 @@ export function aggregate(snapshot, window, model='', device='') {
     }
     totals[row.device]=(totals[row.device]||0)+tokens;
   }
+  for(const row of source.quota_rows||[]) {
+    const item=byDevice.get(row.device);
+    if(!item||(model&&row.model!==model)||!Number.isInteger(row.bucket)||row.bucket<0||row.bucket>=points.length)continue;
+    const d=active.find(d=>d.id===row.device),cap=d.fair_base_cap??d.cap;
+    const personal=['personal','fair'].includes(snapshot.settings?.quota_display||'personal');
+    const value=Number(row.quota)*(personal&&cap>0?100/cap:1);
+    item.quotaPoints[row.bucket]+=value;quotaPoints[row.bucket]+=value;
+    quotaTotals[row.device]=(quotaTotals[row.device]||0)+value;
+  }
   if(window==='cycle'&&!model) {
     for(const d of active) if(!device||device===d.id) totals[d.id]=Number(d.tokens)||0;
     for(const item of series){item.points.fill(0);item.points[0]=totals[item.id]||0;}
     points.fill(0);
     points[0]=Object.values(totals).reduce((a,b)=>a+b,0);
   }
-  return {points,series,totals,total:Object.values(totals).reduce((a,b)=>a+b,0),start:source.start||0,step:source.step||1};
+  return {quotaPoints,quotaTotals,quotaReady:source.quota_ready===true,points,series,totals,total:Object.values(totals).reduce((a,b)=>a+b,0),start:source.start||0,step:source.step||1};
 }
 export function quotaValue(device, mode='personal') {
   const used=Number(device.estimated),personal=mode===true||mode==='personal'||mode==='fair';

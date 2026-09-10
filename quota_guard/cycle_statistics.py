@@ -34,6 +34,7 @@ def cycle_statistics(database, account, now=None):
                 models[event['model']] = models.get(event['model'], 0)+event['tokens']
             rows.append(dict(id=cycle, started=epoch['started'], ended=epoch['ended'],
                 reset_at=epoch['reset_at'], used_percent=epoch['used'], baseline_percent=epoch['baseline'],
+                reset_type={'已确认周期刷新':'自然重置','重置卡重置':'重置卡','官方临时重置':'官方临时重置'}.get(epoch['reason'], '首次记录' if epoch['reason'].startswith('首次连接') else '原因未确认'),
                 sampled_tokens=budget['sampled_tokens'], total_tokens=budget['total_tokens'],
                 source=budget['source'], sample_tokens=calibration.get('sample_tokens'),
                 sample_percent=calibration.get('sample_percent'), is_current=is_current,

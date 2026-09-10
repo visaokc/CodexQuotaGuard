@@ -60,7 +60,10 @@ def normalize(payload, account, now):
     reset = float(weekly.get('reset_at') or now + weekly['reset_after_seconds'])
     if not 0 <= used <= 100:
         raise RuntimeError('额度数据超出有效范围')
-    return dict(account=account, used=used, reset_at=reset, at=now)
+    result = dict(account=account, used=used, reset_at=reset, at=now)
+    count = (payload.get('rate_limit_reset_credits') or {}).get('available_count')
+    result['reset_credits'] = count if type(count) is int and count >= 0 else None
+    return result
 
 
 def read_quota(home, now=None, expected_account=None):

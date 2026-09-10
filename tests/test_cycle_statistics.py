@@ -184,3 +184,10 @@ def test_reference_skips_closed_cycles_without_an_estimate(tmp_path):
     assert current['reference_starts'] == [100, 1900, 2800]
     assert current['reference_total_tokens'] == 20000
     assert current['reduction_percent'] == 0
+
+
+def test_confirmed_cycle_label_is_read_from_replicated_profile(tmp_path):
+    db,ledger=setup(tmp_path)
+    observe(ledger,100,0)
+    Journal(db,ledger,'local').append(A,'profile',dict(device='local',name='Local',cap=50,cycle_reset_type={'started':100,'type':'自然重置'}),200)
+    assert cycle_statistics(db,A,300)['rows'][0]['reset_type']=='自然重置'

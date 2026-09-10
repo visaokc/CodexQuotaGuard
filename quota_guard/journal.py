@@ -67,6 +67,12 @@ class Journal:
             start = p['fairness_start']
             if not isinstance(start, (int, float)) or not math.isfinite(start) or not 0 <= start <= r['ts']:
                 raise ValueError('公平分配起点无效')
+        if r['kind'] == 'profile' and 'cycle_reset_type' in p:
+            value = p['cycle_reset_type']
+            if (not isinstance(value, dict) or value.get('type') not in ('自然重置','重置卡','官方临时重置')
+                    or not isinstance(value.get('started'), (int, float)) or not math.isfinite(value['started'])
+                    or not 0 <= value['started'] <= r['ts']):
+                raise ValueError('周期类型确认无效')
         if r['kind'] == 'events':
             if len(p) > 40:
                 raise ValueError('事件批次过大')

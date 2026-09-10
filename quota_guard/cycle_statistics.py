@@ -15,6 +15,13 @@ def cycle_statistics(database, account, now=None):
         devices = {r['id']: dict(r) for r in db.execute('SELECT * FROM devices WHERE account=?', (account,))}
         epochs = db.execute('''SELECT * FROM epochs WHERE account=? AND started<=?
             AND (ended IS NULL OR ended>?) ORDER BY started,reset_at''', (account, now, start)).fetchall()
+        confirmed = {}
+        has_facts = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='facts'").fetchone()
+        if has_facts:
+            for fact in db.execute("SELECT payload FROM facts WHERE account=? AND kind='profile' ORDER BY ts,origin,seq", (account,)):
+                value = json.loads(fact['payload']).get('cycle_reset_type')
+                if isinstance(value, dict) and value.get('type') in ('自然重置','重置卡','官方临时重置'):
+                    confirmed[value['started']] = value['type']
         for stored in epochs:
             epoch = dict(stored)
             cycle = f"{epoch['reset_at']:.6f}:{epoch['started']:.6f}"
@@ -34,11 +41,11 @@ def cycle_statistics(database, account, now=None):
                 models[event['model']] = models.get(event['model'], 0)+event['tokens']
             rows.append(dict(id=cycle, started=epoch['started'], ended=epoch['ended'],
                 reset_at=epoch['reset_at'], used_percent=epoch['used'], baseline_percent=epoch['baseline'],
-                reset_type={'已确认周期刷新':'自然重置','重置卡重置':'重置卡','官方临时重置':'官方临时重置'}.get(epoch['reason'], '首次记录' if epoch['reason'].startswith('首次连接') else '原因未确认'),
+                reset_type=confirmed.get(epoch['started']) or {'已确认周期刷新':'自然重置','重置卡重置':'重置卡','官方临时重置':'官方临时重置'}.get(epoch['reason'], '首次记录' if epoch['reason'].startswith('首次连接') else '原因未确认'),
                 sampled_tokens=budget['sampled_tokens'], total_tokens=budget['total_tokens'],
                 source=budget['source'], sample_tokens=calibration.get('sample_tokens'),
                 sample_percent=calibration.get('sample_percent'), is_current=is_current,
-                change_percent=None, models=[dict(model=model, tokens=tokens)
+                change_percent=None, change_tokens=None, models=[dict(model=model, tokens=tokens)
                     for model, tokens in sorted(models.items(), key=lambda item: (-item[1], item[0]))]))
     references = []
     for row in rows:
@@ -56,4 +63,5 @@ def cycle_statistics(database, account, now=None):
     for previous, current in zip(rows, rows[1:]):
         if previous['total_tokens'] and current['total_tokens'] is not None:
             current['change_percent'] = (current['total_tokens']/previous['total_tokens']-1)*100
+            current['change_tokens'] = current['total_tokens']-previous['total_tokens']
     return dict(rows=list(reversed(rows)))

@@ -90,9 +90,21 @@ try{
   await page.getByTestId('nav-stats').click();await page.waitForTimeout(400);
   assert.equal(await page.getByTestId('cycle-record').count(),2);
   assert.equal(await page.getByTestId('cycle-change').first().innerText(),'-10.0%');
-  assert.equal(await page.getByTestId('cycle-change').first().evaluate(n=>getComputedStyle(n).color),'rgb(232, 191, 117)');
+  assert.equal(await page.getByTestId('cycle-change').first().evaluate(n=>getComputedStyle(n).color),'rgb(237, 141, 152)');
   assert.equal(await page.getByTestId('cycle-change').first().evaluate(n=>getComputedStyle(n).fontSize),'20px');
   assert.equal(await page.getByTestId('cycle-change').last().innerText(),'—');
+  assert.equal(await page.locator('.cycle-change-tokens').first().innerText(),'（50.00M Token）');
+  const cycleGeometry=await page.getByTestId('cycle-record').first().evaluate(n=>({tag:n.querySelector('.cycle-reset-tag').getBoundingClientRect().right,head:n.querySelector('.cycle-heading').getBoundingClientRect().right,date:n.querySelector('.cycle-date').getBoundingClientRect().top,track:n.querySelector('.cycle-progress').getBoundingClientRect().bottom}));
+  assert.ok(Math.abs(cycleGeometry.tag-cycleGeometry.head)<1);
+  assert.ok(cycleGeometry.date>cycleGeometry.track);
+  await page.evaluate(()=>{const data=structuredClone(window.__fixture);data.view.analytics.cycles[0].reset_type='自然重置';data.view.analytics.cycles[0].change_percent=10;data.view.analytics.cycles[0].change_tokens=50e6;window.__CQG_TEST__.applySnapshot(data);});
+  assert.equal(await page.getByTestId('cycle-change').first().innerText(),'+10.0%');
+  assert.equal(await page.getByTestId('cycle-reset-tag').first().evaluate(n=>getComputedStyle(n).fontSize),'13px');
+  assert.equal(await page.getByTestId('cycle-reset-tag').first().locator('i').count(),0);
+  await page.screenshot({path:path.join(artifacts,'cycle-natural-final.png')});
+  assert.equal(await page.locator('.cycle-change-tokens.increased').first().innerText(),'（50.00M Token）');
+  await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
+
 
   const modelNumberStyle=await page.locator('.cycle-model-card strong').first().evaluate(n=>({font:getComputedStyle(n).fontFamily,line:getComputedStyle(n).lineHeight,shadow:getComputedStyle(n).textShadow,transform:getComputedStyle(n).transform}));
   assert.ok(modelNumberStyle.font.startsWith('"Segoe UI"'));

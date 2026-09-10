@@ -78,7 +78,7 @@ def _view(value):
     result['analytics']['cycles'] = []
     for row in analytics.get('cycles', []):
         safe = _pick(row, ('id', 'started', 'ended', 'reset_at', 'reset_type', 'used_percent', 'baseline_percent',
-            'sampled_tokens', 'total_tokens', 'source', 'sample_tokens', 'sample_percent', 'is_current', 'change_percent', 'reference_count', 'reference_total_tokens',
+            'sampled_tokens', 'total_tokens', 'source', 'sample_tokens', 'sample_percent', 'is_current', 'change_percent', 'change_tokens', 'reference_count', 'reference_total_tokens',
             'reference_starts', 'reduction_tokens', 'reduction_percent'))
         safe['models'] = [_pick(m, ('model', 'tokens')) for m in row.get('models', [])]
         result['analytics']['cycles'].append(safe)

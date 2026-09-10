@@ -87,6 +87,10 @@ def test_rolling_boundaries_account_and_model_filters(tmp_path):
     data = usage(db, 'account', now)
     hourly = chart_data(data, 'hour')
     assert hourly['total'] == 4
+    assert len(hourly['points']) == 30
+    assert hourly['step'] == 120
+    assert hourly['points'][0] == 1
+    assert hourly['points'][-1] == 3
     assert hourly['shares'] == pytest.approx({'a': 25, 'b': 75})
     assert chart_data(data, 'hour', 'm1', 'tokens')['total'] == 100
     assert chart_data(data, 'day', metric='tokens', device='b')['total'] == 300

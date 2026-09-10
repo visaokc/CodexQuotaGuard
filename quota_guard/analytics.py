@@ -2,7 +2,7 @@
 import time
 
 
-WINDOWS = {'cycle': (None, 1), 'total': (None, 1), 'hour': (3600, 1), 'day': (86400, 24),
+WINDOWS = {'cycle': (None, 1), 'total': (None, 1), 'hour': (3600, 30), 'day': (86400, 24),
            'week': (7 * 86400, 28), 'month': (30 * 86400, 30)}
 
 

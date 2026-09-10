@@ -11,12 +11,13 @@ const server=http.createServer(async(req,res)=>{try{const name=new URL(req.url,'
 await new Promise(r=>server.listen(0,'127.0.0.1',r));
 const browser=await chromium.launch({channel:'msedge',headless:true});
 try{
-  const page=await browser.newPage({viewport:{width:750,height:570},deviceScaleFactor:1});
+  const page=await browser.newPage({viewport:{width:750,height:545},deviceScaleFactor:1,colorScheme:'dark'});
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   const initial=fixture();initial.settings.force_relay=true;
   initial.view.analytics.models.push('codex-auto-review','gpt-5.9','gpt-5.10');
   await page.addInitScript(data=>{window.__commands=[];window.__fixture=data;window.__CQG_TEST_BRIDGE__={snapshot:async()=>structuredClone(window.__fixture),command:async(action,payload)=>{
     window.__commands.push({action,payload});const settings=window.__fixture.settings;
+    if(action==='settings_save'&&payload.settings.theme)settings.theme=payload.settings.theme;
     if(action==='device_order_save')(settings.device_order??={})[payload.account]=payload.devices;
     if(action==='note_save')((settings.device_notes??={})[payload.account]??={})[payload.device]=payload.text;
     if(action==='color_save')((settings.device_colors??={})[payload.account]??={})[payload.device]=payload.color;
@@ -36,6 +37,15 @@ try{
   assert.ok(pieSelector.y-pieCard.y<=8&&pieCard.x+pieCard.width-pieSelector.x-pieSelector.width>=9,'pie period sits at the top right');
   assert.ok(Math.abs(pieSelector.y+pieSelector.height/2-pieTitle.y-pieTitle.height/2)<=2,'pie period aligns with the title');
   assert.equal(await page.locator('.overview').evaluate(e=>e.scrollHeight<=e.clientHeight),true);
+  assert.equal(await page.locator('.donut-tooltip').innerText(),'81.27M Token','local Token is visible without hover');
+  const tokenBox=await page.locator('.donut-tooltip').boundingBox();
+  assert.ok(pieCard.x+pieCard.width-tokenBox.x-tokenBox.width<=14,'default Token sits at the bottom right');
+  await page.locator('.legend-row').last().dispatchEvent('pointerenter');
+  assert.equal(await page.locator('.donut-tooltip').innerText(),'148.36M Token');
+  await page.locator('.legend-row').last().dispatchEvent('pointerleave');
+  assert.equal(await page.locator('.donut-tooltip').innerText(),'81.27M Token','pointer leave restores local usage');
+  const arcLengths=await page.locator('.donut-piece circle').evaluateAll(nodes=>nodes.map(n=>Number(n.getAttribute('stroke-dasharray').split(' ')[0])));
+  assert.ok(Math.abs(arcLengths.reduce((a,b)=>a+b,0)-(314.159-6))<.01,'two devices retain visible gaps without changing Token totals');
   const normalUsageColor=await page.getByTestId('official-remaining').evaluate(node=>getComputedStyle(node).color);
   for(const [used,color] of [[91,'rgb(237, 141, 152)'],[90,'rgb(232, 191, 117)'],[80,normalUsageColor],[null,normalUsageColor]]){
     await page.evaluate(used=>{const data=structuredClone(window.__fixture);data.view.summary.epoch.used=used;window.__CQG_TEST__.applySnapshot(data);},used);
@@ -56,7 +66,7 @@ try{
   });
   assert.equal(await page.getByTestId('refresh-remaining').innerText(),'2.0 小时');
   const dateBox=await page.getByTestId('refresh-date').boundingBox(),refreshBox=await page.locator('.refresh-card').boundingBox();
-  assert.ok(refreshBox.x+refreshBox.width-dateBox.x-dateBox.width>=13&&refreshBox.y+refreshBox.height-dateBox.y-dateBox.height>=8,'refresh date has right and bottom padding');
+  assert.ok(dateBox.x-refreshBox.x>=13&&dateBox.x-refreshBox.x<=15&&refreshBox.y+refreshBox.height-dateBox.y-dateBox.height>=8,'refresh date sits at bottom left with padding');
   await page.evaluate(()=>{Date.now=()=>window.__clockStart+3600e3;window.__CQG_TEST__.applySnapshot(structuredClone(window.__countdownData));});
   assert.equal(await page.getByTestId('refresh-remaining').innerText(),'1.0 小时');
   await page.evaluate(()=>{Date.now=()=>window.__clockStart+7200e3;window.__CQG_TEST__.applySnapshot(structuredClone(window.__countdownData));});
@@ -81,6 +91,22 @@ try{
   });
   assert.deepEqual(await page.getByTestId('connection-state').allTextContents(),['在线','在线'],'connected peer stays online when its monitoring heartbeat is stale');
   await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
+  const badges=await page.getByTestId('connection-state').evaluateAll(nodes=>nodes.map(n=>({width:n.getBoundingClientRect().width,height:n.getBoundingClientRect().height,font:getComputedStyle(n).fontSize})));
+  assert.deepEqual(badges,[{width:58,height:28,font:'12px'},{width:58,height:28,font:'12px'}]);
+  await page.evaluate(()=>{const data=structuredClone(window.__fixture);data.view.peers={};window.__CQG_TEST__.applySnapshot(data);});
+  assert.equal(await page.getByTestId('connection-state').last().evaluate(n=>getComputedStyle(n).color),'rgb(237, 141, 152)');
+  await page.screenshot({path:path.join(artifacts,'offline-badge.png')});
+  await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
+  await page.getByRole('button',{name:'趋势时间范围',exact:true}).click();
+  await page.getByRole('option',{name:'一小时',exact:true}).click();
+  await page.getByRole('button',{name:'柱状',exact:true}).click();await page.waitForTimeout(400);
+  assert.equal(await page.locator('.chart-bar').count(),30,'hour view contains thirty 2-minute buckets');
+  assert.ok((await page.locator('.trend-card h2').innerText()).includes('最近 1 小时'));
+  assert.equal((await page.locator('.charts-grid').boundingBox()).height,200);
+  await page.screenshot({path:path.join(artifacts,'hour-preview.png')});
+  await page.getByRole('button',{name:'趋势时间范围',exact:true}).click();
+  await page.getByRole('option',{name:'一天',exact:true}).click();
+  await page.getByRole('button',{name:'曲线',exact:true}).click();await page.waitForTimeout(400);
   await page.screenshot({path:path.join(artifacts,'overview.png')});
   const mutations=await page.evaluate(async()=>{
     let count=0;const observer=new MutationObserver(list=>count+=list.length);
@@ -176,6 +202,27 @@ try{
   assert.equal(await page.locator('.toast').count(),0);
   assert.equal(await page.getByRole('button',{name:'筛选模型',exact:true}).innerText(),'全部模型');
   await page.screenshot({path:path.join(artifacts,'overview.png')});
+  assert.equal(await page.getByRole('button',{name:'界面主题',exact:true}).innerText(),'');
+  assert.equal(await page.locator('.theme-icon').count(),1);
+  async function chooseTheme(label){await page.getByRole('button',{name:'界面主题',exact:true}).click();await page.getByRole('option',{name:label,exact:true}).click();await page.waitForTimeout(250);}
+  await chooseTheme('白天模式');
+  assert.equal(await page.locator('html').getAttribute('data-theme'),'light');
+  assert.equal(await page.locator('.app-shell').evaluate(n=>getComputedStyle(n).backgroundColor),'rgb(243, 245, 248)');
+  assert.ok(await page.locator('.titlebar').evaluate(n=>n.scrollWidth<=n.clientWidth));
+  await page.screenshot({path:path.join(artifacts,'theme-light.png')});
+  await page.getByTestId('device-row').first().click();await page.waitForTimeout(200);
+  await page.screenshot({path:path.join(artifacts,'theme-light-modal.png')});
+  await page.keyboard.press('Escape');
+  await page.emulateMedia({colorScheme:'dark'});
+  assert.equal(await page.locator('html').getAttribute('data-theme'),'light');
+  await chooseTheme('跟随系统');
+  assert.equal(await page.locator('html').getAttribute('data-theme'),'dark');
+  await page.emulateMedia({colorScheme:'light'});await page.waitForTimeout(100);
+  assert.equal(await page.locator('html').getAttribute('data-theme'),'light');
+  await chooseTheme('黑夜模式');
+  assert.equal(await page.locator('html').getAttribute('data-theme'),'dark');
+  await page.screenshot({path:path.join(artifacts,'theme-dark.png')});
+  assert.deepEqual(errors,[]);
   await writeFile(path.join(artifacts,'result.json'),JSON.stringify({ok:true,errors,headlessFrameSample:measure},null,2));
   console.log('OFFLINE_VUE_UI_DATA_LAYOUT_SELECTION_MENU_ALL_PAGES_OK',JSON.stringify(measure));
 }finally{await browser.close();await new Promise(r=>server.close(r));}

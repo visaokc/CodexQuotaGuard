@@ -32,10 +32,12 @@ Commands return `{ok:true,data:...}` or `{ok:false,error:string}`. Mutations are
 | update_install | `confirmed:true` | `{installing:true}`; requires verified staged offer and no active restriction |
 | diagnostics | empty | existing numeric-only sync report |
 
-`settings_save` accepts only `name,quota_display,autostart,auto_update,auto_block,codex_home,interval,program_paths,quota,multiplier`. Quota display is `account` or `personal`; no accounting formula is changed. Runtime-changing settings restart the existing Engine. Display-only settings do not.
+`settings_save` accepts only `name,theme,quota_display,autostart,auto_update,auto_block,codex_home,interval,program_paths,quota,multiplier`. Quota display is `account` or `personal`; no accounting formula is changed. Runtime-changing settings restart the existing Engine. Display-only settings do not.
 
 Preset colors: `#669cff`, `#f6b763`, `#55d6be`, `#cd8af0`, `#ed8299`, `#c6db76`, `#f39777`, `#62cde2`.
 
 For pairing, `pair_generate` starts the embedded Tailscale node if needed. On pending, offer `tailscale_login`; after `pairing.ready` becomes true, retry generation in the explicit pairing interaction. The code is returned only by the requested action and never retained in periodic snapshots.
 
 Window actions: `minimize,close,quit,drag,resize,maximize,shown,browse_program,export_diagnostics`. Close hides to tray. Host confirms restoring active protection before quit, then calls `_close()`, which stops the Engine and restores its paused processes. Update installation invokes host `quit` only after the verified existing updater launches successfully. Automatic updates follow the saved user preference and retry deferred installation every 30 seconds while limit protection is active.
+
+Theme is system (default), light or dark. Saving theme is display-only and never restarts the Engine.

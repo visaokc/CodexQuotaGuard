@@ -2,7 +2,7 @@
 export function fixture(){
   const at=1789027560,account='fixture-account',deviceA='fixture-local',deviceB='fixture-peer';
   const windows={};
-  for(const [name,seconds,count] of [['cycle',604800,1],['hour',3600,1],['day',86400,24],['week',604800,28],['month',2592000,30],['total',at,1]]){
+  for(const [name,seconds,count] of [['cycle',604800,1],['hour',3600,30],['day',86400,24],['week',604800,28],['month',2592000,30],['total',at,1]]){
     const rows=[];
     for(let i=0;i<count;i++)for(const [device,scale] of [[deviceA,1],[deviceB,1.8]]){
       rows.push({device,model:'gpt-5.5',bucket:i,tokens:Math.round((Math.sin(i*.55)**2*.85+.05)*12e6*scale),weight:i*3e6*scale,unknown:0});

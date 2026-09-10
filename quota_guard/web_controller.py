@@ -20,10 +20,10 @@ from .sync_diagnostics import report
 
 
 _COLORS = ('#669cff', '#f6b763', '#55d6be', '#cd8af0', '#ed8299', '#c6db76', '#f39777', '#62cde2')
-_SETTINGS = ('device_id', 'name', 'quota_display', 'device_notes', 'device_colors', 'device_order',
+_SETTINGS = ('device_id', 'name', 'theme', 'quota_display', 'device_notes', 'device_colors', 'device_order',
              'autostart', 'auto_update', 'auto_block', 'codex_home', 'interval',
              'program_paths', 'force_relay', 'quota', 'multiplier')
-_EDITABLE = {'name', 'quota_display', 'autostart', 'auto_update', 'auto_block',
+_EDITABLE = {'name', 'theme', 'quota_display', 'autostart', 'auto_update', 'auto_block',
              'codex_home', 'interval', 'program_paths', 'quota', 'multiplier'}
 
 
@@ -357,6 +357,8 @@ class WebController:
         cap, multiplier, interval = float(candidate['quota']), float(candidate['multiplier']), int(candidate['interval'])
         if not 0 < cap <= 100 or not .05 <= multiplier <= 20 or not 15 <= interval <= 300:
             raise ValueError('配额：(0,100]；权重系数：0.05–20；查询间隔：15–300 秒')
+        if candidate.get('theme', 'system') not in ('system', 'light', 'dark'):
+            raise ValueError('未知界面主题')
         if candidate.get('quota_display', 'account') not in ('account', 'personal'):
             raise ValueError('未知配额显示方式')
         for key in ('autostart', 'auto_update', 'auto_block'):
@@ -372,7 +374,7 @@ class WebController:
             self._validate_limit(candidate)
         candidate.update(name=str(candidate['name']).strip()[:80] or 'Windows', quota=cap, multiplier=multiplier, interval=interval)
         self._config.update(candidate)
-        self._save(restart=bool(set(changes)-{'quota_display', 'auto_update'}))
+        self._save(restart=bool(set(changes)-{'quota_display', 'auto_update', 'theme'}))
 
     def _programs_discover(self, _payload):
         return discover_programs()

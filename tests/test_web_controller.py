@@ -245,3 +245,12 @@ def test_display_only_setting_needs_no_limit_confirmation_or_restart(controller,
     assert controller._config == before
     assert controller.command('settings_save', {'settings': {'program_paths': ['other.exe']}, 'confirmed': True})['ok']
     validate.assert_called_once()
+
+
+def test_theme_persists_without_restarting_monitor(controller):
+    controller._restart = Mock()
+    for theme in ('light', 'dark', 'system'):
+        assert controller.command('settings_save', {'settings': {'theme': theme}})['ok']
+        assert controller.snapshot()['settings']['theme'] == theme
+    assert not controller.command('settings_save', {'settings': {'theme': 'invalid'}})['ok']
+    controller._restart.assert_not_called()

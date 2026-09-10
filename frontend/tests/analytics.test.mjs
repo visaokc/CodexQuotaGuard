@@ -75,9 +75,13 @@ test('official usage alerts use remaining quota and never treat missing values a
   assert.equal(officialUsageColor(0),null);
   for(const value of [null,undefined,NaN,Infinity,'91'])assert.equal(officialUsageColor(value),null);
 });
-test('official refresh is remaining hours and distinguishes expired or absent timestamps',()=>{
-  assert.equal(refreshRemaining(1e6+115.6*3600,1e6),'115.6 小时');
+test('official refresh switches between days hours and minutes and distinguishes expired or absent timestamps',()=>{
+  assert.equal(refreshRemaining(1e6+115.6*3600,1e6),'4.8 天');
   assert.equal(refreshRemaining(1e6+7200,1e6+3600),'1.0 小时');
+  assert.equal(refreshRemaining(1e6+48*3600,1e6),'48.0 小时');
+  assert.equal(refreshRemaining(1e6+49*3600,1e6),'2.0 天');
+  assert.equal(refreshRemaining(1e6+3599,1e6),'60 分钟');
+  assert.equal(refreshRemaining(1e6+61,1e6),'2 分钟');
   assert.equal(refreshRemaining(1e6,1e6),'等待刷新');
   assert.equal(refreshRemaining(1e6,1e6+1),'等待刷新');
   for(const value of [undefined,null,NaN,Infinity])assert.equal(refreshRemaining(value,1e6),'—');

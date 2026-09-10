@@ -12,7 +12,10 @@ export function officialUsageColor(used){
 export function refreshRemaining(resetAt,now){
   if(typeof resetAt!=='number'||!Number.isFinite(resetAt)||!Number.isFinite(now))return '—';
   const seconds=resetAt-now;
-  return seconds<=0?'等待刷新':(seconds/3600).toFixed(1)+' 小时';
+  if(seconds<=0)return '等待刷新';
+  if(seconds<3600)return Math.ceil(seconds/60)+' 分钟';
+  if(seconds<=48*3600)return (seconds/3600).toFixed(1)+' 小时';
+  return (seconds/86400).toFixed(1)+' 天';
 }
 export function compact(value, digits=2) {
   if (value == null || !Number.isFinite(Number(value))) return '—';

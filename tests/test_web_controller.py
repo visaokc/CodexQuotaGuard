@@ -238,6 +238,8 @@ def test_display_only_setting_needs_no_limit_confirmation_or_restart(controller,
     monkeypatch.setattr(controller, '_validate_limit', validate)
     assert controller.command('settings_save', {'settings': {'quota_display': 'personal', 'auto_update': False}})['ok']
     assert controller._config['auto_block'] is True
+    assert controller.command('settings_save', {'settings': {'quota_display': 'fair'}})['ok']
+    assert controller._config['quota_display'] == 'fair'
     restart.assert_not_called()
     validate.assert_not_called()
     before = copy.deepcopy(controller._config)
@@ -254,3 +256,20 @@ def test_theme_persists_without_restarting_monitor(controller):
         assert controller.snapshot()['settings']['theme'] == theme
     assert not controller.command('settings_save', {'settings': {'theme': 'invalid'}})['ok']
     controller._restart.assert_not_called()
+
+
+def test_cycle_statistics_and_budget_projection_are_allowlisted(controller):
+    view = controller._demo_view
+    view['summary']['token_budget'] = dict(total_tokens=450000000, source='粗估', private='hidden-budget')
+    view['analytics'] = dict(statistics_start=100, cycles=[dict(id='1000:100', started=100,
+        total_tokens=450000000, change_percent=-5, source='同步样本', private='hidden-cycle', reference_count=3,
+        reference_total_tokens=500000000, reference_starts=[10,20,30], reduction_tokens=50000000, reduction_percent=10,
+        models=[dict(model='gpt-6-astra', tokens=1000, private='hidden-model')])])
+    projected = controller.snapshot()['view']
+    assert projected['summary']['token_budget'] == dict(total_tokens=450000000, source='粗估')
+    assert projected['analytics']['statistics_start'] == 100
+    assert projected['analytics']['cycles'][0]['change_percent'] == -5
+    assert projected['analytics']['cycles'][0]['reduction_percent'] == 10
+    assert projected['analytics']['cycles'][0]['reference_total_tokens'] == 500000000
+    assert projected['analytics']['cycles'][0]['models'] == [dict(model='gpt-6-astra', tokens=1000)]
+    assert 'hidden-' not in json.dumps(projected)

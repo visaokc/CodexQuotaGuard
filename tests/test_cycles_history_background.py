@@ -133,7 +133,7 @@ def test_hidden_mode_does_not_wake_for_every_peer_packet(tmp_path):
     e = Engine(Database(tmp_path/'local.sqlite'), defaults())
     e.background_mode = True
     e.receive('peer', dict(type='sync'))
-    assert not e.wakeup.is_set() and e.inbox.qsize() == 1
+    assert not e.wakeup.is_set() and e.inbox.empty()
     e.background_mode = False
     e.receive('peer', dict(type='sync'))
     assert e.wakeup.is_set()

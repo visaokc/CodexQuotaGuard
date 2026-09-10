@@ -103,11 +103,12 @@ def test_engine_uses_file_transport_history_capacity(tmp_path):
     assert len(facts['records']) > 60
 
 
-def test_background_bootstrap_wakes_and_new_facts_ack_without_periodic_delay(tmp_path):
+def test_background_protected_bootstrap_wakes_and_new_facts_ack_without_periodic_delay(tmp_path):
     e, _, step, *_ = setup(tmp_path)
     step(100)
     e.mesh = Mesh()
     e.background_mode = True
+    e.config['auto_block'] = True
     e.last_broadcast = 100
     e.wakeup.clear()
     e.receive('peer', dict(type='peer_ready', account=A))
@@ -130,10 +131,11 @@ def test_background_bootstrap_wakes_and_new_facts_ack_without_periodic_delay(tmp
     assert not e.mesh.sent
 
 
-def test_background_new_peer_sync_wakes_but_known_idle_heartbeats_do_not(tmp_path):
+def test_background_protected_new_peer_sync_wakes_but_known_idle_heartbeats_do_not(tmp_path):
     e, _, step, *_ = setup(tmp_path)
     step(100)
     e.background_mode = True
+    e.config['auto_block'] = True
     e.wakeup.clear()
     message = dict(type='sync', account=A, records=[], vector={})
     e.receive('peer', message)

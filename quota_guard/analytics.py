@@ -1,9 +1,11 @@
 """Read-only, account-scoped rolling usage from the synchronized event ledger."""
+import json
 import time
+from datetime import datetime, timezone
 
 
-WINDOWS = {'cycle': (None, 1), 'total': (None, 1), 'hour': (3600, 30), 'day': (86400, 24),
-           'week': (7 * 86400, 28), 'month': (30 * 86400, 30)}
+WINDOWS = {'cycle': (None, 1), 'total': (None, 1), 'hour': (3600, 60), 'day': (86400, 24),
+           'week': (7 * 86400, 7), 'month': (30 * 86400, 30)}
 
 
 def quota_display(used, cap, personal=False):
@@ -17,6 +19,9 @@ def usage(database, account, now=None):
     result = {'account': account, 'at': now, 'windows': {}, 'models': []}
     models = set()
     with database.connect() as db:
+        saved = db.execute('SELECT value FROM meta WHERE key=?', ('statistics_start:'+account,)).fetchone()
+        baseline = float(json.loads(saved[0])) if saved else 0
+        result['statistics_start'] = baseline
         epoch = db.execute('SELECT started FROM epochs WHERE account=? ORDER BY id DESC LIMIT 1',
                            (account,)).fetchone()
         result['cycle_start'] = epoch['started'] if epoch else None
@@ -31,15 +36,24 @@ def usage(database, account, now=None):
                                                count=1, rows=[dict(row) for row in rows])
                 models.update(row['model'] for row in rows)
                 continue
-            start = now-duration if duration is not None else 0
             step = duration/count if duration is not None else max(1, now)
+            if duration is None:
+                start = baseline
+            else:
+                if name in ('week', 'month'):
+                    local = datetime.fromtimestamp(now, timezone.utc).astimezone()
+                    aligned = local.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+                else:
+                    aligned = (now//step)*step
+                # Keep stable calendar buckets, including the current partial one.
+                start = aligned-(count-1)*step
             rows = db.execute('''SELECT device, model,
                 CAST((ts-?)/? AS INTEGER) AS bucket,
                 SUM(tokens) AS tokens, SUM(weight) AS weight,
                 SUM(CASE WHEN known=0 THEN tokens ELSE 0 END) AS unknown
-                FROM events WHERE account=? AND ts>=? AND ts<?
+                FROM events WHERE account=? AND ts>=? AND ts<? AND ts>?
                 GROUP BY device, model, bucket ORDER BY device, model, bucket''',
-                (start, step, account, start, now)).fetchall()
+                (start, step, account, start, now, baseline)).fetchall()
             result['windows'][name] = dict(start=start, step=step, count=count,
                                            rows=[dict(row) for row in rows])
             models.update(row['model'] for row in rows)

@@ -9,6 +9,12 @@ export function officialUsageColor(used){
   if(remaining===null)return null;
   return remaining<10?'#ed8d98':remaining<20?'#e8bf75':null;
 }
+export function dailyQuotaUsage(epoch,pending=false){
+  if(pending||!epoch)return null;
+  const {used,baseline,started,observed_at:observed}=epoch;
+  if(![used,baseline,started,observed].every(value=>typeof value==='number'&&Number.isFinite(value))||observed<=started||used<baseline)return null;
+  return (used-baseline)*86400/(observed-started);
+}
 export function refreshRemaining(resetAt,now){
   if(typeof resetAt!=='number'||!Number.isFinite(resetAt)||!Number.isFinite(now))return '—';
   const seconds=resetAt-now;
@@ -55,26 +61,34 @@ export function aggregate(snapshot, window, model='', device='') {
   const active=devicesFor(snapshot), valid=new Set(active.map(d=>d.id));
   const source=data.account===account ? data.windows?.[window]||{} : {};
   const points=Array(Math.max(1,source.count||1)).fill(0), totals={};
+  const series=active.filter(d=>!device||device===d.id).map(d=>({id:d.id,label:d.label,color:d.color,points:points.slice()}));
+  const byDevice=new Map(series.map(item=>[item.id,item]));
   for(const row of source.rows||[]) {
     if(!valid.has(row.device)||(model&&row.model!==model)||(device&&row.device!==device)) continue;
     const tokens=Number(row.tokens)||0;
-    if(Number.isInteger(row.bucket)&&row.bucket>=0&&row.bucket<points.length) points[row.bucket]+=tokens;
+    if(Number.isInteger(row.bucket)&&row.bucket>=0&&row.bucket<points.length){
+      points[row.bucket]+=tokens;
+      byDevice.get(row.device).points[row.bucket]+=tokens;
+    }
     totals[row.device]=(totals[row.device]||0)+tokens;
   }
   if(window==='cycle'&&!model) {
     for(const d of active) if(!device||device===d.id) totals[d.id]=Number(d.tokens)||0;
+    for(const item of series){item.points.fill(0);item.points[0]=totals[item.id]||0;}
+    points.fill(0);
     points[0]=Object.values(totals).reduce((a,b)=>a+b,0);
   }
-  return {points,totals,total:Object.values(totals).reduce((a,b)=>a+b,0),start:source.start||0,step:source.step||1};
+  return {points,series,totals,total:Object.values(totals).reduce((a,b)=>a+b,0),start:source.start||0,step:source.step||1};
 }
-export function quotaValue(device, personal) {
-  const used=Number(device.estimated);
-  return personal ? (device.cap>0?used/device.cap*100:null) : used;
+export function quotaValue(device, mode='personal') {
+  const used=Number(device.estimated),personal=mode===true||mode==='personal'||mode==='fair';
+  const cap=device.fair_base_cap??device.cap;
+  return personal ? (cap>0?(used+(mode==='fair'?(device.carry||0):0))/cap*100:null) : used;
 }
 export function niceScale(max) {
   if(!(max>0)) return 4;
   const raw=max/4, base=10**Math.floor(Math.log10(raw));
-  return ([1,2,2.5,5,10].find(x=>x*base>=raw)||10)*base*4;
+  return ([1,1.25,1.5,2,2.5,3,4,5,6,8,10].find(x=>x*base>=raw)||10)*base*4;
 }
 // Monotone interpolation preserves extrema and never invents negative usage.
 export function linePath(values,width=416,height=122,maximum=niceScale(Math.max(0,...values))) {

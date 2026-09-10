@@ -23,7 +23,7 @@ def defaults():
                 stun_url='stun:stun.l.google.com:19302', force_relay=False,
                 quota=33.0, multiplier=1.0, tracked_accounts={}, autostart=True, auto_update=True,
                 codex_home=os.environ.get('CODEX_HOME', str(Path.home() / '.codex')),
-                interval=30, auto_block=False, program_paths=[], started_at=time.time())
+                quota_display="personal", interval=30, auto_block=False, program_paths=[], started_at=time.time())
 
 
 class Database:

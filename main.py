@@ -38,6 +38,9 @@ def main():
         config.update(load_config(cfgpath))
     else:
         save_config(cfgpath, config)
+    if not config.get("personal_display_default_v1"):
+        config.update(quota_display="personal", personal_display_default_v1=True)
+        save_config(cfgpath, config)
     from quota_guard.web_host import run
     run(args, config, Database(args.data_dir/'local.sqlite'))
 

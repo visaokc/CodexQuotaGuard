@@ -228,6 +228,7 @@ def run(args, config, database):
     host = DesktopHost(window, controller, args)
     controller._window_handler = host.dispatch
     window.events.closing += host.closing
+    window.events.minimized += lambda: controller._set_hidden(True)
     window.events.restored += host.restored
     window.events.closed += host.closed.set
     def begin():

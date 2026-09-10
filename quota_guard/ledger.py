@@ -5,12 +5,14 @@ import threading
 import time
 from datetime import datetime
 from .token_budget import estimate_budget
+from .fair_allocation import allocation
 
 
 class Ledger:
     def __init__(self, database):
         self.db = database
         self.lock = threading.RLock()
+        self.fairness_cache = {}
 
     def ingest(self, report, now=None):
         now = time.time() if now is None else now
@@ -24,6 +26,7 @@ class Ledger:
         if len(events) > 1000:
             raise ValueError('上报批次过大')
         with self.lock, self.db.connect() as db:
+            self.fairness_cache.pop(account, None)
             # Keep prior accounts in the ledger, but never present them as still logged in.
             db.execute('UPDATE devices SET logged_in=0,active=0,uncertain=0,unbound_active=0,unbound_uncertain=0 WHERE id=? AND account<>?', (device, account))
             db.execute('''INSERT INTO devices(account,id,name,cap,seen,scan_at,active,uncertain,logged_in)
@@ -63,9 +66,11 @@ class Ledger:
         now = time.time() if now is None else now
         result = dict(day={}, week={}, month={})
         with self.lock, self.db.connect() as db:
+            saved = db.execute('SELECT value FROM meta WHERE key=?', ('statistics_start:'+account,)).fetchone()
+            baseline = float(json.loads(saved[0])) if saved else 0
             days = db.execute("""SELECT strftime('%Y-%m-%d',ts,'unixepoch','localtime') AS day,
-                SUM(tokens) AS tokens FROM events WHERE account=? AND device=? GROUP BY day ORDER BY day""",
-                (account, device)).fetchall()
+                SUM(tokens) AS tokens FROM events WHERE account=? AND device=? AND ts>? GROUP BY day ORDER BY day""",
+                (account, device, baseline)).fetchall()
         for row in days:
             date = datetime.strptime(row['day'], '%Y-%m-%d')
             year, week, _ = date.isocalendar()
@@ -81,7 +86,8 @@ class Ledger:
         cap = float(cap)
         if not math.isfinite(cap) or not 0 < cap <= 100:
             raise ValueError('配额范围为 (0, 100]')
-        with self.db.connect() as db:
+        with self.lock, self.db.connect() as db:
+            self.fairness_cache.pop(account, None)
             db.execute('UPDATE devices SET cap=? WHERE account=? AND id=?', (cap, account, device))
 
     def observe(self, snap):
@@ -89,6 +95,7 @@ class Ledger:
         if not all(math.isfinite(x) for x in (used, reset, at)) or not 0 <= used <= 100:
             raise ValueError('额度快照无效')
         with self.lock, self.db.connect() as db:
+            self.fairness_cache.pop(account, None)
             row = db.execute('SELECT * FROM epochs WHERE account=? ORDER BY id DESC LIMIT 1', (account,)).fetchone()
             reason = None
             if row is None:
@@ -210,6 +217,11 @@ class Ledger:
                 if coefficients:
                     result['calibration'] = dict(samples=len(coefficients),
                         median=statistics.median(coefficients), minimum=min(coefficients), maximum=max(coefficients))
+            if account not in self.fairness_cache:
+                self.fairness_cache[account] = allocation(db, account, devices)
+            for device, values in self.fairness_cache[account].items():
+                if device in devices:
+                    devices[device].update(values)
             result['devices'] = list(devices.values())
             result['server_time'] = now
             return result

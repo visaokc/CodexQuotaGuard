@@ -39,10 +39,11 @@ def _summary(value):
     if not value:
         return None
     result = _pick(value, ('account', 'unassigned', 'provisional', 'allocation', 'reset_pending', 'server_time'))
+    result['token_budget'] = _pick(value.get('token_budget'), ('sampled_tokens', 'used_tokens', 'total_tokens', 'source'))
     result['epoch'] = _pick(value.get('epoch'), ('id', 'account', 'started', 'ended', 'baseline', 'used',
         'reset_at', 'observed_at', 'reason', 'cycle')) or None
     result['devices'] = [_pick(d, ('id', 'name', 'cap', 'seen', 'scan_at', 'active', 'uncertain', 'logged_in',
-        'unbound_active', 'unbound_uncertain', 'estimated', 'settled', 'tokens', 'weight', 'unknown_tokens', 'online', 'removed'))
+        'unbound_active', 'unbound_uncertain', 'estimated', 'settled', 'carry', 'fair_cap', 'fair_base_cap', 'tokens', 'weight', 'unknown_tokens', 'online', 'removed'))
         for d in value.get('devices', [])]
     result['attribution_gaps'] = [_pick(d, ('start', 'end', 'delta', 'reason', 'devices', 'unknown_models'))
                                   for d in value.get('attribution_gaps', [])]
@@ -73,7 +74,14 @@ def _view(value):
     result['sync_confirmed_at'] = (min(receipts[p] for p in result['sync_progress'])
         if states and all(s == 'caught_up' for s in states) and all(receipts.get(p) for p in result['sync_progress']) else None)
     analytics = value.get('analytics') or {}
-    result['analytics'] = _pick(analytics, ('account', 'at', 'models', 'cycle_start'))
+    result['analytics'] = _pick(analytics, ('account', 'at', 'models', 'cycle_start', 'statistics_start'))
+    result['analytics']['cycles'] = []
+    for row in analytics.get('cycles', []):
+        safe = _pick(row, ('id', 'started', 'ended', 'reset_at', 'used_percent', 'baseline_percent',
+            'sampled_tokens', 'total_tokens', 'source', 'sample_tokens', 'sample_percent', 'is_current', 'change_percent', 'reference_count', 'reference_total_tokens',
+            'reference_starts', 'reduction_tokens', 'reduction_percent'))
+        safe['models'] = [_pick(m, ('model', 'tokens')) for m in row.get('models', [])]
+        result['analytics']['cycles'].append(safe)
     result['analytics']['windows'] = {}
     for key in ('cycle', 'total', 'hour', 'day', 'week', 'month'):
         source = analytics.get('windows', {}).get(key)
@@ -359,7 +367,7 @@ class WebController:
             raise ValueError('配额：(0,100]；权重系数：0.05–20；查询间隔：15–300 秒')
         if candidate.get('theme', 'system') not in ('system', 'light', 'dark'):
             raise ValueError('未知界面主题')
-        if candidate.get('quota_display', 'account') not in ('account', 'personal'):
+        if candidate.get('quota_display', 'personal') not in ('account', 'personal', 'fair'):
             raise ValueError('未知配额显示方式')
         for key in ('autostart', 'auto_update', 'auto_block'):
             if not isinstance(candidate[key], bool):

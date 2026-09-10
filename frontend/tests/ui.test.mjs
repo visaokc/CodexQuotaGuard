@@ -17,36 +17,115 @@ try{
   initial.view.analytics.models.push('codex-auto-review','gpt-5.9','gpt-5.10');
   await page.addInitScript(data=>{window.__commands=[];window.__fixture=data;window.__CQG_TEST_BRIDGE__={snapshot:async()=>structuredClone(window.__fixture),command:async(action,payload)=>{
     window.__commands.push({action,payload});const settings=window.__fixture.settings;
-    if(action==='settings_save'&&payload.settings.theme)settings.theme=payload.settings.theme;
+    if(action==='settings_save')for(const key of ['theme','quota_display'])if(key in payload.settings)settings[key]=payload.settings[key];
     if(action==='device_order_save')(settings.device_order??={})[payload.account]=payload.devices;
     if(action==='note_save')((settings.device_notes??={})[payload.account]??={})[payload.device]=payload.text;
     if(action==='color_save')((settings.device_colors??={})[payload.account]??={})[payload.device]=payload.color;
     return {ok:true,data:{}};
   },window_action:async action=>{window.__commands.push({host:action});return action==='browse_program'?{ok:true,data:['C:/isolated-test/extra-codex.exe']}:{ok:true};}};},initial);
   await page.goto(`http://127.0.0.1:${server.address().port}/?test=1`);
-  await page.locator('.app-shell.ready').waitFor();await page.waitForTimeout(550);
+  await page.locator('.app-shell.ready').waitFor();await page.evaluate(()=>window.__CQG_TEST__.pausePolling());await page.waitForTimeout(550);
   assert.deepEqual(errors,[]);
+  assert.equal(await page.locator('.window-buttons button').count(),3);
+  const titleControls=await page.locator('.version,.window-buttons button').evaluateAll(nodes=>nodes.map(n=>({x:n.getBoundingClientRect().x,y:n.getBoundingClientRect().y,h:n.getBoundingClientRect().height})));
+  assert.ok(titleControls.every((n,i)=>!i||n.x>titleControls[i-1].x));
+  assert.ok(titleControls.slice(1).every(n=>n.y===titleControls[1].y&&n.h===titleControls[1].h));
+
   assert.equal(await page.getByTestId('device-row').count(),2);
+  assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).user,'','first open defaults to all users');
+  assert.equal(await page.getByRole('button',{name:'趋势时间范围',exact:true}).innerText(),'一天');
+  assert.equal(await page.locator('.trend-line').count(),2);
+  await page.getByRole('button',{name:'筛选用户',exact:true}).click();
+  await page.getByRole('option',{name:/^橙猫猫 · 本机/}).click();
+
+  assert.equal(await page.locator('.trend-legend-share').innerText(),'35.7%');
+  assert.equal(await page.locator('.trend-legend-share').first().evaluate(n=>getComputedStyle(n).color),'rgb(102, 156, 255)');
+
+  assert.equal(await page.getByTestId('daily-quota-average').innerText(),'26.5% / 天');
+  const officialNumber=await page.getByTestId('official-remaining').boundingBox(),dailyNumber=await page.getByTestId('daily-quota-average').boundingBox();
+  assert.ok(officialNumber.x+officialNumber.width<=dailyNumber.x,'daily average does not overlap remaining quota');
+  const quotaTrack=await page.locator('.quota-progress').boundingBox();
+  assert.ok(dailyNumber.y+dailyNumber.height<quotaTrack.y,'daily average sits above the progress bar');
+  assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).user,'fixture-local','explicit local selection is retained');
+  assert.ok((await page.getByTestId('cycle-budget').innerText()).includes('450.00M'));
+  assert.equal(await page.locator('.donut-tooltip').count(),0);
+  const ordinarySnapshot=await page.evaluate(()=>structuredClone(window.__fixture));
+  await page.evaluate(()=>{
+    window.__fixture.settings.quota_display='personal';
+    const rows=window.__fixture.view.summary.devices;
+    rows[0].estimated=0;rows[0].carry=15;rows[0].fair_base_cap=50;
+    rows[1].estimated=0;rows[1].carry=-15;rows[1].fair_base_cap=50;
+    window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture));
+  });
+  assert.deepEqual(await page.locator('.device-usage').allTextContents(),['0.00%','0.00%']);
+  await page.getByTestId('nav-settings').click();await page.waitForTimeout(250);
+  await page.getByRole('button',{name:'额度显示基准',exact:true}).click();
+  await page.getByRole('option',{name:'补偿显示模式',exact:true}).click();
+  await page.getByTestId('nav-overview').click();await page.waitForTimeout(250);
+  assert.deepEqual(await page.locator('.device-usage').allTextContents(),['30.00%','-30.00%']);
+  await page.screenshot({path:path.join(artifacts,'compensation-display.png')});
+  await page.getByTestId('nav-settings').click();await page.waitForTimeout(250);
+  await page.getByRole('button',{name:'额度显示基准',exact:true}).click();
+  await page.getByRole('option',{name:'个人额度 = 100%',exact:true}).click();
+  await page.getByTestId('nav-overview').click();await page.waitForTimeout(250);
+  assert.deepEqual(await page.locator('.device-usage').allTextContents(),['0.00%','0.00%']);
+  await page.evaluate(data=>{window.__fixture=data;window.__CQG_TEST__.applySnapshot(data);},ordinarySnapshot);
+  await page.getByTestId('nav-stats').click();await page.waitForTimeout(400);
+  assert.equal(await page.getByTestId('cycle-record').count(),2);
+  assert.equal(await page.getByTestId('cycle-change').first().innerText(),'-10.0%');
+  assert.equal(await page.getByTestId('cycle-change').first().evaluate(n=>getComputedStyle(n).color),'rgb(232, 191, 117)');
+  assert.equal(await page.getByTestId('cycle-change').first().evaluate(n=>getComputedStyle(n).fontSize),'20px');
+  assert.equal(await page.getByTestId('cycle-change').last().innerText(),'—');
+
+  const modelNumberStyle=await page.locator('.cycle-model-card strong').first().evaluate(n=>({font:getComputedStyle(n).fontFamily,line:getComputedStyle(n).lineHeight,shadow:getComputedStyle(n).textShadow,transform:getComputedStyle(n).transform}));
+  assert.ok(modelNumberStyle.font.startsWith('"Segoe UI"'));
+  assert.equal(modelNumberStyle.line,'20px');
+  assert.equal(modelNumberStyle.shadow,'none');
+  assert.equal(modelNumberStyle.transform,'none');
+
+  assert.equal(await page.locator('.cycle-progress').first().getAttribute('aria-valuenow'),'53');
+  assert.ok(Math.abs(await page.locator('.cycle-progress i').first().evaluate(n=>new DOMMatrix(getComputedStyle(n).transform).a)-.53)<.001);
+  assert.ok((await page.getByTestId('cycle-record').first().innerText()).includes('-10.0%'));
+  await page.screenshot({path:path.join(artifacts,'cycle-statistics.png')});
+  assert.ok((await page.getByTestId('cycle-reference').first().innerText()).includes('等待已结束周期'));
+  await page.evaluate(()=>{
+    const data=structuredClone(window.__fixture);
+    Object.assign(data.view.analytics.cycles[0],{reference_count:3,reference_total_tokens:500e6,reference_starts:[1,2,3],reduction_tokens:50e6,reduction_percent:10});
+    window.__CQG_TEST__.applySnapshot(data);
+  });
+  assert.ok((await page.getByTestId('cycle-reference').first().innerText()).includes('500.00M'));
+  assert.ok((await page.getByTestId('cycle-reference').first().innerText()).includes('预计减少 ≈ 50.00M Token · 10.0%'));
+  await page.screenshot({path:path.join(artifacts,'cycle-reference-average.png')});
+  await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
+
+  await page.getByTestId('nav-overview').click();await page.waitForTimeout(350);
   const rows=await page.getByTestId('device-row').first().boundingBox();assert.ok(rows.y>300);
   assert.equal(await page.getByTestId('device-row').first().evaluate(n=>getComputedStyle(n).borderTopWidth),'0px');
   const summaryBox=await page.locator('.summary-grid').boundingBox();
   assert.ok(rows.x<summaryBox.x&&rows.width>summaryBox.width,'device cards extend beyond the summary grid');
   const last=await page.getByTestId('device-row').last().boundingBox();assert.ok(last.y+last.height<=555,'both device rows fully visible');
   assert.equal(await page.locator('.donut-svg text').count(),0);
-  assert.ok(!(await page.getByTestId('pie-chart').innerText()).includes('%'));
+  assert.deepEqual(await page.locator('.donut-share').allTextContents(),['35.4%','64.6%']);
+  const pieShares=await page.locator('.donut-share').evaluateAll(nodes=>nodes.map(n=>({x:n.getBoundingClientRect().x,y:n.getBoundingClientRect().y,h:n.getBoundingClientRect().height,weight:getComputedStyle(n).fontWeight})));
+  assert.ok(Math.abs(pieShares[0].x-pieShares[1].x)<.5,'pie percentages share one aligned column');
+  assert.ok(pieShares.every(n=>Number(n.weight)>=700));
+  for(let i=0;i<2;i++){
+    const row=await page.locator('.legend-row').nth(i).boundingBox();
+    assert.ok(Math.abs(pieShares[i].y+pieShares[i].h/2-row.y-row.height/2)<1,'pie share centers beside both text lines');
+  }
+
   assert.ok((await page.getByTestId('pie-chart').innerText()).includes('81.27M'));
   assert.ok((await page.getByTestId('pie-chart').innerText()).includes('148.36M'));
   const pieCard=await page.getByTestId('pie-chart').boundingBox(),pieSelector=await page.locator('.pie-period').boundingBox(),pieTitle=await page.locator('.donut-card h2').boundingBox();
   assert.ok(pieSelector.y-pieCard.y<=8&&pieCard.x+pieCard.width-pieSelector.x-pieSelector.width>=9,'pie period sits at the top right');
   assert.ok(Math.abs(pieSelector.y+pieSelector.height/2-pieTitle.y-pieTitle.height/2)<=2,'pie period aligns with the title');
   assert.equal(await page.locator('.overview').evaluate(e=>e.scrollHeight<=e.clientHeight),true);
-  assert.equal(await page.locator('.donut-tooltip').innerText(),'81.27M Token','local Token is visible without hover');
-  const tokenBox=await page.locator('.donut-tooltip').boundingBox();
-  assert.ok(pieCard.x+pieCard.width-tokenBox.x-tokenBox.width<=14,'default Token sits at the bottom right');
+  const tokenBox=await page.getByTestId('cycle-budget').boundingBox();
+  assert.ok(pieCard.x+pieCard.width-tokenBox.x-tokenBox.width<=14,'cycle estimate replaces personal total at bottom right');
+  assert.equal(await page.locator('.cycle-budget strong').evaluate(n=>getComputedStyle(n).color),'rgb(102, 156, 255)');
   await page.locator('.legend-row').last().dispatchEvent('pointerenter');
-  assert.equal(await page.locator('.donut-tooltip').innerText(),'148.36M Token');
+  assert.ok((await page.getByTestId('cycle-budget').innerText()).includes('450.00M'));
   await page.locator('.legend-row').last().dispatchEvent('pointerleave');
-  assert.equal(await page.locator('.donut-tooltip').innerText(),'81.27M Token','pointer leave restores local usage');
   const arcLengths=await page.locator('.donut-piece circle').evaluateAll(nodes=>nodes.map(n=>Number(n.getAttribute('stroke-dasharray').split(' ')[0])));
   assert.ok(Math.abs(arcLengths.reduce((a,b)=>a+b,0)-(314.159-6))<.01,'two devices retain visible gaps without changing Token totals');
   await page.evaluate(()=>{const data=structuredClone(window.__fixture);data.view.summary.epoch.used=80;window.__CQG_TEST__.applySnapshot(data);});
@@ -109,10 +188,17 @@ try{
   await page.getByRole('button',{name:'趋势时间范围',exact:true}).click();
   await page.getByRole('option',{name:'一小时',exact:true}).click();
   await page.getByRole('button',{name:'柱状',exact:true}).click();await page.waitForTimeout(400);
-  assert.equal(await page.locator('.chart-bar').count(),30,'hour view contains thirty 2-minute buckets');
+  assert.equal(await page.locator('.chart-bar').count(),60,'hour view contains sixty fixed minute buckets');
   assert.ok((await page.locator('.trend-card h2').innerText()).includes('最近 1 小时'));
   assert.equal((await page.locator('.charts-grid').boundingBox()).height,200);
   await page.screenshot({path:path.join(artifacts,'hour-preview.png')});
+  await page.getByRole('button',{name:'趋势时间范围',exact:true}).click();
+  await page.getByRole('option',{name:'一周',exact:true}).click();await page.waitForTimeout(400);
+  assert.equal(await page.locator('.chart-bar').count(),7);
+  assert.equal(await page.locator('.day-label').count(),7);
+  const dayBox=await page.locator('.day-label').first().boundingBox(),legendBox=await page.locator('.trend-legend').boundingBox();
+  assert.ok(dayBox.y+dayBox.height<legendBox.y,'legend sits below date labels');
+  await page.screenshot({path:path.join(artifacts,'week-seven-days.png')});
   await page.getByRole('button',{name:'趋势时间范围',exact:true}).click();
   await page.getByRole('option',{name:'一天',exact:true}).click();
   await page.getByRole('button',{name:'曲线',exact:true}).click();await page.waitForTimeout(400);
@@ -141,7 +227,36 @@ try{
   await page.getByRole('option',{name:'gpt-5.5',exact:true}).click();
   assert.equal(await page.evaluate(()=>window.__CQG_TEST__.getState().model),'gpt-5.5');
   await page.getByRole('button',{name:'筛选用户',exact:true}).click();
-  await page.getByRole('option',{name:'橙猫猫 · 本机',exact:true}).click();
+  await page.getByRole('option',{name:'全部用户',exact:true}).click();await page.waitForTimeout(400);
+  assert.equal(await page.locator('.trend-line').count(),2,'all users have separate colored lines');
+  assert.deepEqual(await page.locator('.trend-legend-share').allTextContents(),['35.7%','64.3%']);
+  assert.equal(new Set(await page.locator('.trend-line').evaluateAll(nodes=>nodes.map(n=>n.getAttribute('stroke')))).size,2);
+  for(let i=0;i<3;i++)await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
+  assert.equal(await page.evaluate(()=>window.__CQG_TEST__.getState().user),'','explicit all users selection survives refresh');
+  await page.screenshot({path:path.join(artifacts,'all-users-lines.png')});
+  await page.getByRole('button',{name:'柱状',exact:true}).click();await page.waitForTimeout(400);
+  assert.equal(await page.locator('.chart-bar').count(),48,'24 time buckets contain two stacked device segments');
+  assert.equal(new Set(await page.locator('.chart-bar').evaluateAll(nodes=>nodes.map(n=>n.getAttribute('fill')))).size,2);
+  assert.equal(await page.locator('clipPath[id^="bar-round-"] rect').count(),24);
+  assert.equal(await page.locator('#bar-round-3 rect').getAttribute('rx'),'3');
+  assert.equal(await page.locator('.chart-bar').nth(27).getAttribute('clip-path'),'url(#bar-round-3)');
+  await page.screenshot({path:path.join(artifacts,'all-users-stacked.png')});
+  await page.getByRole('button',{name:'曲线',exact:true}).click();
+  await page.waitForTimeout(90);
+  const reveal=await page.locator('.curve-reveal').evaluate(n=>({name:getComputedStyle(n).animationName,scale:new DOMMatrix(getComputedStyle(n).transform).a}));
+  assert.equal(reveal.name,'curve-draw');assert.ok(reveal.scale>0&&reveal.scale<1,'curve is being drawn from left to right');
+  await page.waitForTimeout(650);
+  assert.equal(await page.locator('.curve-reveal').evaluate(n=>new DOMMatrix(getComputedStyle(n).transform).a),1);
+  const runningAnimation=await page.locator('.curve-reveal').evaluate(n=>n.getAnimations()[0]?.currentTime);
+  await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
+  assert.ok(await page.locator('.curve-reveal').evaluate(n=>n.getAnimations()[0]?.currentTime)>=runningAnimation,'snapshot does not replay the entrance');
+  await page.getByRole('button',{name:'柱状',exact:true}).click();await page.waitForTimeout(60);
+  assert.equal(await page.locator('.bar-chart').evaluate(n=>getComputedStyle(n).animationName),'bars-rise');
+  assert.ok(await page.locator('.bar-chart').evaluate(n=>new DOMMatrix(getComputedStyle(n).transform).d)<1,'bars rise from the baseline');
+  await page.waitForTimeout(420);
+
+  await page.getByRole('button',{name:'筛选用户',exact:true}).click();
+  await page.getByRole('option',{name:/^橙猫猫 · 本机/}).click();
   assert.equal(await page.evaluate(()=>window.__CQG_TEST__.getState().user),'fixture-local');
   await page.getByRole('button',{name:'柱状',exact:true}).click();await page.waitForTimeout(350);
   assert.equal(await page.locator('.chart-bar').count(),24);
@@ -155,6 +270,7 @@ try{
   assert.equal(await page.locator('.device-row.selected').count(),0,'saving user settings clears the device highlight');
   assert.equal(await page.evaluate(()=>window.__commands.at(-1).action),'color_save');
   assert.ok((await page.getByTestId('device-row').first().innerText()).includes('测试工作站'));
+  assert.equal(await page.locator('.trend-legend-share').first().evaluate(n=>getComputedStyle(n).color),'rgb(237, 130, 153)');
   const firstRow=await page.getByTestId('device-row').first().boundingBox(),secondRow=await page.getByTestId('device-row').last().boundingBox();
   await page.mouse.move(firstRow.x+80,firstRow.y+25);await page.mouse.down();
   await page.mouse.move(secondRow.x+80,secondRow.y+30,{steps:10});await page.mouse.up();await page.waitForTimeout(220);
@@ -163,7 +279,7 @@ try{
   assert.equal(await page.locator('.legend-name').first().innerText(),'DESKTOP-N41609F');
   await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
   assert.equal(await page.getByTestId('device-row').first().getAttribute('data-device-id'),'fixture-peer');
-  for(const target of ['accounts','sync','settings','help','overview']){await page.getByTestId('nav-'+target).click();await page.waitForTimeout(340);await page.screenshot({path:path.join(artifacts,target+'.png')});}
+  for(const target of ['stats','accounts','sync','settings','help','overview']){await page.getByTestId('nav-'+target).click();await page.waitForTimeout(340);await page.screenshot({path:path.join(artifacts,target+'.png')});}
   await page.getByTestId('nav-sync').click();await page.waitForTimeout(330);
   await page.getByRole('button',{name:'高级连接设置',exact:true}).click();
   const relay=page.getByRole('checkbox',{name:'仅使用加密中转',exact:true});

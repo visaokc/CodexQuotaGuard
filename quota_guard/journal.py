@@ -63,6 +63,10 @@ class Journal:
                 or len(json.dumps(r)) > 24000):
             raise ValueError('同步记录无效或时钟超前')
         p = r['payload']
+        if r['kind'] == 'profile' and 'fairness_start' in p:
+            start = p['fairness_start']
+            if not isinstance(start, (int, float)) or not math.isfinite(start) or not 0 <= start <= r['ts']:
+                raise ValueError('公平分配起点无效')
         if r['kind'] == 'events':
             if len(p) > 40:
                 raise ValueError('事件批次过大')
@@ -112,6 +116,7 @@ class Journal:
 
     def project(self, account, quotas=True, changes=None):
         with self.ledger.lock:
+            self.ledger.fairness_cache.pop(account, None)
             with self.db.connect() as db:
                 if changes is None:
                     events = list(db.execute("SELECT * FROM facts WHERE account=? AND kind='events' ORDER BY ts,origin,seq", (account,)))

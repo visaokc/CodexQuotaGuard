@@ -9,6 +9,7 @@ from .firewall import Firewall
 from .journal import Journal
 from .ledger import Ledger
 from .analytics import usage
+from .cycle_statistics import cycle_statistics
 from .transport import make_mesh
 from .meter import Scanner
 from .quota import identity, read_quota
@@ -52,7 +53,19 @@ class Engine:
         self.notice_key = None
         self.thread = None
         self.analytics_cache = {}
-        self.background_mode = False
+        self._background_mode = False
+        self._network_limited = False
+        self._force_read = False
+        self._force_sync = False
+        self._background_next_sync = 0
+        self._sync_burst_active = False
+        self._sync_burst_goals = {}
+        self._sync_burst_sent = None
+        self._sync_burst_advertised = {}
+        self._sync_early_facts = {}
+        self._presence_lock = threading.Lock()
+        self._pending_presence = {}
+        self._last_presence = 0
         self.quota_error = ''
         self.quota_error_since = None
         self.quota_error_notified = False
@@ -62,11 +75,88 @@ class Engine:
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
 
+    @property
+    def background_mode(self):
+        return self._background_mode
+
+    @background_mode.setter
+    def background_mode(self, value):
+        before = self._background_mode
+        self._background_mode = bool(value)
+        if before and not self._background_mode:
+            self._force_read = self._force_sync = True
+            self.wakeup.set()
+
+    def _limited_network(self):
+        # Quota protection needs fresh official evidence and peer allocation.
+        return self.background_mode and not (self.config['auto_block'] or self.blocked)
+
+    def _network_tick(self, now):
+        limited = self._limited_network()
+        if limited != self._network_limited:
+            self._network_limited = limited
+            self._sync_burst_active = False
+            self._sync_burst_goals = {}
+            self._sync_early_facts = {}
+            if limited:
+                self._background_next_sync = now + 600
+            else:
+                self._force_read = self._force_sync = True
+
+    def _begin_sync_round(self, account, now):
+        if self._network_limited and now >= self._background_next_sync:
+            self._background_next_sync = now + 600
+            self._sync_burst_active = True
+            self._sync_burst_sent = None
+            self._sync_burst_advertised = {}
+            self._sync_early_facts = {}
+            self._sync_burst_goals = {peer: None for peer in self.mesh.peer_states()} if self.mesh else {}
+            self._force_sync = True
+
+    def _end_sync_round(self, account, now):
+        if not self._network_limited or not self._sync_burst_active:
+            return
+        if not self._sync_burst_goals:
+            self._sync_burst_active = False
+            return
+        if self._sync_burst_sent is None:
+            return
+        local = self.journal.vector(account)
+        def covers(vector, target):
+            return all(vector.get(origin, 0) >= seq for origin, seq in target.items())
+        completed = [peer for peer, target in self._sync_burst_goals.items()
+                     if target is not None and covers(local, target)
+                     and covers(self.sync_vectors.get(peer, {}), self._sync_burst_sent)]
+        for peer in completed:
+            self._sync_burst_goals.pop(peer)
+        # A hidden peer may only answer at its own (offset) ten-minute window.
+        # Waiting keeps no fact backlog and does not periodically resend data.
+        if not self._sync_burst_goals:
+            self._sync_burst_active = False
+
+    def _round_vector(self, account):
+        current = self.journal.vector(account)
+        if self._sync_burst_sent is None:
+            self._sync_burst_sent = dict(current)
+        ceiling = dict(self._sync_burst_sent)
+        for target in self._sync_burst_goals.values():
+            for origin, seq in (target or {}).items():
+                ceiling[origin] = max(ceiling.get(origin, 0), seq)
+        return {origin: min(seq, ceiling.get(origin, 0)) for origin, seq in current.items()}
+
     def receive(self, peer, message):
+        if self._limited_network() and not self._sync_burst_active:
+            # The next anti-entropy exchange regenerates unacknowledged facts.
+            # Keep only a bounded latest activity heartbeat, never 600 s of pages.
+            if message.get('type') in ('sync', 'presence') and message.get('presence'):
+                with self._presence_lock:
+                    if peer in self._pending_presence or len(self._pending_presence) < 32:
+                        self._pending_presence[peer] = dict(type='presence', account=message.get('account'),
+                                                            presence=message['presence'])
+            return
         try:
             self.inbox.put_nowait((peer, message))
-            # Bootstrap and history progress should not wait for the 30 s hidden
-            # timer. Unchanged presence heartbeats keep the low-idle-cost path.
+            # A scheduled catch-up round drains all pages without 600 s per page.
             bootstrap = (self.last_identity and message.get('account') == self.last_identity['account']
                          and (message.get('type') in ('peer_ready', 'facts') or
                               (message.get('type') == 'sync' and
@@ -106,6 +196,13 @@ class Engine:
             self.mesh.close()
             self.mesh = None
         self.last_snapshot, self.last_read = None, 0
+        self._force_read = self._force_sync = True
+        self._background_next_sync = now
+        self._sync_burst_active = False
+        self._sync_burst_goals = {}
+        self._sync_early_facts = {}
+        with self._presence_lock:
+            self._pending_presence.clear()
         self.analytics_cache = {}
         self.last_quota_publish = 0
         self.quota_error = ''
@@ -116,7 +213,12 @@ class Engine:
             self.journal.project(account)
             profile = dict(device=self.config['device_id'], name=self.config['name'],
                            cap=self.tracked[account].get('cap', self.config['quota']))
-            if self.group_db.get('own_profile:'+account) != profile:
+            previous_profile = self.group_db.get('own_profile:'+account, {})
+            with self.group_db.connect() as db:
+                epoch = db.execute('SELECT started FROM epochs WHERE account=? ORDER BY started DESC LIMIT 1', (account,)).fetchone()
+            profile['fairness_start'] = previous_profile.get('fairness_start',
+                self.group_db.get('statistics_start:'+account, epoch['started'] if epoch else now))
+            if previous_profile != profile:
                 self.journal.append(account, 'profile', profile, now)
                 self.group_db.put('own_profile:'+account, profile)
             if self.config.get('link_enabled') or self.config['rendezvous_url']:
@@ -177,6 +279,7 @@ class Engine:
 
     def step(self, now=None):
         now = time.time() if now is None else now
+        self._network_tick(now)
         recovery = self.db.get('manual_restore_at', 0)
         if recovery > self.last_recovery:
             self.last_recovery = recovery
@@ -246,14 +349,28 @@ class Engine:
                                  sync_vectors={}, local_vector={}, sync_errors={}, tracked_since=None)
             return
         account = ident['account']
-        sync_due = False
+        self._begin_sync_round(account, now)
+        network_allowed = not self._network_limited or self._sync_burst_active
+        sync_due = self._force_sync
+        self._force_sync = False
+        with self._presence_lock:
+            pending_presence, self._pending_presence = list(self._pending_presence.items()), {}
+        incoming = pending_presence
         while not self.inbox.empty():
-            peer, message = self.inbox.get_nowait()
+            incoming.append(self.inbox.get_nowait())
+        for peer, message in incoming:
             try:
                 if message.get('account') != account:
                     continue
                 removed = self.mesh.removed_devices() if self.mesh and hasattr(self.mesh, 'removed_devices') else set()
                 if peer in removed or self.config['device_id'] in removed:
+                    continue
+                if message.get('type') == 'presence' or not network_allowed:
+                    if message.get('presence'):
+                        self.journal.presence(account, peer, message['presence'], now)
+                    continue
+                if self._network_limited and peer not in self._sync_burst_goals:
+                    # An already completed peer cannot extend this round forever.
                     continue
                 if message['type'] == 'sync':
                     vector = message.get('vector', {})
@@ -261,20 +378,57 @@ class Engine:
                             not isinstance(k, str) or not 1 <= len(k) <= 100
                             or type(v) is not int or not 0 <= v <= 1e9 for k, v in vector.items())):
                         raise ValueError('同步版本向量无效')
+                    if self._network_limited:
+                        first = self._sync_burst_goals[peer] is None
+                        if self._sync_burst_goals[peer] is None:
+                            self._sync_burst_goals[peer] = dict(vector)
+                        target = self._sync_burst_goals[peer]
+                        acknowledged = any(min(seq, self._sync_burst_advertised.get(origin, 0)) >
+                            self.sync_vectors.get(peer, {}).get(origin, 0) for origin, seq in vector.items())
+                        if not first and not acknowledged:
+                            if message.get('presence'):
+                                self.journal.presence(account, peer, message['presence'], now)
+                            continue
+                        sync_due |= first
                     sync_due |= peer not in self.sync_receipts
-                    sync_due |= bool(self.journal.merge(account, message.get('records', [])))
+                    records = message.get('records', [])
+                    if self._network_limited:
+                        early = self._sync_early_facts.pop(peer, [])
+                        early = [r for r in early if r['seq'] <= target.get(r['origin'], 0)]
+                        sync_due |= bool(self.journal.merge(account, early,
+                            limit=getattr(self.mesh, 'history_limit', 60)))
+                        records = [r for r in records if r['seq'] <= target.get(r['origin'], 0)]
+                    merged = bool(self.journal.merge(account, records))
+                    sync_due |= merged
                     if message.get('presence'):
                         self.journal.presence(account, peer, message['presence'], now)
                     if self.mesh:
-                        batch = self.journal.since(account, vector,
+                        request_vector = dict(vector)
+                        if self._network_limited:
+                            ceiling = self._round_vector(account)
+                            for origin, seq in self.journal.vector(account).items():
+                                if vector.get(origin, 0) >= ceiling.get(origin, 0):
+                                    request_vector[origin] = seq
+                        batch = self.journal.since(account, request_vector,
                             limit=getattr(self.mesh, 'history_limit', 60),
                             byte_limit=getattr(self.mesh, 'history_bytes', 24000))
+                        if self._network_limited:
+                            batch = [r for r in batch if r['seq'] <= ceiling.get(r['origin'], 0)]
                         if batch:
                             self.mesh.send(peer, dict(type='facts', account=account, records=batch))
                     self.sync_vectors[peer] = dict(vector)
                 elif message['type'] == 'facts':
-                    sync_due |= bool(self.journal.merge(account, message['records'],
+                    records = message['records']
+                    if self._network_limited:
+                        target = self._sync_burst_goals[peer]
+                        if target is None:
+                            if len(records) <= getattr(self.mesh, 'history_limit', 60):
+                                self._sync_early_facts[peer] = records
+                            continue
+                        records = [r for r in records if r['seq'] <= target.get(r['origin'], 0)]
+                    merged = bool(self.journal.merge(account, records,
                         limit=getattr(self.mesh, 'history_limit', 60)))
+                    sync_due |= merged
                 elif message['type'] == 'peer_ready':
                     sync_due = True
                 elif message['type'] == 'bye':
@@ -288,7 +442,11 @@ class Engine:
             except (ValueError, KeyError, TypeError) as e:
                 self.sync_errors[peer] = rejection_reason(e)
                 self.sync_error_types[peer] = message.get('type')
-        if now-self.last_read >= self.config['interval']:
+        reset_pending = bool(self.group_db.get('reset_candidate:'+account))
+        query_interval = (min(30, self.config['interval']) if reset_pending else
+                          600 if self._network_limited else self.config['interval'])
+        if self._force_read or now-self.last_read >= query_interval:
+            self._force_read = False
             self.last_read = now
             try:
                 snap = self.quota_reader(self.config['codex_home'])
@@ -346,11 +504,20 @@ class Engine:
                         active=active, uncertain=uncertain,
                         unbound_active=unbound_active, unbound_uncertain=unbound_uncertain)
         self.journal.presence(account, self.config['device_id'], presence, now)
-        if self.mesh and (sync_due or now-self.last_broadcast >= 2):
+        if self.mesh and network_allowed and (sync_due or (not self._network_limited and now-self.last_broadcast >= 2)):
             self.last_broadcast = now
-            message = dict(type='sync', account=account, records=[], vector=self.journal.vector(account), presence=presence)
+            vector = self._round_vector(account) if self._network_limited else self.journal.vector(account)
+            self._sync_burst_advertised = vector
+            message = dict(type='sync', account=account, records=[], vector=vector, presence=presence)
             for peer in self.mesh.peer_states():
+                if self._network_limited and peer not in self._sync_burst_goals:
+                    continue
                 self.mesh.send(peer, message)
+        elif self.mesh and self._network_limited and now-self._last_presence >= 20:
+            self._last_presence = now
+            for peer in self.mesh.peer_states():
+                self.mesh.send(peer, dict(type='presence', account=account, presence=presence))
+        self._end_sync_round(account, now)
         summary = self.ledger.summary(account, now)
         removed = self.mesh.removed_devices() if self.mesh and hasattr(self.mesh, 'removed_devices') else set()
         for device in summary['devices']:
@@ -368,6 +535,7 @@ class Engine:
                 or self.analytics_cache['account'] != account
                 or self.analytics_cache.get('cycle_start') != (summary.get('epoch') or {}).get('started')):
             self.analytics_cache = usage(self.group_db, account, now)
+            self.analytics_cache['cycles'] = cycle_statistics(self.group_db, account, now)['rows']
         sync_errors = {p: error for p, error in self.sync_errors.items() if p not in removed}
         with self.view_lock:
             self.view.update(summary=summary, analytics=self.analytics_cache, history=self.ledger.history(account, self.config['device_id'], now),
@@ -400,24 +568,25 @@ class Engine:
         device = next((d for d in summary['devices'] if d['id'] == self.config['device_id']), None)
         if not device:
             return
-        reached = device['estimated'] >= device['cap']
-        key = (summary['account'], epoch['cycle'], device['cap'])
+        cap = device.get('fair_cap', device['cap'])
+        reached = device['estimated'] >= cap
+        key = (summary['account'], epoch['cycle'], cap)
         if reached and self.notice_key != key:
             self.notice_key = key
             with self.view_lock:
-                self.view['notifications'].append(f"本机估算用量 {device['estimated']:.2f}% 已达到配额 {device['cap']:.2f}%")
+                self.view['notifications'].append(f"本机估算用量 {device['estimated']:.2f}% 已达到配额 {cap:.2f}%")
         if self.blocked:
             reallocated = summary.get('allocation') == 'cycle_weighted_v1' and summary.get('unassigned') == 0
             if not self.config['auto_block'] or (fresh and block and not reached
-                    and (device['cap'] > block.get('cap', 0) or reallocated)):
+                    and (cap > block.get('cap', 0) or reallocated)):
                 self.restore()
             else:
                 self.firewall.pause(self.config['program_paths'], self.db)
             return
-        if self.config['auto_block'] and fresh and device.get('settled', 0) >= device['cap']:
+        if self.config['auto_block'] and fresh and device.get('settled', 0) >= cap:
             self.firewall.apply(self.config['program_paths'])
             self.blocked = True
-            self.db.put('block_state', dict(account=summary['account'], cycle=epoch['cycle'], cap=device['cap']))
+            self.db.put('block_state', dict(account=summary['account'], cycle=epoch['cycle'], cap=cap))
             if self.last_identity and self.scope_changed(self.last_identity, now):
                 return
             self.firewall.pause(self.config['program_paths'], self.db)

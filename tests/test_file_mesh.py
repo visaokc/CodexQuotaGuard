@@ -63,6 +63,9 @@ def test_three_real_native_mesh_engines_tokens_caps_restart(tmp_path, background
             cfg = defaults()
             cfg.update(device_id=str(i), group_secret='g'*43, link_enabled=True, link_device=identities[i],
                 link_peers=identities[:i], interval=1, codex_home=str(folder/'codex'), started_at=time.time()-1)
+            # Protected monitoring must retain foreground freshness when hidden.
+            # Ten-minute idle scheduling is exercised with virtual-time wire tests.
+            cfg['auto_block'] = background
             cfg['tracked_accounts'] = {account: dict(label='fixture', added_at=0)}
             e = Engine(Database(folder/'local.sqlite'), cfg, quota_reader=quota, identity_reader=identity, mesh_factory=factory)
             e.background_mode = background

@@ -24,7 +24,7 @@ def test_synced_charts_converge_after_duplicates_reordering_and_late_history(tmp
     databases = [Database(tmp_path/f'{device}.sqlite') for device in ('a', 'b')]
     journals = [Journal(db, Ledger(db), device) for db, device in zip(databases, ('a', 'b'))]
     records = [('a', now-10, 'm1', 100, 1, True), ('b', now-1800, 'm2', 300, 0, False),
-               ('a', now-2*86400, 'm1', 700, 7, True), ('b', now-3600, 'm1', 50, .5, True),
+               ('a', now-2*86400, 'm1', 700, 7, True), ('b', now-3540, 'm1', 50, .5, True),
                ('a', now-31*86400, 'm1', 1000, 10, True)]
     for device, ts, model, tokens, weight, known in records:
         event = dict(id=hashlib.sha256(f'{device}-{ts}'.encode()).hexdigest(), device=device,
@@ -78,17 +78,18 @@ def test_personal_percentage_uses_allocation_as_denominator():
 def test_rolling_boundaries_account_and_model_filters(tmp_path):
     db = Database(tmp_path/'data.sqlite')
     now = 4_000_000
-    insert(db, 'hour-start', now-3600, tokens=100, weight=1)
+    start = (now//60-59)*60
+    insert(db, 'hour-start', start, tokens=100, weight=1)
     insert(db, 'other-device', now-1, device='b', model='m2', tokens=300, weight=3)
-    insert(db, 'before-hour', now-3600.01, tokens=700, weight=7)
+    insert(db, 'before-hour', start-.01, tokens=700, weight=7)
     insert(db, 'other-account', now-1, tokens=900, account='other')
     insert(db, 'future', now+1, tokens=900)
     insert(db, 'before-month', now-30*86400-1, tokens=900)
     data = usage(db, 'account', now)
     hourly = chart_data(data, 'hour')
     assert hourly['total'] == 4
-    assert len(hourly['points']) == 30
-    assert hourly['step'] == 120
+    assert len(hourly['points']) == 60
+    assert hourly['step'] == 60
     assert hourly['points'][0] == 1
     assert hourly['points'][-1] == 3
     assert hourly['shares'] == pytest.approx({'a': 25, 'b': 75})
@@ -96,7 +97,7 @@ def test_rolling_boundaries_account_and_model_filters(tmp_path):
     assert chart_data(data, 'day', metric='tokens', device='b')['total'] == 300
     assert chart_data(data, 'day', 'm1', 'tokens', device='b')['total'] == 0
     assert chart_data(data, 'day', metric='tokens')['total'] == 1100
-    assert len(chart_data(data, 'week')['points']) == 28
+    assert len(chart_data(data, 'week')['points']) == 7
     assert len(chart_data(data, 'month')['points']) == 30
     assert sum(chart_data(data, 'month', metric='tokens')['points']) == 1100
     assert chart_data(data, 'total', metric='tokens')['total'] == 2000
@@ -169,3 +170,66 @@ def test_sync_time_requires_all_peer_receipts_and_uses_oldest_confirmation():
     del view['sync_receipts']['b']
     assert sync_confirmed_at(view) is None
     assert sync_confirmed_at({}) is None
+
+
+def test_formal_statistics_baseline_survives_replay_and_next_cycle(tmp_path):
+    import hashlib
+    db = Database(tmp_path/'formal.sqlite')
+    account = 'a'*64
+    ledger = Ledger(db)
+    journal = Journal(db, ledger, 'a')
+    for at, used, reset in [(100, 0, 1000), (200, 10, 1000), (1000, 0, 2000)]:
+        journal.append(account, 'quota', dict(account=account, at=at, used=used, reset_at=reset), at)
+    db.put('statistics_start:'+account, 1000)
+    for ts, tokens in [(150, 9000), (1000, 7000), (1050, 1000)]:
+        event = dict(id=hashlib.sha256(str(ts).encode()).hexdigest(), device='a', account=account,
+                     ts=ts, model='m', tokens=tokens, weight=1, known=True)
+        journal.append(account, 'events', [event], 1200)
+    for window in ('total', 'hour', 'day', 'week', 'month', 'cycle'):
+        assert chart_data(usage(db, account, 1500), window, metric='tokens')['total'] == 1000
+    assert sum(ledger.history(account, 'a', 1500)['day'].values()) == 1000
+    journal.project(account)
+    journal.append(account, 'quota', dict(account=account, at=2000, used=0, reset_at=3000), 2000)
+    insert(db, 'second', 2050, tokens=2000, account=account)
+    result = usage(Database(tmp_path/'formal.sqlite'), account, 2500)
+    assert chart_data(result, 'total', metric='tokens')['total'] == 3000
+    assert chart_data(result, 'cycle', metric='tokens')['total'] == 2000
+    assert result['statistics_start'] == 1000
+    assert sum(ledger.history(account, 'a', 2500)['day'].values()) == 3000
+    insert(db, 'other', 150, tokens=123, account='other')
+    assert chart_data(usage(db, 'other', 2500), 'total', metric='tokens')['total'] == 123
+    with db.connect() as connection:
+        assert connection.execute('SELECT SUM(tokens) FROM events WHERE account=?', (account,)).fetchone()[0] == 19000
+
+
+def test_minute_buckets_do_not_drift_between_refreshes(tmp_path):
+    db = Database(tmp_path/'minutes.sqlite')
+    minute = 4_000_020  # Exact epoch minute.
+    insert(db, 'previous', minute-65, tokens=80)
+    insert(db, 'current', minute+2, tokens=20)
+    first = usage(db, 'account', minute+5)['windows']['hour']
+    second = usage(db, 'account', minute+35)['windows']['hour']
+    assert first == second
+    assert first['start'] % 60 == 0 and first['step'] == 60 and first['count'] == 60
+    insert(db, 'more', minute+40, tokens=30)
+    current = chart_data(usage(db, 'account', minute+50), 'hour', metric='tokens')
+    previous = chart_data(usage(db, 'account', minute+5), 'hour', metric='tokens')
+    assert current['points'][:-1] == previous['points'][:-1]
+    assert current['points'][-1] == 50
+    next_minute = chart_data(usage(db, 'account', minute+61), 'hour', metric='tokens')
+    assert next_minute['start'] == current['start']+60
+    assert next_minute['points'][:-1] == current['points'][1:]
+    assert next_minute['points'][-1] == 0
+
+
+def test_hour_and_calendar_day_buckets_remain_fixed_within_their_unit(tmp_path):
+    from datetime import datetime
+    db = Database(tmp_path/'calendar.sqlite')
+    now = datetime(2026, 9, 10, 12, 10, 5).timestamp()
+    insert(db, 'sample', now-70, tokens=100)
+    for window in ('day', 'week', 'month'):
+        first = usage(db, 'account', now)['windows'][window]
+        assert usage(db, 'account', now+20)['windows'][window] == first
+        if window != 'day':
+            start = datetime.fromtimestamp(first['start'])
+            assert (start.hour, start.minute, start.second) == (0, 0, 0)

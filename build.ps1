@@ -1,8 +1,8 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $env:PYTHONUTF8 = '1'
 Set-Location $PSScriptRoot
 $python = Join-Path $PSScriptRoot 'work\venv\Scripts\python.exe'
-$dist = Join-Path $PSScriptRoot 'dist\0.4.1'
+$dist = Join-Path $PSScriptRoot 'dist\0.4.2'
 if (-not (Test-Path -LiteralPath $python)) { throw '先按 README 创建 work\venv 并安装 requirements-dev.txt' }
 & "$PSScriptRoot\scripts\build_tsnet.ps1"
 & $python -m pytest tests -q
@@ -23,5 +23,5 @@ Copy-Item -LiteralPath README.md,VALIDATION.md,THIRD_PARTY_NOTICES.txt -Destinat
 Copy-Item -LiteralPath licenses -Destination $dist -Recurse -Force
 New-Item -ItemType Directory -Force -Path (Join-Path $dist 'licenses\tsnet') | Out-Null
 Copy-Item -LiteralPath vendor\tsnet\LICENSE.txt,vendor\tsnet\THIRD_PARTY_LICENSES.txt -Destination (Join-Path $dist 'licenses\tsnet') -Force
-Copy-Item -LiteralPath assets -Destination $dist -Recurse -Force
+Copy-Item -LiteralPath assets,docs -Destination $dist -Recurse -Force
 Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $dist 'Codex配额管家.exe'),(Join-Path $dist '恢复Codex网络.exe') | Format-Table -AutoSize

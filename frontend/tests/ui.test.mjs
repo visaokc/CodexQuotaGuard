@@ -373,6 +373,10 @@ try{
     }
 
   }
+  await page.evaluate(()=>{const data=structuredClone(window.__fixture);data.settings.device_notes[data.view.identity.account]={'fixture-local':'橙猫猫','fixture-peer':'A'};window.__CQG_TEST__.applySnapshot(data);});
+  await hoverAt(0);
+  const gap=await page.locator('.tooltip-series-row').first().evaluate(row=>row.querySelector('.tooltip-series-value').getBoundingClientRect().left-row.querySelector('.tooltip-series-name').getBoundingClientRect().right);
+  assert.ok(gap<=6.5,'short names do not stretch away from tokens');
   await page.screenshot({path:path.join(artifacts,'tooltip-quota-percent.png')});
   await page.evaluate(()=>{const data=structuredClone(window.__fixture);data.view.analytics.cycles[0].total_tokens=0;window.__CQG_TEST__.applySnapshot(data);});
   await hoverAt(0);

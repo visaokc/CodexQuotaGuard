@@ -73,7 +73,7 @@ export const TrendChart={
     const point=computed(()=>hover.value<0?null:props.kind==='bar'?{x:(hover.value+.5)*step.value,y:height-(shown.value[hover.value]||0)/maximum.value*height}:{x:mouseX.value,y:Math.min(height,...markers.value.map(item=>item.y))});
     const tooltipStyle=computed(()=>{
       if(!point.value)return {};
-      const box=bounds.value,multiple=series.value.length>1,tipWidth=multiple?220:180,tipHeight=43+(multiple?series.value.length*18+3:0);
+      const box=bounds.value,multiple=series.value.length>1,tipWidth=multiple?190:180,tipHeight=43+(multiple?series.value.length*18+3:0);
       const center=Math.max(tipWidth/2+4,Math.min(box.width-tipWidth/2-4,box.width*Math.max(.14,Math.min(.72,(point.value.x/width*.85)+.09))));
       const left=Math.max(0,(center-tipWidth/2-7)/box.width*430-44),right=Math.min(width,(center+tipWidth/2+7)/box.width*430-44);
       const ys=[];

@@ -23,6 +23,8 @@ const result=await build({entryPoints:['src/app.js'],bundle:true,minify:true,out
   }}]});
 await copyFile('index.html','dist/index.html');
 await copyFile('src/style.css','dist/style.css');
+await mkdir('dist/avatars', {recursive:true});
+for(const file of await readdir('assets/avatars'))await copyFile('assets/avatars/'+file,'dist/avatars/'+file);
 const packages=new Set(Object.keys(result.metafile.inputs).filter(file=>file.startsWith('node_modules/')).map(file=>{
   const parts=file.split('/');return parts[1].startsWith('@')?parts.slice(1,3).join('/'):parts[1];
 }));

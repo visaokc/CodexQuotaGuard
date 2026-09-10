@@ -42,7 +42,7 @@ class DesktopHost:
             form = self.window.native
             scale = form.DeviceDpi / 96.0
             # Removing WinForms chrome changes ClientSize after pywebview sets Size.
-            form.ClientSize = Size(round(750 * scale), round(545 * scale))
+            form.ClientSize = Size(round(750 * scale), round(680 * scale))
             self.corners()
         self.invoke(configure)
 
@@ -223,7 +223,7 @@ def run(args, config, database):
     controller = WebController(args.data_dir, config, database, demo=args.demo,
         startup_enabled=not args.demo and not args.smoke_seconds and not args.no_autostart)
     window = webview.create_window('Codex 配额管家 · '+__version__, str(html), js_api=controller,
-        width=750, height=545, min_size=(730, 545), hidden=True, frameless=True, easy_drag=False,
+        width=750, height=680, min_size=(730, 650), hidden=True, frameless=True, easy_drag=False,
         shadow=True, focus=not bool(args.smoke_seconds), background_color='#0c0d0f')
     host = DesktopHost(window, controller, args)
     controller._window_handler = host.dispatch

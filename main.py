@@ -41,6 +41,20 @@ def main():
     if not config.get("personal_display_default_v1"):
         config.update(quota_display="personal", personal_display_default_v1=True)
         save_config(cfgpath, config)
+    if not config.get('shared_group_prepare_v1'):
+        config.update(shared_group_enabled=True, shared_group_prepare_v1=True, auto_block=False)
+        scope = 'group:'+hashlib.sha256(config['group_secret'].encode()).hexdigest()[:20]
+        for field in ('device_notes', 'device_colors', 'device_order'):
+            settings = config.setdefault(field, {})
+            if scope not in settings:
+                for account in config.get('tracked_accounts', {}):
+                    if settings.get(account):
+                        settings[scope] = settings[account].copy()
+                        break
+        save_config(cfgpath, config)
+    if not config.get('shared_billing_v1'):
+        config.update(shared_billing_v1=True, auto_block=False)
+        save_config(cfgpath, config)
     from quota_guard.web_host import run
     run(args, config, Database(args.data_dir/'local.sqlite'))
 

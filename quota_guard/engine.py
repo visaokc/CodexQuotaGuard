@@ -17,6 +17,8 @@ from .quota import identity, read_quota
 from .recovery import HistoryRecovery
 from .storage import Database
 from .sync_diagnostics import progress, rejection_reason
+from .shared_sync import SharedSync
+from .shared_view import shared_usage, shared_overview
 
 
 class Engine:
@@ -33,6 +35,9 @@ class Engine:
         self.ledger = Ledger(self.group_db)
         self.journal = Journal(self.group_db, self.ledger, config['device_id'])
         self.tracked = config.get('tracked_accounts', {})
+        self.shared_mode = config.get('shared_group_enabled', False) is True
+        self.shared = SharedSync(self.group_db, self.journal, config['device_id'], config['name'], self.tracked) if self.shared_mode else None
+        self.shared_analytics_cache = {}
         self.scanner = Scanner(database, config['codex_home'], config['device_id'], config['started_at'], self.tracked)
         self.recovery = HistoryRecovery(database, self.group_db, config['codex_home'], config['device_id'])
         self.stop_event, self.wakeup = threading.Event(), threading.Event()
@@ -89,6 +94,8 @@ class Engine:
 
     def _limited_network(self):
         # Quota protection needs fresh official evidence and peer allocation.
+        if self.shared_mode:
+            return False
         return self.background_mode and not (self.config['auto_block'] or self.blocked)
 
     def _network_tick(self, now):
@@ -145,6 +152,13 @@ class Engine:
         return {origin: min(seq, ceiling.get(origin, 0)) for origin, seq in current.items()}
 
     def receive(self, peer, message):
+        if self.shared_mode:
+            try:
+                self.inbox.put_nowait((peer, message))
+                self.wakeup.set()
+            except queue.Full:
+                pass
+            return
         if self._limited_network() and not self._sync_burst_active:
             # The next anti-entropy exchange regenerates unacknowledged facts.
             # Keep only a bounded latest activity heartbeat, never 600 s of pages.
@@ -192,7 +206,7 @@ class Engine:
         self.sync_vectors = {}
         self.sync_errors = {}
         self.sync_error_types = {}
-        if self.mesh:
+        if self.mesh and not self.shared_mode:
             self.mesh.close()
             self.mesh = None
         self.last_snapshot, self.last_read = None, 0
@@ -218,10 +232,13 @@ class Engine:
                 epoch = db.execute('SELECT started FROM epochs WHERE account=? ORDER BY started DESC LIMIT 1', (account,)).fetchone()
             profile['fairness_start'] = previous_profile.get('fairness_start',
                 self.group_db.get('statistics_start:'+account, epoch['started'] if epoch else now))
+            exemption = self.config.get('no_debt_cycle_by_account', {}).get(account)
+            if exemption:
+                profile['no_debt_cycle'] = dict(exemption)
             if previous_profile != profile:
                 self.journal.append(account, 'profile', profile, now)
                 self.group_db.put('own_profile:'+account, profile)
-            if self.config.get('link_enabled') or self.config['rendezvous_url']:
+            if not self.shared_mode and (self.config.get('link_enabled') or self.config['rendezvous_url']):
                 self.mesh = self.mesh_factory(self.config, account, self.receive)
                 self.mesh.start()
             mark = hashlib.sha256(self.config['group_secret'].encode()).hexdigest()
@@ -230,6 +247,154 @@ class Engine:
                     db.execute("UPDATE outbox SET sent=0 WHERE sent<>2 AND json_extract(payload,'$.account')=? AND json_extract(payload,'$.ts')>?",
                                (account, self.tracked[account]['added_at']))
                 self.db.put('published_group:'+account, mark)
+
+        self._ensure_shared_mesh()
+
+    def _ensure_shared_mesh(self):
+        if self.shared_mode and self.mesh is None and (self.config.get('link_enabled') or self.config.get('rendezvous_url')):
+            group = hashlib.sha256(self.config['group_secret'].encode()).hexdigest()[:20]
+            self.mesh = self.mesh_factory(self.config, 'group:'+group, self.receive)
+            self.mesh.start()
+
+    def _receive_shared(self, now):
+        if not self.shared:
+            return
+        self._ensure_shared_mesh()
+        while not self.inbox.empty():
+            peer, message = self.inbox.get_nowait()
+            self.shared.receive(peer, message, self.mesh, now)
+
+    def _update_shared_view(self, now, presence=None):
+        if not self.shared:
+            return
+        self.shared.tick(self.mesh, now, presence=presence)
+        state = self.shared.snapshot(self.mesh, now)
+        group = hashlib.sha256(self.config['group_secret'].encode()).hexdigest()[:20]
+        scope = 'group:'+group
+        labels = state.get('account_labels', {})
+        rules = None
+        if self.config.get('shared_billing_v1'):
+            rules = self._billing_rules(labels, now)
+            if rules.get('policy'):
+                labels = {a: '账号'+str(i+1) for i, a in enumerate(rules['accounts'])}
+        if (not self.shared_analytics_cache or now-self.shared_analytics_cache['at'] >= 10
+                or self.shared_analytics_cache.get('account_ids') != sorted(labels)):
+            self.shared_analytics_cache = shared_usage(self.group_db, scope, labels, now, rules=rules)
+        overview = shared_overview(self.group_db, scope, labels, state.get('members', {}),
+                                   self.config['device_id'], now, self.shared_analytics_cache,
+                                   removed=self.mesh.removed_devices() if self.mesh and hasattr(self.mesh, 'removed_devices') else ())
+        members = overview.pop('members', [])
+        billing = overview.get('billing', {})
+        if rules and rules.get('policy') and len(billing.get('anchors', {})) < 2:
+            self.last_quota_publish = 0
+        group_view = dict(enabled=True, id=group, stage='preparing', members=members,
+            billing_start_note='原两人账号指定周期免结转；后续周期按新规则处理。统一计费待启用。')
+        if self.config.get('shared_billing_v1'):
+            policy = (rules or {}).get('policy') or {}
+            group_view.update(stage='billing', state=billing.get('status', rules['status']),
+                reason=billing.get('reason', rules['reason']), revision=policy.get('revision'),
+                admin=policy.get('admin'), can_manage=policy.get('admin') == self.config['device_id'],
+                pending_rule=bool(self.group_db.get('shared:pending_rule')),
+                available_accounts=[dict(account=a, label=label) for a,label in state.get('account_labels', {}).items()],
+                bindings=(rules or {}).get('bindings', []),
+                devices=[dict(id=d, name=p.get('name', d), version=state.get('peer_versions', {}).get(d,'')) for d,p in state.get('members', {}).items()],
+                billing_start_note='两账号各100点、每人基础份额66.67点。原两人指定周期不新增欠款；补偿默认关闭。')
+        with self.view_lock:
+            self.view.update(overview)
+            self.view.update(display_account=scope, shared_group_enabled=True,
+                shared_group=group_view,
+                analytics=self.shared_analytics_cache, blocked=False, auto_block=False,
+                status=('共享额度 · '+(group_view.get('reason') or '官方增量分摊')) if self.config.get('shared_billing_v1') else '共享组入组过渡版 · Token 合并统计，统一额度计费待启用',
+                pair_scope=True, peers=self.mesh.peer_states() if self.mesh else {},
+                connection=self.mesh.connection_state() if self.mesh and hasattr(self.mesh, 'connection_state') else {},
+                mesh=self.mesh.status if self.mesh else '请生成或输入匹配码以加入共享组',
+                sync_receipts=state.get('sync_receipts', {}), sync_progress=state.get('sync_progress', {}),
+                sync_errors=state.get('sync_errors', {}))
+
+    def _billing_rules(self, labels, now):
+        from .shared_policy import load_rules, genesis, profile, person_for, publish_change
+        rules = load_rules(self.group_db, labels, now)
+        if rules['reason'] == '等待共享组管理员规则' and self.config.get('shared_group_admin') == self.config['device_id'] and self.tracked:
+            account = next(iter(self.tracked))
+            devices = self.config.get('shared_initial_devices', [self.config['device_id']])
+            policy = genesis(self.config['device_id'], account, devices, now)
+            self.journal.append(account, 'profile', profile(self.config, account, group_policy=policy), now)
+            rules = load_rules(self.group_db, labels, now)
+        policy = rules.get('policy') or {}
+        if policy.get('admin') == self.config['device_id'] and len(policy['accounts']) == 1 and len(rules['accounts']) == 2:
+            publish_change(self.journal, rules, self.config['device_id'], self.config['name'], self.config['quota'],
+                           dict(accounts=rules['accounts']), now)
+            rules = load_rules(self.group_db, labels, now)
+        current = self.last_identity or {}
+        if rules.get('policy') and self.is_tracked(current) and not person_for(rules, self.config['device_id'], now):
+            occupied = {b['person'] for b in rules.get('bindings', [])}
+            empty = [p for p in ('person1', 'person2', 'person3') if p not in occupied]
+            claim_key = 'shared:claimed:'+rules['genesis']
+            if len(empty) == 1 and not self.group_db.get(claim_key):
+                claim = dict(device=self.config['device_id'], person=empty[0], genesis=rules['genesis'])
+                self.journal.append(current['account'], 'profile', profile(self.config, current['account'], member_claim=claim), now)
+                self.group_db.put(claim_key, True)
+                rules = load_rules(self.group_db, labels, now)
+        pending = self.group_db.get('shared:pending_rule')
+        if pending and self._group_rule_ready(rules, now):
+            self.group_db.put('shared:pending_rule', None)
+            try:
+                self._apply_group_rule(pending, rules, now)
+            except ValueError:
+                with self.view_lock:
+                    self.view['notifications'].append('共同规则已变化，待同步的补偿设置请重新提交。')
+            rules = load_rules(self.group_db, labels, now)
+        return rules
+
+    def _group_rule_ready(self, rules, now=None):
+        from .shared_policy import person_for
+        now = time.time() if now is None else now
+        if not self.mesh or rules.get('status') != 'ready':
+            return False
+        peers = self.shared.snapshot(self.mesh, now)
+        represented = {person_for(rules, self.config['device_id'], now)}
+        represented.update(person_for(rules, peer, now) for peer, value in peers['sync_progress'].items()
+                           if value['state'] == 'caught_up' and tuple(int(v) for v in peers.get('peer_versions', {}).get(peer, '0.0.0').split('.') if v.isdigit()) >= (0,6,0))
+        return represented >= {'person1', 'person2', 'person3'}
+
+    def _apply_group_rule(self, payload, rules, now):
+        from .shared_policy import publish_change
+        if payload.get('revision') != rules.get('policy', {}).get('revision'):
+            raise ValueError('共同规则已变化，请重新提交')
+        changes = {}
+        if payload.get('kind') == 'compensation':
+            if type(payload.get('enabled')) is not bool:
+                raise ValueError('补偿开关无效')
+            changes['compensation'] = payload['enabled']
+        elif payload.get('kind') == 'bind':
+            if payload.get('person') not in ('person1','person2','person3'):
+                raise ValueError('成员身份无效')
+            if payload.get('device') not in self.shared.directory:
+                raise ValueError('设备尚未加入共享组')
+            bindings = list(rules['policy']['bindings'])
+            since = now if any(b['device'] == payload['device'] for b in bindings) else 0
+            changes['bindings'] = bindings+[dict(device=payload['device'], person=payload['person'], since=since)]
+        elif payload.get('kind') == 'accounts':
+            accounts = payload.get('accounts', [])
+            if len(accounts) != 2 or any(a not in self.shared.snapshot(self.mesh, now)['account_labels'] for a in accounts):
+                raise ValueError('请选择两个已加入的账号')
+            if accounts[:len(rules['policy']['accounts'])] != rules['policy']['accounts']:
+                raise ValueError('不能替换已生效的共享账号')
+            changes['accounts'] = accounts
+        elif payload.get('kind') == 'reset':
+            account, started, cause = payload.get('account'), payload.get('started'), payload.get('cause')
+            if account not in rules['accounts'] or cause not in ('natural', 'card', 'official'):
+                raise ValueError('请选择共享账号和重置原因')
+            with self.group_db.connect() as db:
+                exists = db.execute('SELECT 1 FROM epochs WHERE account=? AND started=? AND started<=?', (account, started, now)).fetchone()
+            if not exists:
+                raise ValueError('周期已变化，请重新选择')
+            changes['reset_types'] = [r for r in rules['policy'].get('reset_types', []) if (r['account'],r['started']) != (account,started)]
+            changes['reset_types'].append(dict(account=account, started=started, type=cause))
+        else:
+            raise ValueError('未知共享规则操作')
+        publish_change(self.journal, rules, self.config['device_id'], self.config['name'], self.config['quota'], changes, now)
+        self.shared_analytics_cache = {}
 
     def is_tracked(self, ident):
         return ident['mode'] == 'account' and ident['account'] in self.tracked
@@ -251,7 +416,7 @@ class Engine:
         self.db.put('scanner_scope', None)
         self.recovery.boundary(self.db.get('scope_observed_at'))
         self.scanner.boundary(now)
-        if self.mesh:
+        if self.mesh and not self.shared_mode:
             self.mesh.close()
             self.mesh = None
         self.ledger.logout(self.config['device_id'])
@@ -292,6 +457,8 @@ class Engine:
             if account != current_account:
                 self.recovery.reconcile(account, profile['added_at'], self.config['multiplier'], runtime_only=True)
                 self.publish_events(account, now)
+                if self.shared_mode:
+                    self.publish_sample_checkpoint(account, now)
 
     def step(self, now=None):
         now = time.time() if now is None else now
@@ -340,23 +507,34 @@ class Engine:
             if kind == 'restore':
                 self.config['auto_block'] = False
                 self.restore()
-            elif kind == 'cap':
+            elif kind == 'cap' and not self.shared_mode:
                 target = payload.pop('account')
                 if target in self.tracked:
                     self.journal.append(target, 'cap', payload, now)
-            elif kind == 'compensation':
+            elif kind == 'compensation' and not self.shared_mode:
                 target = payload['account']
                 if target in self.tracked:
                     profile = dict(device=self.config['device_id'], name=self.config['name'],
                                    cap=self.tracked[target].get('cap', self.config['quota']),
                                    compensation_enabled=payload['enabled'])
                     self.journal.append(target, 'profile', profile, now)
+            elif kind == 'group_rule' and self.shared and self.config.get('shared_billing_v1'):
+                from .shared_policy import load_rules
+                rules = load_rules(self.group_db, self.shared.snapshot(self.mesh, now)['account_labels'], now)
+                if payload.get('kind') == 'compensation' and not self._group_rule_ready(rules, now):
+                    self.group_db.put('shared:pending_rule', payload)
+                else:
+                    self._apply_group_rule(payload, rules, now)
             elif kind == 'remove_device':
-                if (self.mesh and payload['account'] == ident.get('account')
+                if (self.mesh and (self.shared_mode or payload['account'] == ident.get('account'))
                         and payload['device'] != self.config['device_id']):
-                    known = {d['id'] for d in self.ledger.summary(payload['account'], now)['devices']}
+                    known = ({d['id'] for d in (self.view.get('summary') or {}).get('devices', [])} if self.shared_mode else
+                             {d['id'] for d in self.ledger.summary(payload['account'], now)['devices']})
+                    if self.config.get('shared_billing_v1') and self.shared:
+                        known = set(self.shared.directory)
                     if payload['device'] in known:
                         self.mesh.remove_device(payload['device'])
+        self._receive_shared(now)
         if not self.is_tracked(ident):
             if self.blocked:
                 self.restore()
@@ -370,17 +548,19 @@ class Engine:
                                  active=0, uncertain=0, peers={}, mesh='未连接', history=None, analytics=None,
                                  pair_scope=False, connection={}, sync_receipts={}, sync_progress={},
                                  sync_vectors={}, local_vector={}, sync_errors={}, tracked_since=None)
+            self._update_shared_view(now)
             return
         account = ident['account']
         self._begin_sync_round(account, now)
         network_allowed = not self._network_limited or self._sync_burst_active
         sync_due = self._force_sync
         self._force_sync = False
-        with self._presence_lock:
-            pending_presence, self._pending_presence = list(self._pending_presence.items()), {}
-        incoming = pending_presence
-        while not self.inbox.empty():
-            incoming.append(self.inbox.get_nowait())
+        incoming = []
+        if not self.shared_mode:
+            with self._presence_lock:
+                incoming, self._pending_presence = list(self._pending_presence.items()), {}
+            while not self.inbox.empty():
+                incoming.append(self.inbox.get_nowait())
         for peer, message in incoming:
             try:
                 if message.get('account') != account:
@@ -467,7 +647,7 @@ class Engine:
                 self.sync_error_types[peer] = message.get('type')
         reset_pending = bool(self.group_db.get('reset_candidate:'+account))
         query_interval = (min(30, self.config['interval']) if reset_pending else
-                          600 if self._network_limited else self.config['interval'])
+                          600 if self._network_limited or (self.shared_mode and self.background_mode) else self.config['interval'])
         if self._force_read or now-self.last_read >= query_interval:
             self._force_read = False
             self.last_read = now
@@ -528,7 +708,7 @@ class Engine:
                         active=active, uncertain=uncertain,
                         unbound_active=unbound_active, unbound_uncertain=unbound_uncertain)
         self.journal.presence(account, self.config['device_id'], presence, now)
-        if self.mesh and network_allowed and (sync_due or (not self._network_limited and now-self.last_broadcast >= 2)):
+        if not self.shared_mode and self.mesh and network_allowed and (sync_due or (not self._network_limited and now-self.last_broadcast >= 2)):
             self.last_broadcast = now
             vector = self._round_vector(account) if self._network_limited else self.journal.vector(account)
             self._sync_burst_advertised = vector
@@ -551,7 +731,7 @@ class Engine:
             return
         peers = self.mesh.peer_states() if self.mesh else {}
         local_vector = self.journal.vector(account)
-        if (not self.analytics_cache or now-self.analytics_cache['at'] >= 10
+        if not self.shared_mode and (not self.analytics_cache or now-self.analytics_cache['at'] >= 10
                 or self.analytics_cache['account'] != account
                 or self.analytics_cache.get('cycle_start') != (summary.get('epoch') or {}).get('started')):
             self.analytics_cache = usage(self.group_db, account, now)
@@ -572,8 +752,13 @@ class Engine:
                 local_vector=local_vector, sync_vectors=copy.deepcopy(self.sync_vectors), sync_errors=sync_errors,
                 connection=self.mesh.connection_state() if self.mesh and hasattr(self.mesh, 'connection_state') else {},
                 peers=peers)
+        self._update_shared_view(now, presence)
 
     def enforce(self, summary, now):
+        if self.shared_mode:
+            if self.blocked:
+                self.restore()
+            return
         if summary.get('account') not in self.tracked:
             if self.blocked:
                 self.restore()
@@ -629,7 +814,7 @@ class Engine:
     def snapshot(self):
         with self.view_lock:
             result = copy.deepcopy(self.view)
-            result['auto_block'] = bool(self.config['auto_block'])
+            result['auto_block'] = not self.shared_mode and bool(self.config['auto_block'])
             self.view['notifications'] = []
         return result
 

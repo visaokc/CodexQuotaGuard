@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from .meter import RATES
 
 
-WINDOWS = {'cycle': (None, 1), 'total': (None, 1), 'today': (None, 1), 'pie_hour': (3600, 1), 'pie_six_hours': (21600, 1), 'hour': (3600, 30), 'hour_curve': (3600, 60), 'day': (86400, 24),
+WINDOWS = {'cycle': (None, 1), 'total': (None, 1), 'today': (None, 1), 'pie_hour': (3600, 1), 'pie_six_hours': (21600, 1), 'pie_twelve_hours': (43200, 1), 'hour': (3600, 30), 'hour_curve': (3600, 60), 'six_hours': (21600, 72), 'twelve_hours': (43200, 144), 'day': (86400, 24),
            'week': (7 * 86400, 7), 'month': (30 * 86400, 30)}
 
 
@@ -93,7 +93,7 @@ def usage(database, account, now=None, hour_end=None, hour_buffer=False, day_end
                 models.update(row['model'] for row in rows)
                 continue
             step = duration/count if duration is not None else max(1, now)
-            if name in ('pie_hour', 'pie_six_hours'):
+            if name in ('pie_hour', 'pie_six_hours', 'pie_twelve_hours'):
                 start = now-duration
             elif name == 'today':
                 local = datetime.fromtimestamp(now, timezone.utc).astimezone()

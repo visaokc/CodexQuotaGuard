@@ -10,8 +10,8 @@ sys.stdout.reconfigure(encoding='utf-8')
 root = Path(__file__).resolve().parents[1]
 out = Path(sys.argv[1])
 out.mkdir(parents=True, exist_ok=True)
-dist = root/'dist'/'0.4.8'
-with zipfile.ZipFile(out/'CodexQuotaGuard-0.4.8-Windows.zip', 'w', zipfile.ZIP_DEFLATED) as z:
+dist = root/'dist'/'0.6.0'
+with zipfile.ZipFile(out/'CodexQuotaGuard-0.6.0-Windows.zip', 'w', zipfile.ZIP_DEFLATED) as z:
     for p in sorted(dist.rglob('*')):
         if p.is_file():
             z.write(p, 'CodexQuotaGuard/'+p.relative_to(dist).as_posix())
@@ -19,20 +19,20 @@ sources = [root/name for name in ('README.md', 'VALIDATION.md', 'THIRD_PARTY_NOT
     'main.py', 'updater_main.py', 'recover_main.py', 'server_main.py', 'build.ps1', 'requirements.txt', 'requirements-dev.txt', '.gitignore')]
 for name in ('quota_guard', 'tests', 'scripts', 'deploy', 'assets', 'licenses', 'vendor', 'native', 'docs', 'frontend'):
     sources.extend(p for p in (root/name).rglob('*') if p.is_file() and not {'__pycache__', 'node_modules', 'test-artifacts'}.intersection(p.parts))
-with zipfile.ZipFile(out/'CodexQuotaGuard-0.4.8-Source.zip', 'w', zipfile.ZIP_DEFLATED) as z:
+with zipfile.ZipFile(out/'CodexQuotaGuard-0.6.0-Source.zip', 'w', zipfile.ZIP_DEFLATED) as z:
     for p in sorted(sources):
         assert p.name != '.env' and p.name != 'settings.json' and '.sqlite' not in p.name
         z.write(p, 'CodexQuotaGuard-Source/'+p.relative_to(root).as_posix())
-shutil.copy2(dist/'Codex配额管家.exe', out/'CodexQuotaGuard-0.4.8.exe')
-shutil.copy2(dist/'恢复Codex网络.exe', out/'CodexQuotaRecovery-0.4.8.exe')
+shutil.copy2(dist/'Codex配额管家.exe', out/'CodexQuotaGuard-0.6.0.exe')
+shutil.copy2(dist/'恢复Codex网络.exe', out/'CodexQuotaRecovery-0.6.0.exe')
 for name in ('Codex配额管家.exe', '恢复Codex网络.exe'):
-    shutil.copy2(dist/name, out/(Path(name).stem+'-0.4.8.exe'))
-shutil.copy2(root/'README.md', out/'使用说明-0.4.8.md')
-shutil.copy2(root/'VALIDATION.md', out/'验证记录-0.4.8.md')
+    shutil.copy2(dist/name, out/(Path(name).stem+'-0.6.0.exe'))
+shutil.copy2(root/'README.md', out/'使用说明-0.6.0.md')
+shutil.copy2(root/'VALIDATION.md', out/'验证记录-0.6.0.md')
 preview = root/'frontend'/'test-artifacts'/'overview.png'
 if preview.exists():
-    shutil.copy2(preview, out/'CodexQuotaGuard-UI-0.4.8.png')
-names = ('CodexQuotaGuard-0.4.8.exe', 'CodexQuotaGuard-0.4.8-Windows.zip', 'CodexQuotaGuard-0.4.8-Source.zip', 'CodexQuotaRecovery-0.4.8.exe')
+    shutil.copy2(preview, out/'CodexQuotaGuard-UI-0.6.0.png')
+names = ('CodexQuotaGuard-0.6.0.exe', 'CodexQuotaGuard-0.6.0-Windows.zip', 'CodexQuotaGuard-0.6.0-Source.zip', 'CodexQuotaRecovery-0.6.0.exe')
 lines = []
 for name in names:
     path = out/name
@@ -41,6 +41,6 @@ for name in names:
         with zipfile.ZipFile(path) as z:
             assert z.testzip() is None
     print(name, path.stat().st_size)
-(out/'SHA256SUMS-0.4.8.txt').write_text('\n'.join(lines)+'\n', encoding='utf-8')
-assert hashlib.sha256((out/'Codex配额管家-0.4.8.exe').read_bytes()).digest() == hashlib.sha256((dist/'Codex配额管家.exe').read_bytes()).digest()
+(out/'SHA256SUMS-0.6.0.txt').write_text('\n'.join(lines)+'\n', encoding='utf-8')
+assert hashlib.sha256((out/'Codex配额管家-0.6.0.exe').read_bytes()).digest() == hashlib.sha256((dist/'Codex配额管家.exe').read_bytes()).digest()
 print('DELIVERABLES_AND_ARCHIVE_INTEGRITY_OK')

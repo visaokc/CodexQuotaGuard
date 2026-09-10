@@ -33,12 +33,16 @@ def allocation(db, account, devices, removed=()):
                 enabled_at = at
             enabled = profile['compensation_enabled']
     starts = [p['fairness_start'] for _, kind, p in profiles if kind == 'profile' and 'fairness_start' in p]
+    exempt_cycles = {(p['no_debt_cycle']['started'], p['no_debt_cycle']['reset_at'])
+                     for _, kind, p in profiles if kind == 'profile' and 'no_debt_cycle' in p}
     # Once a replicated start exists, local display-only history filters cannot
     # make two peers compute different balances from the same journal.
     local_start = db.execute('SELECT value FROM meta WHERE key=?', ('statistics_start:'+account,)).fetchone()
     start = min(starts) if starts else float(json.loads(local_start[0])) if local_start else 0.
     for epoch in db.execute('SELECT * FROM epochs WHERE account=? AND ended IS NOT NULL AND started>=? ORDER BY started,reset_at', (account, start)):
         if not enabled or epoch['ended'] <= enabled_at:
+            continue
+        if (epoch['started'], epoch['reset_at']) in exempt_cycles:
             continue
         following = db.execute('SELECT reason FROM epochs WHERE account=? AND started>=? ORDER BY started,id LIMIT 1', (account, epoch['ended'])).fetchone()
         if following and following['reason'] in ('官方临时重置', '提前重置原因未确认'):

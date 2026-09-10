@@ -40,15 +40,16 @@ export function compact(value, digits=2) {
   return Number.isInteger(n) ? String(n) : n.toFixed(digits);
 }
 export function devicesFor(snapshot) {
-  const account=snapshot.view?.identity?.account;
+  const account=snapshot.view?.display_account||snapshot.view?.identity?.account;
   const settings=snapshot.settings||{};
-  const notes=settings.device_notes?.[account]||{}, colors=settings.device_colors?.[account]||{};
+  const current=snapshot.view?.identity?.account;
+  const notes={...settings.device_notes?.[current],...settings.device_notes?.[account]}, colors={...settings.device_colors?.[current],...settings.device_colors?.[account]};
   const ids=(snapshot.view?.summary?.devices||[]).filter(d=>!d.removed).map(d=>d.id).sort();
-  const saved=settings.device_order?.[account]||[], order=[...saved.filter(id=>ids.includes(id)),...ids.filter(id=>!saved.includes(id))];
+  const saved=settings.device_order?.[account]||settings.device_order?.[current]||[], order=[...saved.filter(id=>ids.includes(id)),...ids.filter(id=>!saved.includes(id))];
   return (snapshot.view?.summary?.devices||[]).filter(d=>!d.removed).map(d=>({
-    ...d,label:notes[d.id]||d.name||d.id.slice(0,10),
-    color:COLORS.includes(colors[d.id])?colors[d.id]:COLORS[ids.indexOf(d.id)%COLORS.length],
-    local:d.id===settings.device_id
+    ...d,label:notes[d.id]||d.device_ids?.map(id=>notes[id]).find(Boolean)||d.name||d.id.slice(0,10),
+    color:COLORS.includes(colors[d.id])?colors[d.id]:d.avatar?({'person1':'#cd8af0','person2':'#669cff','person3':'#55d6be'}[d.id]||COLORS[0]):COLORS[ids.indexOf(d.id)%COLORS.length],
+    local:d.local===true||d.id===settings.device_id
   })).sort((a,b)=>order.indexOf(a.id)-order.indexOf(b.id));
 }
 export function modelVersionOrder(a,b){
@@ -59,23 +60,24 @@ export function modelVersionOrder(a,b){
   return leftRank>=0&&rightRank>=0?leftRank-rightRank:a.localeCompare(b);
 }
 export function modelOptions(snapshot){
-  const data=snapshot.view?.analytics||{},account=snapshot.view?.identity?.account;
+  const data=snapshot.view?.analytics||{},account=snapshot.view?.display_account||snapshot.view?.identity?.account;
   return [{value:'',label:'全部模型'},...(data.account===account?data.models||[]:[])
     .filter(model=>model!=='codex-auto-review')
     .sort(modelVersionOrder)
     .map(value=>({value,label:value}))];
 }
-export function aggregate(snapshot, window, model='', device='') {
-  const data=snapshot.view?.analytics||{}, account=snapshot.view?.identity?.account;
+export function aggregate(snapshot, window, model='', device='', accountFilter='') {
+  const data=snapshot.view?.analytics||{}, account=snapshot.view?.display_account||snapshot.view?.identity?.account;
   const active=devicesFor(snapshot), valid=new Set(active.map(d=>d.id));
   const source=data.account===account ? data.windows?.[window]||{} : {};
+  const quotaUnavailable=snapshot.view?.shared_group?.enabled&&snapshot.view.shared_group.stage==='preparing'?'计费待启用':'';
   const points=Array(Math.max(1,source.count||1)).fill(0), totals={},quotaPoints=points.slice(),quotaTotals={},quotaPendingPoints=points.map(()=>false),quotaEstimatedPoints=points.map(()=>false),quotaStates={};
   const series=active.filter(d=>!device||device===d.id).map(d=>({id:d.id,label:d.label,color:d.color,points:points.slice(),quotaPoints:points.slice(),quotaPendingPoints:points.map(()=>false)}));
   const byDevice=new Map(series.map(item=>[item.id,item]));
   const cacheQuotaPoints=points.slice(),cacheQuotaTotals={},cacheMissingPoints=points.map(()=>false),cacheMissingTotals={};
   for(const item of series){item.cachePoints=points.slice();item.cacheQuotaPoints=points.slice();item.cacheMissingPoints=points.map(()=>false);}
   for(const row of source.rows||[]) {
-    if(!valid.has(row.device)||(model&&row.model!==model)||(device&&row.device!==device)) continue;
+    if(!valid.has(row.device)||(model&&row.model!==model)||(device&&row.device!==device)||(accountFilter&&row.account!==accountFilter)) continue;
     const tokens=Number(row.tokens)||0;
     if(Number.isInteger(row.bucket)&&row.bucket>=0&&row.bucket<points.length){
       points[row.bucket]+=tokens;
@@ -90,16 +92,17 @@ export function aggregate(snapshot, window, model='', device='') {
     }
     totals[row.device]=(totals[row.device]||0)+tokens;
   }
-  for(const row of source.quota_rows||[]) {
+  for(const row of (quotaUnavailable?[]:source.quota_rows||[])) {
     const item=byDevice.get(row.device);
-    if(!item||(model&&row.model!==model)||!Number.isInteger(row.bucket)||row.bucket<0||row.bucket>=points.length)continue;
+    if(!item||(accountFilter&&row.account!==accountFilter)||(model&&row.model!==model)||!Number.isInteger(row.bucket)||row.bucket<0||row.bucket>=points.length)continue;
     const d=active.find(d=>d.id===row.device),cap=d.fair_base_cap??d.cap;
     const personal=['personal','fair'].includes(snapshot.settings?.quota_display||'personal');
-    const value=Number(row.quota)*(personal&&cap>0?100/cap:1);
+    const multiplier=personal&&cap>0?100/cap:snapshot.view?.shared_group?.stage==='billing'?.5:1;
+    const value=Number(row.quota)*multiplier;
     item.quotaPoints[row.bucket]+=value;quotaPoints[row.bucket]+=value;
     quotaTotals[row.device]=(quotaTotals[row.device]||0)+value;
     if(typeof row.cache_quota==='number'&&Number.isFinite(row.cache_quota)){
-      const cached=row.cache_quota*(personal&&cap>0?100/cap:1);
+      const cached=row.cache_quota*multiplier;
       item.cacheQuotaPoints[row.bucket]+=cached;cacheQuotaPoints[row.bucket]+=cached;
       cacheQuotaTotals[row.device]=(cacheQuotaTotals[row.device]||0)+cached;
     }else{
@@ -108,18 +111,18 @@ export function aggregate(snapshot, window, model='', device='') {
   }
   for(const row of source.quota_pending_rows||[]) {
     const item=byDevice.get(row.device);
-    if(!item||(model&&row.model!==model)||!Number.isInteger(row.bucket)||row.bucket<0||row.bucket>=points.length)continue;
+    if(!item||(accountFilter&&row.account!==accountFilter)||(model&&row.model!==model)||!Number.isInteger(row.bucket)||row.bucket<0||row.bucket>=points.length)continue;
     item.quotaPendingPoints[row.bucket]=true;quotaPendingPoints[row.bucket]=true;
     quotaStates[row.device]='pending';
   }
-  if(window==='cycle'&&!model) {
+  if(window==='cycle'&&!model&&!accountFilter) {
     for(const d of active) if(!device||device===d.id) totals[d.id]=Number(d.tokens)||0;
     for(const item of series){item.points.fill(0);item.points[0]=totals[item.id]||0;}
     points.fill(0);
     points[0]=Object.values(totals).reduce((a,b)=>a+b,0);
   }
   const cacheTotals=Object.fromEntries(series.map(item=>[item.id,item.cachePoints.includes(null)?null:item.cachePoints.reduce((a,b)=>a+b,0)]));
-  return {cacheTotals,cacheQuotaPoints,cacheQuotaTotals,cacheMissingPoints,cacheMissingTotals,quotaPendingPoints,quotaEstimatedPoints,quotaStates,quotaPoints,quotaTotals,quotaReady:source.quota_ready===true,points,series,totals,total:Object.values(totals).reduce((a,b)=>a+b,0),start:source.start||0,step:source.step||1};
+  return {quotaUnavailable,cacheTotals,cacheQuotaPoints,cacheQuotaTotals,cacheMissingPoints,cacheMissingTotals,quotaPendingPoints,quotaEstimatedPoints,quotaStates,quotaPoints,quotaTotals,quotaReady:!quotaUnavailable&&source.quota_ready===true,points,series,totals,total:Object.values(totals).reduce((a,b)=>a+b,0),start:source.start||0,step:source.step||1};
 }
 export function historyWindow(source,end,duration=3600){
   const count=duration/source.step,start=Math.floor(end/source.step)*source.step-(count-1)*source.step;
@@ -137,7 +140,7 @@ export function historyMinimum(snapshot,source,duration,lookback,model='',device
   return Math.min(latest,Math.max(latest-lookback,first+duration-source.step));
 }
 export function userBreakdown(snapshot,device){
-  const source=snapshot.view?.analytics,account=snapshot.view?.identity?.account;
+  const source=snapshot.view?.analytics,account=snapshot.view?.display_account||snapshot.view?.identity?.account;
   const rows=source?.account===account?(source.windows?.cycle?.rows||[]).filter(row=>row.device===device):[];
   const sum=items=>{
     const value={};
@@ -156,7 +159,7 @@ export function userBreakdown(snapshot,device){
   const models=[...fixed,...extra].map(model=>({model,...sum(rows.filter(row=>row.model===model))}));
   for(const model of models)model.usage_share=totals.tokens>0?model.tokens/totals.tokens*100:0;
   const quota=aggregate(snapshot,'cycle','',device);
-  return {...totals,models,quota:chartQuotaPercent(quota.quotaTotals[device],quota.quotaReady,quota.quotaStates[device]==='pending',quota.quotaStates[device]==='estimated'),cacheQuota:chartQuotaPercent(quota.cacheQuotaTotals[device],quota.quotaReady&&!quota.cacheMissingTotals[device],quota.quotaStates[device]==='pending',quota.quotaStates[device]==='estimated')};
+  return {...totals,models,quota:quota.quotaUnavailable||chartQuotaPercent(quota.quotaTotals[device],quota.quotaReady,quota.quotaStates[device]==='pending',quota.quotaStates[device]==='estimated'),cacheQuota:quota.quotaUnavailable||chartQuotaPercent(quota.cacheQuotaTotals[device],quota.quotaReady&&!quota.cacheMissingTotals[device],quota.quotaStates[device]==='pending',quota.quotaStates[device]==='estimated')};
 }
 export function chartQuotaPercent(value,ready,pending=false,estimated=false,digits=2){
   if(!ready)return '—';

@@ -17,7 +17,9 @@ class TailscaleMesh:
     def __init__(self, config, account, on_message):
         self.config, self.account, self.on_message = dict(config), account, on_message
         self.device = config['device_id']
-        self.cipher = Cipher(config['group_secret'], 'account-policy-v2:'+account)
+        self.shared_group = config.get('shared_group_enabled') is True
+        self.group_id = hashlib.sha256(config['group_secret'].encode()).hexdigest()[:20]
+        self.cipher = Cipher(config['group_secret'], 'group-policy-v3' if self.shared_group else 'account-policy-v2:'+account)
         self.lock = threading.RLock()
         self.stop = threading.Event()
         self.thread = self.node = None
@@ -142,11 +144,32 @@ class TailscaleMesh:
                     for p, s in self.peers.items() if now-s['last_seen']<30 and p not in self.removed and self.device not in self.removed}
 
     def send(self, peer, value):
-        # Anti-entropy regenerates unacknowledged facts. Bound pending work per peer/slot.
+        # Anti-entropy regenerates unacknowledged facts. Separate account mailboxes.
         slot = 'facts' if value.get('type') == 'facts' else 'sync'
+        key = (peer, value.get('account', ''), slot) if self.shared_group else (peer, slot)
+        if self.shared_group:
+            value = dict(value, group_id=self.group_id, protocol=3)
         with self.lock:
             if peer in self.addresses and peer not in self.removed and self.device not in self.removed:
-                self.pending[peer, slot] = value
+                self.pending[key] = value
+
+    def _hello(self):
+        value = dict(membership=self.membership_records())
+        if self.shared_group:
+            with self.lock:
+                addresses = {peer: ip for peer, ip in self.addresses.items() if peer not in self.removed}
+            value.update(group_id=self.group_id, protocol=3, peer_addresses=addresses)
+        else:
+            value['account'] = self.account
+        return value
+
+    @staticmethod
+    def _peer_addresses(value):
+        if (not isinstance(value, dict) or len(value) > 16 or any(
+                not isinstance(peer, str) or not 1 <= len(peer) <= 100 or not tail_ip(ip)
+                for peer, ip in value.items())):
+            raise ValueError('共享组设备地址无效')
+        return dict(value)
 
     def _receive(self, packet):
         ip, envelope = packet['ip'], packet['envelope']
@@ -156,8 +179,14 @@ class TailscaleMesh:
         peer = envelope['sender']
         if not isinstance(peer, str) or not 1 <= len(peer) <= 100 or peer == self.device:
             return
-        if not isinstance(value, dict) or value.get('account') != self.account:
+        if not isinstance(value, dict):
             return
+        if self.shared_group:
+            if value.get('group_id') != self.group_id or type(value.get('protocol')) is not int or value['protocol'] != 3:
+                return
+        elif value.get('account') != self.account:
+            return
+        addresses = self._peer_addresses(value.get('peer_addresses', {})) if self.shared_group and envelope['kind'] == 'hello' else {}
         if envelope['kind'] == 'hello':
             records = value.get('membership')
             if records is None:
@@ -169,10 +198,13 @@ class TailscaleMesh:
             if peer not in self.addresses and len(self.addresses)>=16:
                 return
             fresh = peer not in self.peer_states()
-            if self.addresses.get(peer) != ip:
-                addresses = dict(self.addresses, **{peer: ip})
-                atomic_json(self.peer_file, addresses)
-                self.addresses = addresses
+            merged = dict(self.addresses, **{peer: ip})
+            for other, address in addresses.items():
+                if len(merged) < 16 and other != self.device and other not in self.removed:
+                    merged.setdefault(other, address)
+            if merged != self.addresses:
+                atomic_json(self.peer_file, merged)
+                self.addresses = merged
             # Keep a reply address for membership-only hellos, including a
             # removed device re-pairing with a member it never contacted before.
             if peer in self.removed or self.device in self.removed:
@@ -180,7 +212,8 @@ class TailscaleMesh:
             state = self.peers.setdefault(peer, dict(route='Tailscale · 路径待确认'))
             state['last_seen'] = time.time()
         if fresh:
-            self.on_message(peer, dict(type='peer_ready', account=self.account))
+            scope = dict(group_id=self.group_id, protocol=3) if self.shared_group else dict(account=self.account)
+            self.on_message(peer, dict(type='peer_ready', **scope))
         if envelope['kind'] == 'app':
             self.on_message(peer, value)
 
@@ -239,9 +272,9 @@ class TailscaleMesh:
                     for peer, ip in addresses.items():
                         if self.stop.is_set():
                             break
-                        messages = [(kind, v) for (p, kind), v in pending.items() if p == peer]
+                        messages = [(key[-1], v) for key, v in pending.items() if key[0] == peer]
                         if hello:
-                            messages.insert(0, ('hello', dict(account=self.account, membership=self.membership_records())))
+                            messages.insert(0, ('hello', self._hello()))
                         for kind, value in messages:
                             if kind != 'hello' and (peer in self.removed_devices() or self.device in self.removed_devices()):
                                 continue
@@ -269,6 +302,7 @@ class TailscaleMesh:
                     if hello:
                         last_hello = now
                     self.status = ('本机已从设备组移除 · 已停止账本同步' if self.device in self.removed_devices()
+                                   else f'内嵌 Tailscale · 共享组已连接 {len(self.peer_states())} 台设备' if self.shared_group
                                    else f'内嵌 Tailscale · {len(self.peer_states())} 台同账号设备在线')
                     if not self.peer_states() and self.peer_error:
                         self.status += ' · '+self.peer_error

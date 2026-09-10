@@ -2,6 +2,29 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {historyMinimum,historyWindow,userBreakdown,aggregate,devicesFor,quotaValue,niceScale,linePath,curveGeometry,curveY,COLORS,modelOptions,officialUsageColor,officialQuotaRemaining,refreshRemaining,dailyQuotaUsage,chartQuotaPercent,trendForMode} from '../src/data.js';
 import {fixture} from './fixture.mjs';
+import {sharedFixture} from './shared-fixture.mjs';
+
+test('shared preparation uses the group display scope and never bills old per-account caps',()=>{
+  const data=sharedFixture(),group=data.view.display_account;
+  data.settings.quota_display='personal';
+  data.settings.device_notes={'fixture-account':{'fixture-peer':'保留旧备注'}};
+  data.settings.device_colors={'fixture-account':{'fixture-peer':COLORS[4]}};
+  assert.equal(devicesFor(data).find(item=>item.id==='fixture-peer').label,'保留旧备注');
+  assert.equal(devicesFor(data).find(item=>item.id==='fixture-peer').color,COLORS[4]);
+  data.settings.device_notes[group]={'fixture-peer':'共享组备注'};
+  assert.equal(devicesFor(data).find(item=>item.id==='fixture-peer').label,'共享组备注');
+  data.view.analytics.windows.hour_curve.quota_ready=true;
+  data.view.analytics.windows.hour_curve.quota_rows=[{device:'fixture-third',model:'gpt-5.5',bucket:0,quota:100}];
+  const result=aggregate(data,'hour_curve');
+  assert.equal(result.quotaUnavailable,'计费待启用');assert.equal(result.quotaReady,false);
+  assert.deepEqual(result.quotaTotals,{});assert.equal(result.quotaPoints.reduce((sum,item)=>sum+item,0),0);
+  assert.equal(result.series.length,3);assert.equal(result.total,data.view.analytics.windows.hour_curve.rows.reduce((sum,row)=>sum+row.tokens,0));
+  assert.ok(modelOptions(data).length>1);
+  assert.equal(userBreakdown(data,'fixture-third').quota,'计费待启用');
+  assert.equal(userBreakdown(data,'fixture-third').cacheQuota,'计费待启用');
+  data.view.identity={account:'fixture-account-b',label:'另一个登录账号'};
+  assert.equal(aggregate(data,'hour_curve').total,result.total,'switching Codex identity keeps shared chart data');
+});
 test('current-cycle comparison exactly matches device rows, independently of historical cache',()=>{
   const data=fixture(),result=aggregate(data,'cycle');
   assert.equal(result.totals['fixture-local'],81270000);

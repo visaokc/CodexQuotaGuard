@@ -63,6 +63,15 @@ class Journal:
                 or len(json.dumps(r)) > 24000):
             raise ValueError('同步记录无效或时钟超前')
         p = r['payload']
+        if r['kind'] == 'profile' and 'group_policy' in p:
+            from .shared_policy import validate
+            validate(p['group_policy'], r['origin'], r['ts'])
+        if r['kind'] == 'profile' and 'member_claim' in p:
+            value = p['member_claim']
+            if (not isinstance(value, dict) or value.get('device') != r['origin']
+                    or value.get('person') not in ('person1', 'person2', 'person3')
+                    or not isinstance(value.get('genesis'), str) or len(value['genesis']) != 64):
+                raise ValueError('成员身份声明无效')
         if r['kind'] == 'profile' and 'sample_checkpoint' in p:
             value = p['sample_checkpoint']
             through = value.get('through') if isinstance(value, dict) else None
@@ -71,6 +80,12 @@ class Journal:
                 raise ValueError('样本采集确认无效')
         if r['kind'] == 'profile' and 'compensation_enabled' in p and type(p['compensation_enabled']) is not bool:
             raise ValueError('补偿开关须为布尔值')
+        if r['kind'] == 'profile' and 'no_debt_cycle' in p:
+            value = p['no_debt_cycle']
+            if (not isinstance(value, dict) or set(value) != {'started', 'reset_at'}
+                    or any(type(value[k]) not in (int, float) or not math.isfinite(value[k]) for k in value)
+                    or not 0 <= value['started'] <= r['ts'] or value['reset_at'] <= value['started']):
+                raise ValueError('周期免结转标记无效')
         if r['kind'] == 'profile' and 'fairness_start' in p:
             start = p['fairness_start']
             if not isinstance(start, (int, float)) or not math.isfinite(start) or not 0 <= start <= r['ts']:

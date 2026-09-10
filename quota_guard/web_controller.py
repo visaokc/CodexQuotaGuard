@@ -1,5 +1,6 @@
 """Allowlisted local WebView bridge; the existing Engine owns all accounting."""
 import copy
+import hashlib
 import json
 import math
 import subprocess
@@ -38,12 +39,12 @@ def _identity(value):
 def _summary(value):
     if not value:
         return None
-    result = _pick(value, ('account', 'unassigned', 'provisional', 'allocation', 'reset_pending', 'server_time', 'compensation_enabled'))
+    result = _pick(value, ('account', 'unassigned', 'provisional', 'allocation', 'reset_pending', 'server_time', 'compensation_enabled', 'billing_status', 'billing_reason'))
     result['token_budget'] = _pick(value.get('token_budget'), ('sampled_tokens', 'used_tokens', 'total_tokens', 'source', 'sample_devices', 'sample_ready', 'sample_segments', 'sample_until', 'sample_tokens', 'sample_percent'))
     result['epoch'] = _pick(value.get('epoch'), ('id', 'account', 'started', 'ended', 'baseline', 'used',
         'reset_at', 'observed_at', 'reason', 'cycle')) or None
     result['devices'] = [_pick(d, ('id', 'name', 'cap', 'seen', 'scan_at', 'active', 'uncertain', 'logged_in',
-        'unbound_active', 'unbound_uncertain', 'estimated', 'settled', 'carry', 'fair_cap', 'fair_base_cap', 'tokens', 'weight', 'unknown_tokens', 'online', 'removed'))
+        'unbound_active', 'unbound_uncertain', 'estimated', 'settled', 'carry', 'fair_cap', 'fair_base_cap', 'tokens', 'weight', 'unknown_tokens', 'online', 'removed', 'quota_pending', 'avatar', 'device_ids', 'local', 'joined', 'available', 'debt', 'pending_debt', 'confirmed_debt', 'by_account', 'fair_usage'))
         for d in value.get('devices', [])]
     result['attribution_gaps'] = [_pick(d, ('start', 'end', 'delta', 'reason', 'devices', 'unknown_models'))
                                   for d in value.get('attribution_gaps', [])]
@@ -52,11 +53,24 @@ def _summary(value):
 
 def _view(value):
     result = _pick(value, ('status', 'blocked', 'active', 'uncertain', 'unbound_active',
-                          'unbound_uncertain', 'auto_block', 'tracked_since', 'pair_scope'))
+                          'unbound_uncertain', 'auto_block', 'tracked_since', 'pair_scope', 'display_account', 'shared_group_enabled'))
     # Transport exceptions can contain server payloads or URLs; do not export them.
     result['error'] = '监测异常，请查看同步诊断并检查登录状态' if value.get('error') else ''
     result['identity'] = _identity(value.get('identity'))
     result['summary'] = _summary(value.get('summary'))
+    shared = value.get('shared_group') or {}
+    if shared:
+        result['shared_group'] = _pick(shared, ('enabled', 'id', 'stage', 'billing_start_note', 'state', 'reason', 'revision', 'admin', 'can_manage', 'pending_rule'))
+        result['shared_group']['bindings'] = [_pick(row, ('device','person','since')) for row in shared.get('bindings', [])]
+        result['shared_group']['devices'] = [_pick(row, ('id','name','version')) for row in shared.get('devices', [])]
+        result['shared_group']['available_accounts'] = [_pick(row, ('account','label')) for row in shared.get('available_accounts', [])]
+        result['shared_group']['members'] = [_pick(member, ('id', 'name', 'local', 'online', 'accounts', 'current_account'))
+                                             for member in shared.get('members', [])]
+    result['account_summaries'] = []
+    for card in value.get('account_summaries', []):
+        clean = _pick(card, ('account', 'label', 'reset_pending'))
+        clean['epoch'] = _pick(card.get('epoch'), ('id', 'account', 'started', 'ended', 'baseline', 'used', 'reset_at', 'observed_at', 'reason')) or None
+        result['account_summaries'].append(clean)
     result['connection'] = _pick(value.get('connection'), ('state', 'ready', 'tailnet', 'ips', 'connected',
                                                          'phase', 'transport', 'checked_at', 'tailnet_peer_count'))
     result['peers'] = {p: _pick(v, ('route', 'route_at', 'at', 'scan_at', 'active', 'uncertain', 'name'))
@@ -74,25 +88,32 @@ def _view(value):
     result['sync_confirmed_at'] = (min(receipts[p] for p in result['sync_progress'])
         if states and all(s == 'caught_up' for s in states) and all(receipts.get(p) for p in result['sync_progress']) else None)
     analytics = value.get('analytics') or {}
-    result['analytics'] = _pick(analytics, ('account', 'at', 'models', 'cycle_start', 'statistics_start'))
+    result['analytics'] = _pick(analytics, ('account', 'at', 'models', 'cycle_start', 'statistics_start', 'quota_unavailable'))
+    if analytics.get('cycle_pair'):
+        pair = analytics['cycle_pair']
+        result['analytics']['cycle_pair'] = _pick(pair, ('status', 'complete', 'reason', 'overlap_seconds'))
+        result['analytics']['cycle_pair']['cycles'] = [_pick(cycle,
+            ('account', 'label', 'started', 'ended', 'reset_at', 'usage_until')) for cycle in pair.get('cycles', [])]
     result['analytics']['cycles'] = []
     for row in analytics.get('cycles', []):
-        safe = _pick(row, ('id', 'started', 'ended', 'reset_at', 'reset_type', 'used_percent', 'baseline_percent',
+        safe = _pick(row, ('id', 'account', 'account_label', 'started', 'ended', 'reset_at', 'reset_type', 'used_percent', 'baseline_percent',
             'sampled_tokens', 'total_tokens', 'source', 'sample_tokens', 'sample_percent', 'sample_devices', 'sample_ready', 'sample_segments', 'sample_until', 'is_current', 'change_percent', 'change_tokens', 'reference_count', 'reference_total_tokens',
             'reference_starts', 'reduction_tokens', 'reduction_percent'))
         safe['models'] = [_pick(m, ('model', 'tokens')) for m in row.get('models', [])]
         result['analytics']['cycles'].append(safe)
     result['analytics']['windows'] = {}
-    for key in ('cycle', 'total', 'today', 'pie_hour', 'pie_six_hours', 'hour', 'hour_curve', 'day', 'week', 'month'):
+    if value.get('billing'):
+        result['billing'] = _pick(value['billing'], ('status','reason','people','anchors','active_since','compensation_enabled','entries'))
+    for key in ('cycle', 'total', 'today', 'pie_hour', 'pie_six_hours', 'pie_twelve_hours', 'hour', 'hour_curve', 'six_hours', 'twelve_hours', 'day', 'week', 'month'):
         source = analytics.get('windows', {}).get(key)
         if source:
             window = _pick(source, ('start', 'step', 'count', 'quota_ready', 'quota_available'))
             if 'quota_gaps' in source:
                 window['quota_gaps'] = [_pick(r, ('start','end')) for r in source['quota_gaps']]
-            window['quota_pending_rows'] = [_pick(r, ('device', 'model', 'bucket')) for r in source.get('quota_pending_rows', [])]
+            window['quota_pending_rows'] = [_pick(r, ('account', 'device', 'model', 'bucket')) for r in source.get('quota_pending_rows', [])]
             window['quota_estimate_rows'] = [_pick(r, ('device', 'model', 'bucket', 'quota', 'cache_quota')) for r in source.get('quota_estimate_rows', [])]
-            window['quota_rows'] = [_pick(r, ('device', 'model', 'bucket', 'quota', 'cache_quota')) for r in source.get('quota_rows', [])]
-            window['rows'] = [_pick(r, ('device', 'model', 'bucket', 'tokens', 'weight', 'unknown', 'cache_tokens', 'detail_missing', 'input_tokens', 'output_tokens', 'reasoning_tokens', 'reasoning_count', 'reasoning_missing', 'event_count', 'detail_count', 'first_at', 'last_at')) for r in source.get('rows', [])]
+            window['quota_rows'] = [_pick(r, ('account', 'device', 'model', 'bucket', 'quota', 'cache_quota')) for r in source.get('quota_rows', [])]
+            window['rows'] = [_pick(r, ('account', 'device', 'model', 'bucket', 'tokens', 'weight', 'unknown', 'cache_tokens', 'detail_missing', 'input_tokens', 'output_tokens', 'reasoning_tokens', 'reasoning_count', 'reasoning_missing', 'event_count', 'detail_count', 'first_at', 'last_at')) for r in source.get('rows', [])]
             result['analytics']['windows'][key] = window
     result['recovery'] = _pick(value.get('recovery'), ('scanning', 'recovered_events', 'recovered_tokens',
         'inferred_tokens', 'runtime_tokens', 'unresolved_events', 'unresolved_tokens'))
@@ -216,7 +237,7 @@ class WebController:
         actions = {'refresh', 'account_scan', 'account_add', 'account_remove', 'account_history', 'chart_history', 'cap_save',
                    'limit_toggle', 'compensation_toggle', 'restore', 'note_save', 'color_save', 'device_order_save', 'device_remove', 'settings_save',
                    'programs_discover', 'pair_generate', 'pair_join', 'tailscale_login', 'tailscale_switch',
-                   'connection_save', 'update_check', 'update_install', 'diagnostics'}
+                   'connection_save', 'update_check', 'update_install', 'diagnostics', 'group_rule'}
         if action not in actions:
             return {'ok': False, 'error': '未知操作'}
         if not self._mutation.acquire(blocking=action=='chart_history'):
@@ -253,6 +274,21 @@ class WebController:
                 raise ValueError('当前登录账号已变化，请重新选择')
         return account
 
+    def _display_scope(self, payload):
+        account = payload.get('account')
+        if self._config.get('shared_group_enabled'):
+            scope = 'group:'+hashlib.sha256(self._config['group_secret'].encode()).hexdigest()[:20]
+            if account == scope:
+                return scope
+        return self._tracked(payload)
+
+    def _read_account(self, payload):
+        account = payload.get('account')
+        raw = self._engine.snapshot() if self._engine else self._demo_view
+        if self._config.get('shared_group_enabled') and any(card['account'] == account for card in raw.get('account_summaries', [])):
+            return account
+        return self._tracked(payload)
+
     def _refresh(self, _payload):
         if self._engine:
             self._engine.wakeup.set()
@@ -273,13 +309,15 @@ class WebController:
         self._save(restart=True)
 
     def _account_history(self, payload):
-        account = self._tracked(payload)
+        account = self._read_account(payload)
         if not self._engine:
             raise ValueError('账本尚未就绪')
         return dict(summary=_summary(self._engine.ledger.summary(account)),
                     history=self._engine.ledger.history(account, self._config['device_id']))
 
     def _cap_save(self, payload):
+        if self._config.get('shared_group_enabled'):
+            raise ValueError('共享组固定三人均分，两账号共200点，每人基础份额66.67点')
         account = self._tracked(payload)
         if not self._engine:
             raise ValueError('监测尚未就绪')
@@ -287,7 +325,7 @@ class WebController:
 
     def _chart_history(self, payload):
         from .analytics import usage
-        account = self._tracked(payload)
+        account = self._display_scope(payload)
         end = payload.get('end')
         period = payload.get('period', 'hour')
         if period not in ('hour', 'day'):
@@ -296,13 +334,42 @@ class WebController:
             raise ValueError('图表时间无效')
         if not self._engine:
             raise ValueError('账本尚未就绪')
+        if self._config.get('shared_billing_v1'):
+            view = self._engine.snapshot()
+            card = next((row for row in view.get('account_summaries', []) if row['account'] == account), {})
+            analytics = view.get('analytics', {})
+            window = analytics.get('windows', {}).get('cycle', {})
+            devices = []
+            for person in view.get('summary', {}).get('devices', []):
+                tokens = sum(row['tokens'] for row in window.get('rows', []) if row['account'] == account and row['device'] == person['id'])
+                quota = sum(row['quota'] for row in window.get('quota_rows', []) if row['account'] == account and row['device'] == person['id'])
+                devices.append(dict(id=person['id'], name=person['name'], tokens=tokens, estimated=quota))
+            history = dict(day={}, week={}, month={})
+            sources = {source for person in view.get('summary', {}).get('devices', []) for source in person.get('device_ids', [])}
+            for source in sources:
+                saved = self._engine.ledger.history(account, source)
+                for unit in history:
+                    for date, tokens in saved[unit].items():
+                        history[unit][date] = history[unit].get(date, 0)+tokens
+            return dict(summary=dict(epoch=card.get('epoch'), devices=devices), history=history, shared=True)
         options = dict(day_end=end,day_buffer=True) if period == 'day' else dict(hour_end=end,hour_buffer=True)
-        analytics = usage(self._engine.group_db,account,**options)
+        if account.startswith('group:'):
+            from .shared_view import shared_usage
+            from .shared_policy import load_rules
+            labels = {card['account']: card['label'] for card in self._engine.snapshot().get('account_summaries', [])}
+            rules = load_rules(self._engine.group_db, labels, time.time()) if self._config.get('shared_billing_v1') else None
+            analytics = shared_usage(self._engine.group_db, account, labels, rules=rules, **options)
+        else:
+            analytics = usage(self._engine.group_db,account,**options)
         windows = ('day',) if period == 'day' else ('hour','hour_curve')
         analytics['windows'] = {k:v for k,v in analytics['windows'].items() if k in windows}
         return _view({'analytics':analytics})['analytics']
 
     def _compensation_toggle(self, payload):
+        if self._config.get('shared_billing_v1'):
+            return self._group_rule(dict(payload, kind='compensation'))
+        if self._config.get('shared_group_enabled'):
+            raise ValueError('过渡版尚未启用两账号统一补偿，不会执行旧单账号补偿')
         account = self._tracked(payload)
         if type(payload.get('enabled')) is not bool:
             raise ValueError('补偿开关须为布尔值')
@@ -311,11 +378,36 @@ class WebController:
         self._engine.commands.put(('compensation', dict(account=account, enabled=payload['enabled'])))
         self._engine.wakeup.set()
 
+    def _group_rule(self, payload):
+        if not self._engine or not self._config.get('shared_billing_v1'):
+            raise ValueError('共享计费尚未就绪')
+        group = self._engine.snapshot().get('shared_group', {})
+        if not group.get('can_manage'):
+            raise ValueError('共同规则由共享组管理员修改')
+        if payload.get('revision') != group.get('revision'):
+            raise ValueError('规则已更新，请刷新后重试')
+        kind = payload.get('kind')
+        if kind not in ('compensation','bind','accounts','reset'):
+            raise ValueError('未知共享规则操作')
+        if kind == 'compensation' and type(payload.get('enabled')) is not bool:
+            raise ValueError('补偿开关无效')
+        if kind == 'bind' and (payload.get('person') not in ('person1','person2','person3') or not any(d['id'] == payload.get('device') for d in group.get('devices', []))):
+            raise ValueError('请选择已入组设备和成员')
+        if kind == 'accounts' and (not isinstance(payload.get('accounts'), list) or len(payload['accounts']) != 2 or len(set(payload['accounts'])) != 2):
+            raise ValueError('请选择两个不同账号')
+        if kind == 'reset' and (type(payload.get('started')) not in (int,float) or not math.isfinite(payload['started']) or payload.get('cause') not in ('natural','card','official')):
+            raise ValueError('请选择周期和重置原因')
+        self._engine.commands.put(('group_rule', {k: payload[k] for k in ('kind','revision','enabled','person','device','accounts','account','started','cause') if k in payload}))
+        self._engine.wakeup.set()
+        return dict(queued=True)
+
     def _limit_toggle(self, payload):
         if not isinstance(payload.get('enabled'), bool):
             raise ValueError('enabled 须为布尔值')
         if not payload['enabled']:
             return self._restore(payload)
+        if self._config.get('shared_group_enabled'):
+            raise ValueError('共享组模式保留用量监测；同一进程无法分别限制两个账号，自动限制未启用')
         self._confirm(payload)
         self._tracked(payload, current=True)
         self._validate_limit(self._config)
@@ -335,7 +427,7 @@ class WebController:
             self._engine.wakeup.set()
 
     def _device(self, payload):
-        account = self._tracked(payload)
+        account = self._display_scope(payload)
         view = self._engine.snapshot() if self._engine else self._demo_view
         summary = view.get('summary') or {}
         if summary.get('account') != account:
@@ -366,7 +458,7 @@ class WebController:
         self._save()
 
     def _device_order_save(self, payload):
-        account = self._tracked(payload)
+        account = self._display_scope(payload)
         view = self._engine.snapshot() if self._engine else self._demo_view
         summary = view.get('summary') or {}
         devices = payload.get('devices')
@@ -380,7 +472,12 @@ class WebController:
 
     def _device_remove(self, payload):
         self._confirm(payload)
-        account, device = self._device(payload)
+        if self._config.get('shared_billing_v1') and self._engine:
+            account, device = self._display_scope(payload), payload.get('device')
+            if not any(row['id'] == device for row in self._engine.snapshot().get('shared_group', {}).get('devices', [])):
+                raise ValueError('设备列表已变化，请重新选择')
+        else:
+            account, device = self._device(payload)
         if device == self._config['device_id']:
             raise ValueError('不能在此移除本机')
         if not self._engine:
@@ -393,6 +490,8 @@ class WebController:
         if not isinstance(changes, dict) or set(changes)-_EDITABLE:
             raise ValueError('包含不支持的设置')
         candidate = dict(self._config, **changes)
+        if self._config.get('shared_group_enabled') and candidate.get('auto_block'):
+            raise ValueError('共享组模式不能分别限制同一进程内的两个账号，自动限制未启用')
         cap, multiplier, interval = float(candidate['quota']), float(candidate['multiplier']), int(candidate['interval'])
         if not 0 < cap <= 100 or not .05 <= multiplier <= 20 or not 15 <= interval <= 300:
             raise ValueError('配额：(0,100]；权重系数：0.05–20；查询间隔：15–300 秒')
@@ -435,7 +534,7 @@ class WebController:
 
     def _pair_generate(self, _payload):
         ident = identity(self._config['codex_home'])
-        if ident.get('mode') != 'account' or ident.get('account') not in self._config.get('tracked_accounts', {}):
+        if not self._config.get('shared_group_enabled') and (ident.get('mode') != 'account' or ident.get('account') not in self._config.get('tracked_accounts', {})):
             raise ValueError('请先添加当前 Codex 订阅账号')
         mesh = self._engine.mesh if self._engine else None
         from .tsnet_mesh import TailscaleMesh
@@ -462,7 +561,8 @@ class WebController:
         pair = read_code(payload['code'])
         if not pair.get('tailscale_enabled'):
             raise ValueError('请使用原设备组授权 Tailscale 后生成的 CQG4 匹配码；不要新建组或清空账本')
-        self._config.update(pair, tailscale_join_request=uuid.uuid4().hex, pair_role='receiver')
+        self._config.update(pair, tailscale_join_request=uuid.uuid4().hex, pair_role='receiver',
+                            shared_group_enabled=True, shared_group_prepare_v1=True, auto_block=False)
         self._pairing = {'stage': 'saved'}
         self._save(restart=True)
 

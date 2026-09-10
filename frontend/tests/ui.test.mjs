@@ -29,6 +29,8 @@ try{
   await page.goto(`http://127.0.0.1:${server.address().port}/?test=1`);
   await page.locator('.app-shell.ready').waitFor();await page.evaluate(()=>window.__CQG_TEST__.pausePolling());await page.waitForTimeout(550);
   assert.deepEqual(errors,[]);
+  assert.equal(await page.getByRole('button',{name:'趋势时间范围',exact:true}).innerText(),'每小时');
+  await page.getByRole('button',{name:'趋势时间范围',exact:true}).click();await page.getByRole('option',{name:'每天',exact:true}).click();await page.waitForTimeout(450);
   const daySlider=page.getByRole('slider',{name:'最近30天时间滑块'}),liveDay=(await page.evaluate(()=>window.__CQG_TEST__.getState())).trend.start;
   assert.equal(await daySlider.evaluate(n=>Number(n.max)-Number(n.min)),30*86400);
   assert.equal(await daySlider.getAttribute('step'),'3600','day slider selects whole-hour positions');
@@ -79,7 +81,7 @@ try{
   await page.evaluate(()=>{Date.now=window.__originalActivityNow;const cleared=structuredClone(window.__fixture);cleared.view.identity.account='other-account';window.__CQG_TEST__.applySnapshot(cleared);window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture));});
 
   assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).user,'','first open defaults to all users');
-  assert.equal(await page.getByRole('button',{name:'趋势时间范围',exact:true}).innerText(),'一天');
+  assert.equal(await page.getByRole('button',{name:'趋势时间范围',exact:true}).innerText(),'每天');
   assert.equal(await page.locator('.trend-line').count(),2);
   await page.getByRole('button',{name:'筛选用户',exact:true}).click();
   await page.getByRole('option',{name:/^橙猫猫 · 本机/}).click();
@@ -189,7 +191,7 @@ try{
   assert.ok(rows.x<summaryBox.x&&rows.width>summaryBox.width,'device cards extend beyond the summary grid');
   const last=await page.getByTestId('device-row').last().boundingBox();assert.ok(last.y+last.height<=555,'both device rows fully visible');
   assert.equal(await page.locator('.donut-svg text').count(),0);
-  for(const [label,key] of [['近一小时','pie_hour'],['近六小时','pie_six_hours'],['今天','today']]){
+  for(const [label,key] of [['每小时','pie_hour'],['每6小时','pie_six_hours'],['每天','today']]){
     await page.getByRole('button',{name:'设备占比时间范围',exact:true}).click();
     await page.getByRole('option',{name:label,exact:true}).click();
     const expected=await page.evaluate(key=>window.__fixture.view.analytics.windows[key].rows.filter(r=>r.device!=='removed-peer').reduce((sum,r)=>sum+r.tokens,0),key);
@@ -280,10 +282,10 @@ try{
   await page.screenshot({path:path.join(artifacts,'offline-badge.png')});
   await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
   await page.getByRole('button',{name:'趋势时间范围',exact:true}).click();
-  await page.getByRole('option',{name:'一小时',exact:true}).click();
+  await page.getByRole('option',{name:'每小时',exact:true}).click();
   await page.getByRole('button',{name:'柱状',exact:true}).click();await page.waitForTimeout(400);
   assert.equal(await page.locator('.chart-bar').count(),30,'hour view contains thirty fixed two-minute buckets');
-  assert.ok((await page.locator('.trend-card h2').innerText()).includes('最近 1 小时'));
+  assert.ok((await page.locator('.trend-card h2').innerText()).includes('每小时'));
   assert.equal((await page.locator('.charts-grid').boundingBox()).height,200);
   await page.screenshot({path:path.join(artifacts,'hour-preview.png')});
   assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).trend.step,120);
@@ -352,14 +354,14 @@ try{
   assert.equal(await page.locator('.chart-bar').count(),30);
 
   await page.getByRole('button',{name:'趋势时间范围',exact:true}).click();
-  await page.getByRole('option',{name:'一周',exact:true}).click();await page.waitForTimeout(400);
+  await page.getByRole('option',{name:'每周',exact:true}).click();await page.waitForTimeout(400);
   assert.equal(await page.locator('.chart-bar').count(),7);
   assert.equal(await page.locator('.day-label').count(),7);
   const dayBox=await page.locator('.day-label').first().boundingBox(),legendBox=await page.locator('.trend-legend').boundingBox();
   assert.ok(dayBox.y+dayBox.height<legendBox.y,'legend sits below date labels');
   await page.screenshot({path:path.join(artifacts,'week-seven-days.png')});
   await page.getByRole('button',{name:'趋势时间范围',exact:true}).click();
-  await page.getByRole('option',{name:'一天',exact:true}).click();
+  await page.getByRole('option',{name:'每天',exact:true}).click();
   await page.getByRole('button',{name:'曲线',exact:true}).click();await page.waitForTimeout(400);
   await page.screenshot({path:path.join(artifacts,'overview.png')});
   const mutations=await page.evaluate(async()=>{

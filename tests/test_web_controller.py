@@ -28,6 +28,14 @@ def test_bridge_exposes_only_three_public_methods(controller):
     assert [name for name in dir(controller) if not name.startswith('_')] == ['command', 'snapshot', 'window_action']
 
 
+def test_compensation_switch_targets_tracked_account_and_requires_bool(controller):
+    controller._engine=Mock(commands=queue.Queue(),wakeup=threading.Event())
+    assert controller.command('compensation_toggle',dict(account='a'*64,enabled=True))['ok']
+    assert controller._engine.commands.get_nowait()==('compensation',dict(account='a'*64,enabled=True))
+    assert not controller.command('compensation_toggle',dict(account='a'*64,enabled='false'))['ok']
+    assert not controller.command('compensation_toggle',dict(account='b'*64,enabled=True))['ok']
+
+
 def test_snapshot_never_exposes_private_settings_or_transport(controller):
     secret = controller._config['group_secret']
     controller._config.update(relay_token='relay-credential', auth={'access_token': 'oauth'})
@@ -85,6 +93,21 @@ def test_cap_delegates_expected_account_to_existing_engine(controller):
     controller._engine.set_cap.assert_called_once_with(60, expected_account='a'*64)
     assert not controller.command('cap_save', {'account': 'b'*64, 'cap': 70})['ok']
     assert controller._engine.set_cap.call_count == 1
+
+
+def test_chart_history_is_local_read_only_and_account_scoped(controller):
+    controller._engine=SimpleNamespace(group_db=controller._database)
+    result=controller.command('chart_history',{'account':'a'*64,'end':1000})
+    assert result['ok']
+    assert set(result['data']['windows'])=={'hour','hour_curve'}
+    assert result['data']['account']=='a'*64
+    day=controller.command('chart_history',{'account':'a'*64,'end':1000,'period':'day'})
+    assert day['ok'] and set(day['data']['windows'])=={'day'}
+    assert day['data']['windows']['day']['count']==32*24
+    assert not controller.command('chart_history',{'account':'a'*64,'end':1000,'period':'month'})['ok']
+    assert not controller.command('chart_history',{'account':'b'*64,'end':1000})['ok']
+    for value in (-1,float('nan'),float('inf'),'1000',True):
+        assert not controller.command('chart_history',{'account':'a'*64,'end':value})['ok']
 
 
 def test_device_remove_uses_synced_command_keeps_history(controller):

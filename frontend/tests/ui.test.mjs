@@ -14,10 +14,13 @@ try{
   const page=await browser.newPage({viewport:{width:750,height:545},deviceScaleFactor:1,colorScheme:'dark'});
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   const initial=fixture();initial.settings.force_relay=true;
+
+
   initial.view.analytics.models.push('codex-auto-review','gpt-5.9','gpt-5.10');
   await page.addInitScript(data=>{window.__commands=[];window.__fixture=data;window.__CQG_TEST_BRIDGE__={snapshot:async()=>structuredClone(window.__fixture),command:async(action,payload)=>{
     window.__commands.push({action,payload});const settings=window.__fixture.settings;
-    if(action==='settings_save')for(const key of ['theme','quota_display'])if(key in payload.settings)settings[key]=payload.settings[key];
+    if(action==='chart_history'){window.__historyActive=(window.__historyActive||0)+1;window.__historyPeak=Math.max(window.__historyPeak||0,window.__historyActive);if(window.__historyDelay)await new Promise(r=>setTimeout(r,window.__historyDelay));const data=structuredClone(window.__fixture.view.analytics);for(const key of (payload.period==='day'?['day']:['hour','hour_curve'])){const w=data.windows[key],count=w.count,multiple=payload.period==='day'?32:26;w.count*=multiple;w.start=Math.floor(Math.min(data.at,payload.end)/w.step)*w.step-(w.count-1)*w.step;for(const name of ['rows','quota_rows','quota_pending_rows','quota_estimate_rows'])w[name]=Array.from({length:multiple},(_,i)=>i).flatMap(part=>(w[name]||[]).map(row=>({...row,bucket:row.bucket+part*count})));}window.__historyActive--;return {ok:true,data};}
+    if(action==='compensation_toggle')window.__fixture.view.summary.compensation_enabled=payload.enabled;if(action==='settings_save')for(const key of ['theme','quota_display'])if(key in payload.settings)settings[key]=payload.settings[key];
     if(action==='device_order_save')(settings.device_order??={})[payload.account]=payload.devices;
     if(action==='note_save')((settings.device_notes??={})[payload.account]??={})[payload.device]=payload.text;
     if(action==='color_save')((settings.device_colors??={})[payload.account]??={})[payload.device]=payload.color;
@@ -26,6 +29,37 @@ try{
   await page.goto(`http://127.0.0.1:${server.address().port}/?test=1`);
   await page.locator('.app-shell.ready').waitFor();await page.evaluate(()=>window.__CQG_TEST__.pausePolling());await page.waitForTimeout(550);
   assert.deepEqual(errors,[]);
+  const daySlider=page.getByRole('slider',{name:'最近30天时间滑块'}),liveDay=(await page.evaluate(()=>window.__CQG_TEST__.getState())).trend.start;
+  assert.equal(await daySlider.evaluate(n=>Number(n.max)-Number(n.min)),30*86400);
+  assert.equal(await daySlider.getAttribute('step'),'3600','day slider selects whole-hour positions');
+  assert.equal(await daySlider.evaluate(n=>Number(n.min)%3600),0);
+  assert.equal(await daySlider.evaluate(n=>Number(n.max)%3600),0);
+  const dragFrames=await daySlider.evaluate(async n=>{
+    const start=performance.now(),end=Number(n.max),frames=[];
+    await new Promise(resolve=>{function tick(at){const elapsed=at-start;if(elapsed<240){n.value=end-(Math.floor(elapsed/16)+1)*3600;n.dispatchEvent(new Event('input',{bubbles:true}));}frames.push({elapsed,end:window.__CQG_TEST__.getState().chartEnd});if(elapsed<750)requestAnimationFrame(tick);else resolve();}requestAnimationFrame(tick);});return frames;
+  });
+  assert.ok(new Set(dragFrames.filter(f=>f.elapsed<240).map(f=>f.end)).size>=6,'continuous hourly dragging keeps rendering while new targets arrive');
+  assert.ok(dragFrames.filter(f=>f.end!==null).every((f,i,all)=>!i||f.end<=all[i-1].end),'dragging backwards never kicks the curve forwards');
+  await daySlider.evaluate(n=>{n.value=n.max;n.dispatchEvent(new Event('input',{bubbles:true}));});await page.waitForTimeout(650);
+  await daySlider.evaluate(n=>{n.value=Number(n.max)-3*86400;n.dispatchEvent(new Event('input',{bubbles:true}));});await page.waitForTimeout(600);
+  assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).trend.start,liveDay-3*86400);
+  assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).trend.points.length,24);
+  await daySlider.evaluate(n=>{n.value=n.min;n.dispatchEvent(new Event('input',{bubbles:true}));});await page.waitForTimeout(600);
+  assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).trend.start,liveDay-30*86400);
+  await page.getByRole('button',{name:'筛选模型',exact:true}).click();await page.getByRole('option',{name:'gpt-5.10',exact:true}).click();await page.waitForTimeout(400);
+  assert.equal(await daySlider.isDisabled(),true,'a model with no history cannot scroll into empty dates');
+  assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).chartEnd,null);
+  await page.getByRole('button',{name:'筛选模型',exact:true}).click();await page.getByRole('option',{name:'全部模型',exact:true}).click();await page.waitForTimeout(400);
+  assert.equal(await daySlider.isDisabled(),false);
+
+  assert.equal(await page.locator('.device-state').first().innerText(),'Codex 使用中');
+
+  assert.equal(await page.locator('.device-runtime-model').count(),0,'current model display is removed');
+  assert.equal(await page.locator('.device-usage').first().evaluate(n=>getComputedStyle(n).fontSize),'16px');
+  const runtimeLayout=await page.getByTestId('device-row').first().evaluate(n=>{const label=n.querySelector('.device-label').getBoundingClientRect(),badge=n.querySelector('.connection-badge').getBoundingClientRect(),runtime=n.querySelector('.device-state').getBoundingClientRect(),tokens=n.querySelector('.device-tokens').getBoundingClientRect();return {nameGap:badge.left-label.right,overlap:badge.right>runtime.left||runtime.right>tokens.left};});
+  assert.ok(runtimeLayout.nameGap<=12&&!runtimeLayout.overlap,'online sits close to the name and usage status has its own aligned column');
+  const badgePositions=await page.getByTestId('connection-state').evaluateAll(nodes=>nodes.map(n=>n.getBoundingClientRect().x));
+  assert.ok(Math.abs(badgePositions[0]-badgePositions[1])<.5,'connection badges have a fixed column independent of username length');
   assert.equal(await page.locator('.window-buttons button').count(),3);
   const titleControls=await page.locator('.version,.window-buttons button').evaluateAll(nodes=>nodes.map(n=>({x:n.getBoundingClientRect().x,y:n.getBoundingClientRect().y,h:n.getBoundingClientRect().height})));
   assert.ok(titleControls.every((n,i)=>!i||n.x>titleControls[i-1].x));
@@ -61,9 +95,9 @@ try{
   assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).user,'fixture-local','explicit local selection is retained');
   assert.ok((await page.getByTestId('cycle-budget').innerText()).includes('450.00M'));
   assert.equal(await page.locator('.donut-tooltip').count(),0);
-  assert.deepEqual(await page.locator('.donut-share').allTextContents(),['18.1%','33.0%']);
+  assert.deepEqual(await page.locator('.donut-main-share').allTextContents(),['18.1%','33.0%']);
   await page.evaluate(()=>{const data=structuredClone(window.__fixture);for(const w of Object.values(data.view.analytics.windows))w.quota_ready=false;window.__CQG_TEST__.applySnapshot(data);});
-  assert.deepEqual(await page.locator('.donut-share').allTextContents(),['—','—']);
+  assert.deepEqual(await page.locator('.donut-main-share').allTextContents(),['—','—']);
   assert.equal(await page.locator('.trend-legend-share').innerText(),'—');
   await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
   const ordinarySnapshot=await page.evaluate(()=>structuredClone(window.__fixture));
@@ -72,15 +106,23 @@ try{
     const rows=window.__fixture.view.summary.devices;
     rows[0].estimated=0;rows[0].carry=15;rows[0].fair_base_cap=50;
     rows[1].estimated=0;rows[1].carry=-15;rows[1].fair_base_cap=50;
+    window.__fixture.view.analytics.windows.cycle.quota_rows=[];
     window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture));
   });
   assert.deepEqual(await page.locator('.device-usage').allTextContents(),['0.00%','0.00%']);
   await page.getByTestId('nav-settings').click();await page.waitForTimeout(250);
+  const compensation=page.getByRole('switch',{name:'跨周期补偿',exact:true});
+  assert.equal(await compensation.getAttribute('aria-checked'),'false');
+  await compensation.click();assert.equal(await compensation.getAttribute('aria-checked'),'true');
   await page.getByRole('button',{name:'额度显示基准',exact:true}).click();
   await page.getByRole('option',{name:'补偿显示模式',exact:true}).click();
   await page.getByTestId('nav-overview').click();await page.waitForTimeout(250);
   assert.deepEqual(await page.locator('.device-usage').allTextContents(),['30.00%','-30.00%']);
   await page.screenshot({path:path.join(artifacts,'compensation-display.png')});
+  await page.getByTestId('nav-settings').click();await page.waitForTimeout(250);
+  await compensation.click();assert.equal(await compensation.getAttribute('aria-checked'),'false');
+  await page.getByTestId('nav-overview').click();await page.waitForTimeout(250);
+  assert.deepEqual(await page.locator('.device-usage').allTextContents(),['0.00%','0.00%']);
   await page.getByTestId('nav-settings').click();await page.waitForTimeout(250);
   await page.getByRole('button',{name:'额度显示基准',exact:true}).click();
   await page.getByRole('option',{name:'个人额度 = 100%',exact:true}).click();
@@ -113,6 +155,10 @@ try{
   assert.equal(modelNumberStyle.transform,'none');
 
   assert.equal(await page.locator('.cycle-progress').first().getAttribute('aria-valuenow'),'53');
+  assert.equal(await page.getByTestId('cycle-record').first().locator('.cycle-model-track').count(),4);
+  assert.equal(await page.locator('.cycle-model-track').first().evaluate(n=>getComputedStyle(n).height),'4px');
+  assert.equal(await page.locator('.cycle-progress').first().evaluate(n=>getComputedStyle(n).height),'8px');
+  assert.ok(Math.abs((await page.getByTestId('cycle-record').first().locator('.cycle-model-share b').allTextContents()).reduce((n,text)=>n+parseFloat(text),0)-100)<.2);
   assert.ok(Math.abs(await page.locator('.cycle-progress i').first().evaluate(n=>new DOMMatrix(getComputedStyle(n).transform).a)-.53)<.001);
   assert.ok((await page.getByTestId('cycle-record').first().innerText()).includes('-10.0%'));
   await page.screenshot({path:path.join(artifacts,'cycle-statistics.png')});
@@ -143,7 +189,7 @@ try{
   }
   await page.getByRole('button',{name:'设备占比时间范围',exact:true}).click();
   await page.getByRole('option',{name:'本周期',exact:true}).click();
-  assert.deepEqual(await page.locator('.donut-share').allTextContents(),['18.1%','33.0%']);
+  assert.deepEqual(await page.locator('.donut-main-share').allTextContents(),['18.1%','33.0%']);
   const pieShares=await page.locator('.donut-share').evaluateAll(nodes=>nodes.map(n=>({x:n.getBoundingClientRect().x,y:n.getBoundingClientRect().y,h:n.getBoundingClientRect().height,weight:getComputedStyle(n).fontWeight})));
   assert.ok(Math.abs(pieShares[0].x-pieShares[1].x)<.5,'pie percentages share one aligned column');
   assert.ok(pieShares.every(n=>Number(n.weight)>=700));
@@ -202,7 +248,8 @@ try{
   await page.evaluate(()=>{Date.now=window.__nativeDateNow;window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture));});
   assert.deepEqual(await page.getByTestId('connection-state').allTextContents(),['在线','在线']);
   const usagePill=await page.locator('.device-state.using').boundingBox();
-  assert.ok(usagePill.width<110&&usagePill.height===27,'usage badge is compact and keeps its original centered height');
+
+  assert.ok(usagePill.width<110&&usagePill.height===27,'the single-line activity badge stays compact and centered');
   await page.evaluate(()=>{
     const data=structuredClone(window.__fixture);data.view.peers={};
     data.view.summary.devices.find(d=>d.id==='fixture-local').online=false;
@@ -218,7 +265,8 @@ try{
   assert.deepEqual(await page.getByTestId('connection-state').allTextContents(),['在线','在线'],'connected peer stays online when its monitoring heartbeat is stale');
   await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
   const badges=await page.getByTestId('connection-state').evaluateAll(nodes=>nodes.map(n=>({width:n.getBoundingClientRect().width,height:n.getBoundingClientRect().height,font:getComputedStyle(n).fontSize})));
-  assert.deepEqual(badges,[{width:58,height:28,font:'12px'},{width:58,height:28,font:'12px'}]);
+  assert.deepEqual(badges,[{width:46,height:24,font:'11px'},{width:46,height:24,font:'11px'}]);
+  assert.equal(await page.getByTestId('connection-state').first().evaluate(n=>getComputedStyle(n).color),'rgb(129, 206, 161)');
   await page.evaluate(()=>{const data=structuredClone(window.__fixture);data.view.peers={};window.__CQG_TEST__.applySnapshot(data);});
   assert.equal(await page.getByTestId('connection-state').last().evaluate(n=>getComputedStyle(n).color),'rgb(237, 141, 152)');
   await page.screenshot({path:path.join(artifacts,'offline-badge.png')});
@@ -235,6 +283,62 @@ try{
   const minuteCurve=(await page.evaluate(()=>window.__CQG_TEST__.getState())).trend;
   assert.equal(minuteCurve.step,60);
   assert.equal(minuteCurve.points.length,60);
+  const beforePan=minuteCurve.start,panBox=await page.getByTestId('trend-hit').boundingBox();
+  await page.evaluate(()=>window.__historyDelay=350);
+  const offsetBefore=await page.locator('.trend-pan-content').getAttribute('transform');
+  await page.mouse.move(panBox.x+panBox.width*.25,panBox.y+30);await page.mouse.down();
+  await page.mouse.move(panBox.x+panBox.width*.75,panBox.y+30,{steps:10});await page.mouse.up();
+  assert.equal(await page.locator('.trend-pan-content').getAttribute('transform'),offsetBefore,'dragging the plot never changes the time window');
+  const slider=page.getByRole('slider',{name:'最近24小时时间滑块'});
+  assert.equal(await slider.evaluate(n=>Number(n.max)-Number(n.min)),24*3600,'left slider end selects the hour ending 24 hours ago');
+  const sliderBounds=await page.locator('.hour-slider').boundingBox(),hourLegendBounds=await page.locator('.trend-legend').boundingBox();
+  assert.ok(sliderBounds.width<=185&&sliderBounds.height<=14&&sliderBounds.x+sliderBounds.width<=hourLegendBounds.x,'compact slider shares the bottom row without covering the legend');
+  const slideFrames=await slider.evaluate(async n=>{
+    n.value=Number(n.max)-1800;n.dispatchEvent(new Event('input',{bubbles:true}));
+    const frames=[],start=performance.now();await new Promise(resolve=>{function tick(at){frames.push({at,end:window.__CQG_TEST__.getState().chartEnd});if(at-start<300)requestAnimationFrame(tick);else resolve();}requestAnimationFrame(tick);});return frames;
+  });
+  assert.ok(new Set(slideFrames.map(f=>f.end).filter(end=>end!==null)).size>=8,'curve traverses intermediate time positions instead of jumping to the target');
+  assert.ok(slideFrames.some(f=>f.end!==null&&!Number.isInteger(f.end)),'minute records scroll at fractional positions between bucket boundaries');
+  await page.waitForTimeout(800);
+  assert.equal(await page.evaluate(()=>window.__historyPeak),1,'history requests are coalesced and never overlap');
+  await page.evaluate(()=>window.__historyDelay=0);
+  assert.ok((await page.evaluate(()=>window.__CQG_TEST__.getState())).trend.start<beforePan);
+  assert.equal(await page.getByRole('button',{name:'回到实时',exact:true}).count(),1);
+  const loadedCalls=await page.evaluate(()=>window.__commands.filter(c=>c.action==='chart_history').length);
+  await slider.evaluate(n=>{n.value=Number(n.value)-180;n.dispatchEvent(new Event('input',{bubbles:true}));});await page.waitForTimeout(200);
+  assert.equal(await page.evaluate(()=>window.__commands.filter(c=>c.action==='chart_history').length),loadedCalls,'nearby slider changes reuse buffered history without bridge requests');
+  await slider.evaluate(n=>{n.value=n.min;n.dispatchEvent(new Event('input',{bubbles:true}));});await page.waitForTimeout(400);
+  assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).trend.start,beforePan-86400);
+  await page.getByRole('button',{name:'回到实时',exact:true}).click();
+  assert.ok(await page.locator('.curve-reveal').evaluate(n=>n.getAnimations().some(a=>a.playState==='running')),'return to live redraws the curve from its beginning');
+  await page.waitForTimeout(350);
+  assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).trend.start,beforePan);
+  const axis=page.locator('.trend-svg .axis-text').first(),originalAxis=await axis.textContent();
+  await page.evaluate(()=>{const data=structuredClone(window.__fixture);for(const r of data.view.analytics.windows.hour_curve.rows)r.tokens*=10;window.__CQG_TEST__.applySnapshot(data);});
+  await page.waitForTimeout(100);const changingAxis=await axis.textContent();
+  await page.waitForTimeout(300);const expandedAxis=await axis.textContent();
+  assert.notEqual(expandedAxis,originalAxis);assert.notEqual(changingAxis,expandedAxis,'larger values resize the axis gradually');
+  const panScaleFrames=await slider.evaluate(async n=>{
+    n.value=Number(n.max)-7200;n.dispatchEvent(new Event('input',{bubbles:true}));
+    const frames=[],started=performance.now();await new Promise(resolve=>{function tick(at){frames.push(document.querySelector('.trend-svg .axis-text').textContent);if(at-started<650)requestAnimationFrame(tick);else resolve();}requestAnimationFrame(tick);});return frames;
+  });
+  assert.equal(await axis.textContent(),originalAxis,'sliding to lower historical usage excludes the high live peak from the visible scale');
+  assert.ok(new Set(panScaleFrames).size>3,'historical scale changes pass through intermediate values while sliding');
+  await page.locator('.curve-reveal').evaluate(n=>n.dataset.liveEdgeIdentity='same-curve');
+  await slider.evaluate(n=>{n.value=n.max;n.dispatchEvent(new Event('input',{bubbles:true}));});
+  await page.waitForTimeout(650);
+  assert.equal(await page.locator('.curve-reveal').getAttribute('data-live-edge-identity'),'same-curve','sliding to live keeps the existing curve instead of replaying its entrance');
+  assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).chartEnd,null,'the slider endpoint resumes live updates');
+  assert.equal(await axis.textContent(),expandedAxis,'sliding back to higher live usage expands the scale again');
+  await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
+  await page.waitForTimeout(100);const shrinkingAxis=await axis.textContent();
+  await page.waitForTimeout(300);
+  assert.equal(await axis.textContent(),originalAxis,'lower visible values shrink the hourly scale back to the current window');
+  assert.notEqual(shrinkingAxis,expandedAxis,'the axis starts shrinking before the transition finishes');
+  assert.notEqual(shrinkingAxis,originalAxis,'the axis shrinks gradually instead of jumping');
+  assert.equal(await page.locator('.trend-svg').evaluate(n=>getComputedStyle(n).overflow),'hidden');
+  for(let i=0;i<5;i++){await page.getByRole('button',{name:'柱状',exact:true}).click();await page.getByRole('button',{name:'曲线',exact:true}).click();}
+  assert.equal(await page.locator('.chart-hover').count(),0,'rapid switches clear stale hover geometry');
   await page.screenshot({path:path.join(artifacts,'hour-minute-curve.png')});
   await page.getByRole('button',{name:'柱状',exact:true}).click();await page.waitForTimeout(450);
   assert.equal(await page.locator('.chart-bar').count(),30);
@@ -258,6 +362,31 @@ try{
   });
   assert.equal(mutations,0,'identical polling performs zero SVG mutation or animation');
   await page.getByTestId('device-row').first().click();
+  assert.equal(await page.locator('.user-summary-modal').count(),1);
+  assert.equal(await page.locator('.user-token-grid>div').count(),6);
+  assert.equal(await page.locator('.user-model-card').count(),6);
+  assert.equal(await page.locator('.model-usage-track').first().evaluate(n=>getComputedStyle(n).height),'8px');
+  assert.equal(await page.locator('.user-model-numbers').first().evaluate(n=>getComputedStyle(n).fontSize),'11px');
+  assert.equal(await page.locator('.user-model-numbers').first().evaluate(n=>getComputedStyle(n).lineHeight),'16px');
+  assert.ok(Math.abs((await page.locator('.model-usage-share b').allTextContents()).reduce((sum,value)=>sum+parseFloat(value),0)-100)<.11);
+  assert.equal(await page.locator('.palette button').count(),0,'settings stay behind the user settings button');
+  await page.screenshot({path:path.join(artifacts,'user-cycle-summary.png')});
+  await page.evaluate(()=>{
+    const data=structuredClone(window.__fixture),rows=data.view.analytics.windows.cycle.rows,source=rows.find(row=>row.device===data.settings.device_id);
+    for(const row of rows)if(row.device===source.device)row.model=row.model==='gpt-5.5'?'gpt-6-astra':'gpt-5.6-sol';
+    window.__CQG_TEST__.applySnapshot(data);
+  });
+  assert.equal(await page.locator('.user-model-card').count(),4);
+  const luna=page.locator('.user-model-card').filter({hasText:'gpt-5.6-luna'});
+  assert.equal(await luna.locator('.user-model-token').innerText(),'0 Token');
+  assert.equal(await luna.locator('.model-usage-share b').innerText(),'0.0%');
+  assert.ok(!(await luna.innerText()).includes('本周期未使用'));
+  const modelLayout=await page.locator('.user-summary-modal').evaluate(n=>({primary:n.querySelector('.user-cycle-primary').getBoundingClientRect().bottom,details:n.querySelector('.user-token-grid').getBoundingClientRect().top,cards:[...n.querySelectorAll('.user-model-card')].map(c=>{const r=c.getBoundingClientRect();return {x:r.x,y:r.y,bottom:r.bottom,width:r.width,overflow:c.scrollWidth>c.clientWidth};})}));
+  assert.ok(modelLayout.cards.every(c=>c.y===modelLayout.cards[0].y&&c.y>modelLayout.primary&&c.bottom<modelLayout.details&&c.width<150&&!c.overflow),'four compact model cards occupy one row immediately below total usage');
+  await page.waitForTimeout(300);
+  await page.screenshot({path:path.join(artifacts,'user-four-model-cards.png')});
+  await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
+  await page.getByRole('button',{name:'用户设置',exact:true}).click();
   assert.equal(await page.getByRole('heading',{name:'用户设置',exact:true}).count(),1);
   assert.equal(await page.locator('.palette button').count(),8);
   await page.getByRole('button',{name:'关闭对话框',exact:true}).click();
@@ -309,6 +438,7 @@ try{
   assert.equal(await page.locator('.chart-bar').count(),24);
   await page.screenshot({path:path.join(artifacts,'bars.png')});
   await page.getByTestId('device-row').first().click();
+  await page.getByRole('button',{name:'用户设置',exact:true}).click();
   assert.equal(await page.locator('.palette button').count(),8);
   await page.locator('.user-note-label input').fill('测试工作站');
   await page.locator('.palette button').nth(4).click();
@@ -363,8 +493,9 @@ try{
   });await page.waitForTimeout(400);
   async function hoverAt(fraction){await page.evaluate(fraction=>{const hit=document.querySelector('[data-testid="trend-hit"]'),r=hit.getBoundingClientRect();hit.dispatchEvent(new PointerEvent('pointermove',{clientX:r.left+r.width*fraction,clientY:r.top+30,bubbles:true}));},fraction);await page.waitForTimeout(170);return page.locator('.chart-tooltip').boundingBox();}
   const lowA=await hoverAt(.08),lowB=await hoverAt(.18),peakTip=await hoverAt(12/23);
+  await page.screenshot({path:path.join(artifacts,'tooltip-layout-review.png')});
   assert.ok(Math.abs(lowA.y-lowB.y)<.5,'tooltip keeps a fixed baseline away from the curve');
-  assert.ok(peakTip.y<lowA.y-10,'tooltip rises to avoid a high peak');
+  assert.ok(peakTip.y<=lowA.y+.5,'expanded cache tooltip stays above a high peak');
   const hitBox=await page.getByTestId('trend-hit').boundingBox();
   assert.ok(peakTip.y+peakTip.height<hitBox.y+hitBox.height*.1-5,'tooltip clears the actual peak');
   await page.screenshot({path:path.join(artifacts,'tooltip-peak-avoidance.png')});
@@ -379,7 +510,7 @@ try{
       return {total:(rows.reduce((sum,r)=>sum+r.tokens,0)/450e6*100).toFixed(2)+'%',users:Object.fromEntries(rows.map(r=>[r.device,(r.tokens/450e6*100).toFixed(2)+'%']))};
     });
     assert.equal(await page.locator('.tooltip-total-percent').innerText(),expected.total);
-    for(const [id,value] of Object.entries(expected.users))assert.equal(await page.locator('.tooltip-series-row[data-device="'+id+'"] .tooltip-user-percent').innerText(),value);
+    for(const [id,value] of Object.entries(expected.users))assert.equal(await page.locator('.tooltip-series-row[data-device="'+id+'"] .tooltip-user-quota').innerText(),value);
     assert.ok(await page.locator('.chart-tooltip').evaluate(n=>n.scrollWidth<=n.clientWidth),'tooltip content fits');
     for(const column of ['.tooltip-series-value','.tooltip-user-percent']){
       const rightEdges=await page.locator(column).evaluateAll(nodes=>nodes.map(n=>n.getBoundingClientRect().right));
@@ -390,19 +521,45 @@ try{
   await page.evaluate(()=>{const data=structuredClone(window.__fixture);data.settings.device_notes[data.view.identity.account]={'fixture-local':'橙猫猫','fixture-peer':'A'};window.__CQG_TEST__.applySnapshot(data);});
   await hoverAt(0);
   const gap=await page.locator('.tooltip-series-row').first().evaluate(row=>row.querySelector('.tooltip-series-value').getBoundingClientRect().left-row.querySelector('.tooltip-series-name').getBoundingClientRect().right);
-  assert.ok(gap<=6.5,'short names do not stretch away from tokens');
+  assert.ok(gap<=8.5,'short names do not stretch away from tokens');
   await page.screenshot({path:path.join(artifacts,'tooltip-quota-percent.png')});
   await page.evaluate(()=>{const data=structuredClone(window.__fixture);data.view.analytics.windows.day.quota_pending_rows=[{device:'fixture-local',model:'gpt-5.5',bucket:0}];window.__CQG_TEST__.applySnapshot(data);});
   await hoverAt(0);
-  assert.equal(await page.locator('.tooltip-total-percent').innerText(),'待更新');
-  assert.equal(await page.locator('.tooltip-series-row[data-device="fixture-local"] .tooltip-user-percent').innerText(),'待更新');
+  assert.equal(await page.locator('.tooltip-total-percent').innerText(),'0.24%');
+  assert.notEqual(await page.locator('.tooltip-series-row[data-device="fixture-local"] .tooltip-user-quota').innerText(),'待更新');
+  await page.evaluate(()=>{const data=structuredClone(window.__fixture);for(const key of ['day','cycle'])data.view.analytics.windows[key].quota_estimate_rows=[{device:'fixture-local',model:'gpt-5.5',bucket:0,quota:.12}];window.__CQG_TEST__.applySnapshot(data);});
+  await hoverAt(0);
+  assert.equal(await page.locator('.tooltip-total-percent').innerText(),'0.24%');
+  assert.ok(!(await page.locator('.donut-share').allInnerTexts()).some(text=>text.startsWith('≈ ')));
+  assert.equal(await page.locator('.quota-estimate-note').count(),0);
+  await page.screenshot({path:'test-artifacts/official-quota-calibration.png'});
   await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
   await hoverAt(0);
   assert.notEqual(await page.locator('.tooltip-total-percent').innerText(),'待更新');
+  await page.evaluate(()=>{const data=structuredClone(window.__fixture);for(const w of Object.values(data.view.analytics.windows)){for(const r of w.rows){r.cache_tokens=Math.floor(r.tokens*.8);r.detail_missing=0;}for(const r of w.quota_rows)r.cache_quota=r.quota*.1;}window.__CQG_TEST__.applySnapshot(data);});
+  await page.getByRole('button',{name:'曲线内容模式',exact:true}).click();
+  await page.getByRole('option',{name:'曲线＋缓存模式',exact:true}).click();await page.waitForTimeout(450);
+  assert.equal(await page.locator('.trend-cache-line').count(),2);
+  assert.equal(await page.locator('.trend-line').count(),2);
+  assert.ok(await page.locator('.chart-controls').evaluate(n=>n.scrollWidth<=n.clientWidth));
+  await hoverAt(0);await page.screenshot({path:path.join(artifacts,'cache-combined.png')});
+  await page.getByRole('button',{name:'柱状',exact:true}).click();await page.waitForTimeout(400);
+  assert.equal(await page.locator('.trend-cache-line').count(),0,'combined mode bars never overlay a cache curve');
+  assert.ok(await page.locator('.chart-bar').count()>0);
+  await page.getByRole('button',{name:'曲线',exact:true}).click();await page.waitForTimeout(400);
+  assert.equal(await page.locator('.trend-cache-line').count(),2,'switching back to curves restores the cache overlay');
+  await page.getByRole('button',{name:'曲线内容模式',exact:true}).click();
+  await page.getByRole('option',{name:'缓存模式',exact:true}).click();await page.waitForTimeout(450);
+  assert.equal(await page.locator('.trend-cache-line').count(),0);
+  assert.equal(await page.locator('.trend-line').count(),2);
+  assert.deepEqual(await page.locator('.trend-line').evaluateAll(nodes=>nodes.map(n=>getComputedStyle(n).strokeDasharray)),['5px, 4px','5px, 4px']);
+  await hoverAt(0);await page.screenshot({path:path.join(artifacts,'cache-only.png')});
+  await page.getByRole('button',{name:'曲线内容模式',exact:true}).click();
+  await page.getByRole('option',{name:'曲线模式',exact:true}).click();
   await page.evaluate(()=>{const data=structuredClone(window.__fixture);for(const w of Object.values(data.view.analytics.windows))w.quota_ready=false;window.__CQG_TEST__.applySnapshot(data);});
   await hoverAt(0);
   assert.equal(await page.locator('.tooltip-total-percent').innerText(),'—');
-  assert.deepEqual(await page.locator('.tooltip-user-percent').allTextContents(),['—','—']);
+  assert.deepEqual(await page.locator('.tooltip-user-quota').allTextContents(),['—','—']);
   await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
   await page.getByRole('button',{name:'曲线',exact:true}).click();await hoverAt(.5);
   assert.deepEqual(errors,[]);

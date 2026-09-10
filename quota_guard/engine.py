@@ -50,7 +50,6 @@ class Engine:
         self.last_quota_publish = 0
         self.last_read = 0
         self.last_broadcast = 0
-        self.notice_key = None
         self.thread = None
         self.analytics_cache = {}
         self._background_mode = False
@@ -328,6 +327,13 @@ class Engine:
                 target = payload.pop('account')
                 if target in self.tracked:
                     self.journal.append(target, 'cap', payload, now)
+            elif kind == 'compensation':
+                target = payload['account']
+                if target in self.tracked:
+                    profile = dict(device=self.config['device_id'], name=self.config['name'],
+                                   cap=self.tracked[target].get('cap', self.config['quota']),
+                                   compensation_enabled=payload['enabled'])
+                    self.journal.append(target, 'profile', profile, now)
             elif kind == 'remove_device':
                 if (self.mesh and payload['account'] == ident.get('account')
                         and payload['device'] != self.config['device_id']):
@@ -537,7 +543,7 @@ class Engine:
             self.view.update(summary=summary, analytics=self.analytics_cache, history=self.ledger.history(account, self.config['device_id'], now),
                 recovery=recovered,
                 tracked_since=self.tracked[account]['added_at'],
-                status='监测中 · 所有设备用量均为估算' if self.mesh else '本机监测中 · 尚未配置异地匹配服务',
+                status='监测中 · Token 按日志统计，额度随官方更新校准' if self.mesh else '本机监测中 · 尚未配置异地匹配服务',
                 active=active, uncertain=uncertain, unbound_active=unbound_active,
                 unbound_uncertain=unbound_uncertain, blocked=self.blocked,
                 error=' | '.join(value for value in (self.quota_error, recovery_error,
@@ -566,11 +572,6 @@ class Engine:
             return
         cap = device.get('fair_cap', device['cap'])
         reached = device['estimated'] >= cap
-        key = (summary['account'], epoch['cycle'], cap)
-        if reached and self.notice_key != key:
-            self.notice_key = key
-            with self.view_lock:
-                self.view['notifications'].append(f"本机估算用量 {device['estimated']:.2f}% 已达到配额 {cap:.2f}%")
         if self.blocked:
             reallocated = summary.get('allocation') == 'cycle_weighted_v1' and summary.get('unassigned') == 0
             if not self.config['auto_block'] or (fresh and block and not reached

@@ -26,12 +26,20 @@ def allocation(db, account, devices, removed=()):
     if has_facts:
         profiles = [(r['ts'], r['kind'], json.loads(r['payload'])) for r in db.execute(
             "SELECT ts,kind,payload FROM facts WHERE account=? AND kind IN ('profile','cap') ORDER BY ts,origin,seq", (account,))]
+    enabled, enabled_at = False, 0.
+    for at, kind, profile in profiles:
+        if kind == 'profile' and 'compensation_enabled' in profile:
+            if profile['compensation_enabled'] and not enabled:
+                enabled_at = at
+            enabled = profile['compensation_enabled']
     starts = [p['fairness_start'] for _, kind, p in profiles if kind == 'profile' and 'fairness_start' in p]
     # Once a replicated start exists, local display-only history filters cannot
     # make two peers compute different balances from the same journal.
     local_start = db.execute('SELECT value FROM meta WHERE key=?', ('statistics_start:'+account,)).fetchone()
     start = min(starts) if starts else float(json.loads(local_start[0])) if local_start else 0.
     for epoch in db.execute('SELECT * FROM epochs WHERE account=? AND ended IS NOT NULL AND started>=? ORDER BY started,reset_at', (account, start)):
+        if not enabled or epoch['ended'] <= enabled_at:
+            continue
         following = db.execute('SELECT reason FROM epochs WHERE account=? AND started>=? ORDER BY started,id LIMIT 1', (account, epoch['ended'])).fetchone()
         if following and following['reason'] in ('官方临时重置', '提前重置原因未确认'):
             continue
@@ -69,5 +77,5 @@ def allocation(db, account, devices, removed=()):
     caps = caps_for_total({d: row['cap'] for d, row in devices.items() if d not in removed})
     available = {d: max(0., cap-carry[d]) for d, cap in caps.items()}
     pool, total = sum(caps.values()), sum(available.values())
-    return {d: dict(carry=0. if abs(carry[d]) < 1e-9 else carry[d], fair_base_cap=cap,
+    return {d: dict(compensation_enabled=enabled, carry=0. if abs(carry[d]) < 1e-9 else carry[d], fair_base_cap=cap,
                     fair_cap=available[d]*pool/total if total else 0.) for d, cap in caps.items()}

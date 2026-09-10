@@ -6,7 +6,7 @@ import math
 from collections import defaultdict
 from pathlib import Path
 
-from .meter import stamp, weighted
+from .meter import stamp, weighted, usage_delta
 from .runtime_evidence import RuntimeEvidence
 
 
@@ -29,7 +29,7 @@ class HistoryRecovery:
                 CREATE TABLE IF NOT EXISTS recovery_boundaries (
                     source TEXT, at REAL, PRIMARY KEY(source,at));
             ''')
-            format_key = 'recovery_turn_format:'+self.source
+            format_key = 'recovery_detail_format:'+self.source
             if not db.execute('SELECT 1 FROM meta WHERE key=?', (format_key,)).fetchone():
                 db.execute('DELETE FROM recovery_cursors WHERE source=?', (self.source,))
                 db.execute('INSERT INTO meta VALUES (?,?)', (format_key, '1'))
@@ -118,6 +118,7 @@ class HistoryRecovery:
                 weekly = {}
             last = info.get('last_token_usage')
             value = dict(current=current, model=state['model'], provider=state['provider'],
+                         reasoning=total.get('reasoning_output_tokens'), last_reasoning=last.get('reasoning_output_tokens') if isinstance(last,dict) else None,
                          tier=state.get('tier'), turn_at=state.get('turn_at', 0), turn_id=state.get('turn_id'), truncated=state.get('truncated', False),
                          last=[max(0, int(last.get(k, 0))) for k in keys] if isinstance(last, dict) else None,
                          pool=rate.get('limit_id'), reset=weekly.get('resets_at'), used=weekly.get('used_percent'))
@@ -127,9 +128,10 @@ class HistoryRecovery:
             db.execute('''INSERT INTO recovery_usage VALUES (?,?,?,?,?)
                 ON CONFLICT(source,id) DO UPDATE SET ts=excluded.ts,payload=CASE
                     WHEN excluded.ts<recovery_usage.ts THEN excluded.payload
-                    ELSE json_set(recovery_usage.payload,'$.turn_id',json_extract(excluded.payload,'$.turn_id')) END
+                    WHEN excluded.ts=recovery_usage.ts THEN excluded.payload ELSE recovery_usage.payload END
                 WHERE excluded.ts<recovery_usage.ts OR (excluded.ts=recovery_usage.ts
-                    AND json_extract(recovery_usage.payload,'$.turn_id') IS NULL)''',
+                    AND (json_extract(recovery_usage.payload,'$.turn_id') IS NULL
+                    OR json_type(recovery_usage.payload,'$.reasoning') IS NULL))''',
                        (self.source, eid, state['session'], ts, json.dumps(value)))
 
     @staticmethod
@@ -167,36 +169,83 @@ class HistoryRecovery:
             existing = {r['id']: dict(json.loads(r['payload']), sent=r['sent']) for r in db.execute('SELECT * FROM outbox')}
             scope_cuts = [r[0] for r in db.execute('SELECT at FROM recovery_boundaries WHERE source=? ORDER BY at', (self.source,))]
             anchors, barriers, candidates = defaultdict(list), defaultdict(list), defaultdict(list)
-            previous = {}
+            previous, previous_reasoning, legacy_high = {}, {}, {}
             rows = db.execute('SELECT * FROM recovery_usage WHERE source=? ORDER BY session,ts,id', (self.source,)).fetchall()
             # Reuse decoding within this reconciliation only. A later call still
             # rereads every witness, including late facts and rewritten evidence.
             payloads = {row['id']: json.loads(row['payload']) for row in rows}
+            requests=defaultdict(list)
+            existing_order={eid:index for index,eid in enumerate(existing)}
+            for row in rows:
+                last=payloads[row['id']].get('last')
+                if isinstance(last,list) and len(last)==3:
+                    requests[(row['session'],row['ts'],tuple(last))].append(row['id'])
+            duplicates=set()
+            for ids in requests.values():
+                if len({existing[eid]['account'] for eid in ids if eid in existing})>1:
+                    continue
+                selected=min(ids,key=lambda eid:existing_order.get(eid,len(existing)))
+                duplicates.update(eid for eid in ids if eid!=selected)
             self.runtime.prepare(rows, existing, scope_cuts, payloads=payloads)
             runtime_blocked = set()
             for row in rows:
                 p = payloads[row['id']]
                 old = previous.get(row['session'])
                 current = p['current']
-                delta = [max(0, c-b) for c, b in zip(current, old or [0, 0, 0])]
-                if old is None and p['truncated']:
+                legacy_before=legacy_high.get(row['session'],[0,0,0])
+                legacy_delta=[max(0,c-b) for c,b in zip(current,legacy_before)]
+                legacy_high[row['session']]=[max(c,b) for c,b in zip(current,legacy_before)]
+                delta = usage_delta(current,old or [0,0,0],p.get('last'))
+                if old is None and (p['truncated'] or p.get('last') is not None):
                     # A paginated tail is not proof that all prior cumulative usage
                     # occurred on this device/in this turn. Only its last request is.
                     delta = p['last'] or [0, 0, 0]
                     delta = [min(d, c) for d, c in zip(delta, current)]
-                previous[row['session']] = [max(c, b) for c, b in zip(current, old or [0, 0, 0])]
+                previous[row['session']] = current
+                if row['id'] in duplicates:
+                    prior=existing.get(row['id'])
+                    if prior and prior['sent']!=2 and prior['account']==account:
+                        self._repair_components(db,prior,row['id'],(0,0,0),legacy_delta,0,multiplier)
+                    continue
                 inputs, cached, outputs = delta
+                before_reasoning=previous_reasoning.get(row['session'])
+                current_reasoning=p.get('reasoning')
+                reasoning=None
+                if delta==p.get('last'):
+                    reasoning=p.get('last_reasoning')
+                elif type(current_reasoning) is int and type(before_reasoning) is int and not any(c<b for c,b in zip(current,old or [0,0,0])):
+                    reasoning=max(0,current_reasoning-before_reasoning)
+                elif old is None and not p['truncated']:
+                    reasoning=current_reasoning
+                previous_reasoning[row['session']]=current_reasoning if type(current_reasoning) is int else None
+                if type(reasoning) is not int or not 0 <= reasoning <= outputs:
+                    reasoning=None
                 tokens = inputs+outputs
                 sid, ts = row['session'], row['ts']
-                if p['provider'] != 'openai' or 'spark' in p['model'].lower() or p['pool'] not in (None, 'codex'):
+                if (p['provider'] != 'openai' or 'spark' in p['model'].lower()
+                        or (p['pool'] not in (None,'codex') and row['id'] not in existing)):
                     barriers[sid].append(ts)
                     continue
                 if row['id'] in existing:
                     prior = existing[row['id']]
                     if prior['sent'] == 2 or prior['account'] != account:
                         barriers[sid].append(ts)
-                    elif prior.get('attribution') not in ('session_inference', 'interval_inference', 'runtime_inference'):
-                        anchors[sid].append((ts, row['id']))
+                    else:
+                        # A last-request witness must confirm every repaired component;
+                        # the first cumulative checkpoint can contain imported history.
+                        if delta==p.get('last'):
+                            self._repair_components(db,prior,row['id'],(inputs,min(inputs,cached),outputs),legacy_delta,reasoning,multiplier*(2.5 if p['tier'] in ('fast','priority') else 1))
+                        # Enrich a known event, preserving its ID and original bill.
+                        # Re-uploading the same ID adds details without extra Token.
+                        matching=all(prior.get(k,v)==v for k,v in zip(('input_tokens','cached_input_tokens','output_tokens'),(inputs,min(inputs,cached),outputs)))
+                        if prior['tokens'] == tokens and matching and ('input_tokens' not in prior or (reasoning is not None and 'reasoning_output_tokens' not in prior)):
+                            enriched = {k:v for k,v in prior.items() if k != 'sent'}
+                            enriched.update(input_tokens=inputs, cached_input_tokens=min(inputs,cached), output_tokens=outputs)
+                            if reasoning is not None:
+                                enriched['reasoning_output_tokens']=reasoning
+                            db.execute('UPDATE outbox SET payload=?,sent=0 WHERE id=?', (json.dumps(enriched),row['id']))
+                        if prior.get('attribution') not in ('session_inference', 'interval_inference', 'runtime_inference'):
+                            anchors[sid].append((ts, row['id']))
                     continue  # Includes sent=2 scope-race rejections. Never resurrect.
                 if row['ts'] <= added_at or not tokens:
                     continue
@@ -218,8 +267,11 @@ class HistoryRecovery:
                                          multiplier*(2.5 if p['tier'] in ('fast', 'priority') else 1))
                 event = dict(id=row['id'], device=self.device, account=account, ts=row['ts'],
                              model=p['model'], tokens=tokens, weight=weight, known=known,
+                             input_tokens=inputs, cached_input_tokens=min(inputs,cached), output_tokens=outputs,
                              attribution='quota_correlation', evidence=dict(reset_at=p['reset'], used=p['used'],
                              snapshot_at=min(nearby, key=lambda t: abs(t-row['ts'])) if nearby else None, tier=p['tier']))
+                if reasoning is not None:
+                    event['reasoning_output_tokens']=reasoning
                 if matched:
                     self.runtime.anchor(row['id'], account)
                 if not matched or runtime_only:
@@ -285,3 +337,21 @@ class HistoryRecovery:
                     result['runtime_tokens'] += event['tokens']
         self.db.put('history_recovery:'+account, result)
         return result
+
+    @staticmethod
+    def _repair_components(db,prior,eid,actual,legacy_delta,reasoning,multiplier=1):
+        """Append a revision with its expected prior bill; retain original facts."""
+        keys=('input_tokens','cached_input_tokens','output_tokens')
+        if prior['tokens']==actual[0]+actual[2] and all(prior.get(k,v)==v for k,v in zip(keys,actual)):
+            return
+        original=[prior[k] for k in keys] if all(k in prior for k in keys) else [legacy_delta[0],min(legacy_delta[:2]),legacy_delta[2]]
+        base,known=weighted(prior['model'],*original,1)
+        if original[0]+original[2]==prior['tokens'] and base>0 and .05<=prior['weight']/base<=50:
+            multiplier=prior['weight']/base
+        weight,known=weighted(prior['model'],*actual,multiplier)
+        repair={k:v for k,v in prior.items() if k not in ('sent','reasoning_output_tokens')}
+        repair.update(dict(zip(keys,actual)),tokens=actual[0]+actual[2],weight=weight,known=known,
+                      replaces=dict(tokens=prior['tokens'],weight=prior['weight']))
+        if reasoning is not None:
+            repair['reasoning_output_tokens']=reasoning
+        db.execute('UPDATE outbox SET payload=?,sent=0 WHERE id=?',(json.dumps(repair),eid))

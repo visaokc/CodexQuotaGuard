@@ -250,5 +250,6 @@ class Ledger:
                 if device in devices:
                     devices[device].update(values)
             result['devices'] = list(devices.values())
+            result['compensation_enabled'] = any(d.get('compensation_enabled', False) for d in devices.values())
             result['server_time'] = now
             return result

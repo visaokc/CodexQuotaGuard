@@ -295,3 +295,91 @@ def test_unresolved_diagnostics_do_not_label_missing_evidence_as_api(tmp_path):
     result = recovery.reconcile(A, 0)
     assert result['unresolved_reasons'] == {}
     assert result['recovered_events'] == 1
+
+
+def test_upgrade_details_reupload_preserves_tokens_weights_and_scope(tmp_path):
+    e, recovery, path = history(tmp_path)
+    recovery.scan(0)
+    recovery.reconcile(A,0)
+    first=e.scanner.pending()[0]
+    assert first['input_tokens']+first['output_tokens']==first['tokens']
+    legacy={k:v for k,v in first.items() if k not in ('input_tokens','cached_input_tokens','output_tokens')}
+    with e.db.connect() as db:
+        db.execute('UPDATE outbox SET payload=?,sent=1 WHERE id=?',(json.dumps(legacy),first['id']))
+    e.journal.append(A,'events',[legacy],160)
+    recovery.reconcile(A,0)
+    enriched=e.scanner.pending()[0]
+    assert enriched['tokens']==legacy['tokens'] and enriched['weight']==legacy['weight']
+    e.journal.append(A,'events',[enriched],170)
+    e.journal.project(A,False)
+    with e.group_db.connect() as db:
+        assert db.execute('SELECT COUNT(*) FROM events').fetchone()[0]==1
+        detail=db.execute('SELECT * FROM event_details').fetchone()
+        assert detail['input_tokens']==first['input_tokens']
+        assert detail['cached_input_tokens']==first['cached_input_tokens']
+    with e.db.connect() as db:
+        db.execute('UPDATE outbox SET sent=1')
+    recovery.reconcile(A,0)
+    assert e.scanner.pending()==[]
+    invalid=dict(enriched,cached_input_tokens=enriched['input_tokens']+1)
+    with pytest.raises(ValueError,match='明细'):
+        e.journal.append(A,'events',[invalid],180)
+
+
+def test_reasoning_backfill_is_optional_deduplicated_and_never_added_to_output(tmp_path):
+    e,recovery,path=history(tmp_path)
+    data=path.read_text().replace('"output_tokens": 100','"output_tokens": 100, "reasoning_output_tokens": 70')
+    path.write_text(data);recovery.scan(0);recovery.reconcile(A,0)
+    event=e.scanner.pending()[0]
+    assert event['reasoning_output_tokens']==70
+    e.journal.append(A,'events',[event],160);e.journal.project(A,False)
+    with e.group_db.connect() as db:
+        d=db.execute('SELECT * FROM event_details').fetchone()
+        assert d['reasoning_output_tokens']==70 and d['output_tokens']==100
+    legacy={k:v for k,v in event.items() if k!='reasoning_output_tokens'}
+    with e.db.connect() as db:db.execute('UPDATE outbox SET payload=?,sent=1 WHERE id=?',(json.dumps(legacy),event['id']))
+    recovery.reconcile(A,0)
+    assert e.scanner.pending()[0]['reasoning_output_tokens']==70
+    with pytest.raises(ValueError,match='推理'):
+        e.journal.append(A,'events',[dict(event,reasoning_output_tokens=101)],170)
+
+
+def test_component_revisions_preserve_original_facts_and_are_idempotent(tmp_path):
+    e,recovery,path=history(tmp_path)
+    old=dict(id='1'*64,device='one',account=A,ts=150,model='gpt-6-astra',tokens=100,weight=.125,known=True,input_tokens=0,cached_input_tokens=0,output_tokens=100)
+    with e.db.connect() as db:
+        db.execute('INSERT INTO outbox(id,payload,sent) VALUES (?,?,1)',(old['id'],json.dumps(old)))
+        for _ in range(2):recovery._repair_components(db,old,old['id'],(1000,900,100),(0,0,100),70)
+    repair=e.scanner.pending()[0]
+    assert repair['tokens']==1100 and repair['cached_input_tokens']==900 and repair['output_tokens']==100
+    assert repair['reasoning_output_tokens']==70
+    assert repair['ts']==old['ts'] and repair['account']==A
+    e.journal.append(A,'events',[old,repair],160);e.journal.project(A,False)
+    with e.group_db.connect() as db:
+        assert db.execute('SELECT SUM(tokens) FROM events').fetchone()[0]==1100
+        assert db.execute('SELECT tokens FROM events WHERE id=?',(old['id'],)).fetchone()[0]==1100
+        assert json.loads(db.execute("SELECT payload FROM facts WHERE kind='events'").fetchone()[0])[0]==old
+    e.scanner.ack([repair['id']])
+    with e.db.connect() as db:recovery._repair_components(db,repair,old['id'],(1000,900,100),(0,0,100),70)
+    assert e.scanner.pending()==[]
+    with e.db.connect() as db:recovery._repair_components(db,repair,old['id'],(0,0,0),(0,0,100),0)
+    duplicate=e.scanner.pending()[0]
+    e.journal.append(A,'events',[duplicate],180);e.journal.project(A,False)
+    with e.group_db.connect() as db:
+        assert db.execute('SELECT tokens FROM events WHERE id=?',(old['id'],)).fetchone()[0]==0
+    e.journal.project(A,False)
+    with e.group_db.connect() as db:assert db.execute('SELECT tokens FROM events WHERE id=?',(old['id'],)).fetchone()[0]==0
+
+
+def test_same_request_with_rewritten_cumulative_history_is_not_counted_twice(tmp_path):
+    e,recovery,path=history(tmp_path)
+    objects=[json.loads(raw) for raw in path.read_text().splitlines()]
+    token=objects[-1];total=token['payload']['info']['total_token_usage']
+    token['payload']['info']['last_token_usage']=dict(total)
+    duplicate=json.loads(json.dumps(token))
+    duplicate['payload']['info']['total_token_usage']={k:v+5000 for k,v in total.items()}
+    path.write_text(''.join(json.dumps(row)+'\n' for row in objects+[duplicate]))
+    recovery.scan(0);recovery.reconcile(A,0)
+    assert sum(row['tokens'] for row in e.scanner.pending())==1100
+    first=e.scanner.pending()[0];e.scanner.ack([first['id']]);recovery.reconcile(A,0)
+    assert e.scanner.pending()==[]

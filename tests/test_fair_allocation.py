@@ -12,7 +12,7 @@ def setup(tmp_path):
     l = Ledger(db)
     a, b = Journal(db, l, 'one'), Journal(db, l, 'two')
     for j in (a, b):
-        j.append(A, 'profile', dict(device=j.device, name=j.device, cap=50, fairness_start=100), 100)
+        j.append(A, 'profile', dict(device=j.device, name=j.device, cap=50, fairness_start=100, compensation_enabled=True), 100)
     a.append(A, 'quota', snap(100, 0), 100)
     return db, l, a, b
 
@@ -204,3 +204,41 @@ def test_official_temporary_reset_retains_existing_carry(tmp_path):
     for at in (10200,10220):
         a.append(A,'quota',dict(snap(at,0,1400000),reset_credits=2),at)
     assert balances(l)==pytest.approx({'one':15,'two':-15})
+
+
+def test_compensation_defaults_off_and_overuse_is_not_capped(tmp_path):
+    db=Database(tmp_path/'default-off.sqlite');l=Ledger(db)
+    a,b=Journal(db,l,'one'),Journal(db,l,'two')
+    for j in (a,b):j.append(A,'profile',dict(device=j.device,name=j.device,cap=50),100)
+    a.append(A,'quota',snap(100,0),100)
+    use(a,b,150,110,90)
+    r=rows(l)
+    assert r['one']['estimated']/r['one']['fair_base_cap']*100==pytest.approx(110)
+    assert l.summary(A)['compensation_enabled'] is False
+    a.append(A,'quota',snap(10001,0,700000),10001)
+    assert balances(l)=={'one':0,'two':0}
+    assert {d:r['fair_cap'] for d,r in rows(l).items()}=={'one':50,'two':50}
+
+
+def test_disabling_compensation_and_reenabling_never_bills_disabled_cycles(tmp_path):
+    db,l,a,b=setup(tmp_path)
+    use(a,b,150,130,70)
+    a.append(A,'quota',snap(10001,0,700000),10001)
+    assert balances(l)=={'one':15,'two':-15}
+    a.append(A,'profile',dict(device='one',name='one',cap=50,compensation_enabled=False),10010)
+    assert balances(l)=={'one':0,'two':0}
+    use(a,b,10100,130,70,reset=700000)
+    a.append(A,'quota',snap(700001,0,1400000),700001)
+    assert balances(l)=={'one':0,'two':0}
+    a.append(A,'profile',dict(device='one',name='one',cap=50,compensation_enabled=True),700010)
+    assert balances(l)=={'one':0,'two':0}
+    peerdb=Database(tmp_path/'switch-peer.sqlite');peer=Journal(peerdb,Ledger(peerdb),'peer')
+    peer.merge(A,a.since(A,{},limit=60))
+    assert peer.ledger.summary(A)['compensation_enabled'] is True
+    assert balances(peer.ledger)==balances(l)
+
+
+def test_compensation_switch_rejects_non_boolean_values(tmp_path):
+    _,_,a,_=setup(tmp_path)
+    with pytest.raises(ValueError,match='补偿开关'):
+        a.append(A,'profile',dict(device='one',name='one',cap=50,compensation_enabled='false'),101)

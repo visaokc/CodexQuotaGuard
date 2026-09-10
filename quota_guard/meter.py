@@ -29,6 +29,16 @@ def stamp(value):
     return datetime.fromisoformat(value.replace('Z', '+00:00')).timestamp()
 
 
+def usage_delta(current, previous, last=None):
+    """A rewritten/truncated cumulative baseline is not a negative request."""
+    if (isinstance(last,list) and len(last)==3 and all(type(v) is int and 0 <= v <= c for v,c in zip(last,current))
+            and last[1] <= last[0]):
+        return last if current!=previous else [0,0,0]
+    if any(c < p for c,p in zip(current,previous)):
+        return [0,0,0]
+    return [c-p for c,p in zip(current,previous)]
+
+
 class Scanner:
     """Incremental, transactional cursors + durable, deduplicated upload outbox.
 
@@ -58,6 +68,7 @@ class Scanner:
 
     def seed(self, account=''):
         if self.db.get('scanner_seeded'):
+            self._upgrade_counters()
             self.refresh_activity()
             return
         # Read header + bounded tail instead of scanning years of conversation text.
@@ -87,6 +98,35 @@ class Scanner:
             except OSError:
                 continue
         self.db.put('scanner_seeded', True)
+        self.db.put('scanner_counter_timeline', True)
+
+    def _upgrade_counters(self):
+        if self.db.get('scanner_counter_timeline'):
+            return
+        with self.db.connect() as db:
+            for row in db.execute('SELECT path,state FROM cursors').fetchall():
+                state=json.loads(row['state']);end=state['offset']
+                try:
+                    with Path(row['path']).open('rb') as f:
+                        start=max(0,end-2*1024*1024);f.seek(start)
+                        if start:f.readline()
+                        data=f.read(max(0,end-f.tell()))
+                    for raw in reversed(data.splitlines()):
+                        if b'"token_count"' not in raw:continue
+                        try:
+                            obj=json.loads(raw);total=(obj.get('payload',{}).get('info') or {}).get('total_token_usage')
+                            if not isinstance(total,dict):continue
+                            current=[max(0,int(total.get(k,0))) for k in ('input_tokens','cached_input_tokens','output_tokens')]
+                            at=stamp(obj['timestamp']);old=db.execute('SELECT value FROM counters WHERE session=?',(state['session'],)).fetchone()
+                            previous=json.loads(old[0]) if old else []
+                            if len(previous)<5 or at>previous[4]:
+                                reasoning=total.get('reasoning_output_tokens')
+                                if type(reasoning) is not int or not 0<=reasoning<=current[2]:reasoning=None
+                                db.execute('INSERT OR REPLACE INTO counters VALUES (?,?)',(state['session'],json.dumps(current+[reasoning,at])))
+                            break
+                        except (ValueError,KeyError,TypeError):continue
+                except OSError:continue
+        self.db.put('scanner_counter_timeline', True)
 
     def refresh_activity(self, now=None):
         """Recover startup activity without changing billing cursors or high water."""
@@ -223,11 +263,18 @@ class Scanner:
         current = [max(0, int(total.get(k, 0))) for k in keys]
         old = db.execute('SELECT value FROM counters WHERE session=?', (state['session'],)).fetchone()
         previous = json.loads(old[0]) if old else [0, 0, 0]
-        # Replayed history / fork copies / archived moves must not move high water backwards.
-        if all(c <= p for c, p in zip(current, previous)):
+        reasoning = total.get('reasoning_output_tokens')
+        if type(reasoning) is not int or not 0 <= reasoning <= current[2]:
+            reasoning = None
+        # Order by the original event time, not independent component maxima.
+        # A later truncated history can reset cumulative input while output grows.
+        previous_at=previous[4] if len(previous)>4 else None
+        if previous_at is not None and event_time < previous_at:
             return 0
         db.execute('INSERT OR REPLACE INTO counters VALUES (?,?)',
-                   (state['session'], json.dumps([max(c, p) for c, p in zip(current, previous)])))
+                   (state['session'], json.dumps(current+[reasoning,event_time])))
+        if current == previous[:3]:
+            return 0
         if (seed or not allowed or state.get('account') != account
                 or state.get('provider', 'unknown') != 'openai'):
             return 0
@@ -237,7 +284,11 @@ class Scanner:
             return 0
         if ts <= max(self.start, self.scope_since):
             return 0
-        inputs, cached, outputs = [max(0, c-p) for c, p in zip(current, previous)]
+        last=info.get('last_token_usage')
+        last=[last.get(k) for k in keys] if isinstance(last,dict) else None
+        inputs, cached, outputs = usage_delta(current,previous[:3],last)
+        if old is None and isinstance(last,list) and all(type(v) is int and 0<=v<=c for v,c in zip(last,current)):
+            inputs,cached,outputs=last
         if inputs+outputs == 0:
             return 0
         cached = min(inputs, cached)
@@ -248,7 +299,18 @@ class Scanner:
         weight, known = weighted(model, inputs, cached, outputs, multiplier)
         event_id = hashlib.sha256((state['session']+json.dumps(current)).encode()).hexdigest()
         event = dict(id=event_id, device=self.device, account=account, ts=ts, model=model,
-                     tokens=inputs+outputs, weight=weight, known=known)
+                     tokens=inputs+outputs, weight=weight, known=known,
+                     input_tokens=inputs, cached_input_tokens=cached, output_tokens=outputs)
+        prior_reasoning = previous[3] if len(previous) > 3 else None
+        if (inputs,cached,outputs)==tuple(last or []):
+            used_reasoning=(info.get('last_token_usage') or {}).get('reasoning_output_tokens')
+        elif reasoning is not None and prior_reasoning is not None and not any(c<p for c,p in zip(current,previous)):
+            used_reasoning = max(0, reasoning-prior_reasoning)
+        else:
+            last = info.get('last_token_usage') or {}
+            used_reasoning = last.get('reasoning_output_tokens') if all(last.get(k) == v for k,v in zip(keys,(inputs,cached,outputs))) else None
+        if type(used_reasoning) is int and 0 <= used_reasoning <= outputs:
+            event['reasoning_output_tokens'] = used_reasoning
         result = db.execute('INSERT OR IGNORE INTO outbox(id,payload) VALUES (?,?)',
                             (event_id, json.dumps(event)))
         return result.rowcount

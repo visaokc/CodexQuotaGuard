@@ -328,3 +328,116 @@ def test_pending_quota_is_distinct_from_zero_and_resolves_on_increment(tmp_path)
     window=usage(db,'a',300)['windows']['total']
     assert window['quota_pending_rows']==[]
     assert window['quota_rows'][0]['quota']==1
+
+
+def test_logged_tokens_update_live_but_quota_waits_for_official_increments(tmp_path):
+    db = Database(tmp_path/'live-estimate.sqlite')
+    with db.connect() as conn:
+        epoch = conn.execute("INSERT INTO epochs(account,started,baseline,used,reset_at,observed_at,reason) VALUES ('a',100,0,2,999,200,'reset')").lastrowid
+        conn.execute('INSERT INTO segments(epoch,start,end,delta) VALUES (?,?,?,?)', (epoch,100,200,2))
+        for id, device, ts, tokens, weight, known in [('sample','one',150,100,10,1), ('cached','one',250,1000000,2,1), ('output','two',260,100,6,1)]:
+            conn.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?,?)', (id,device,'a',ts,'model',tokens,weight,known))
+    window = usage(db,'a',300)['windows']['total']
+    assert len(window['quota_pending_rows']) == 2
+    assert window['quota_estimate_rows'] == []
+    assert sum(r['tokens'] for r in window['rows']) == 1000200
+    assert sum(r['quota'] for r in window['quota_rows']) == 2
+    with db.connect() as conn:
+        conn.execute('INSERT INTO segments(epoch,start,end,delta) VALUES (?,?,?,?)', (epoch,200,280,1))
+    calibrated = usage(db,'a',300)['windows']['total']
+    assert calibrated['quota_estimate_rows'] == calibrated['quota_pending_rows'] == []
+    assert {r['device']:r['quota'] for r in calibrated['quota_rows']} == {'one':2.25,'two':0.75}
+
+
+def test_live_quota_never_guesses_unknown_models_or_reuses_previous_cycle_samples(tmp_path):
+    db = Database(tmp_path/'estimate-boundary.sqlite')
+    with db.connect() as conn:
+        epoch = conn.execute("INSERT INTO epochs(account,started,baseline,used,reset_at,observed_at,reason) VALUES ('a',100,0,2,999,200,'reset')").lastrowid
+        conn.execute('INSERT INTO segments(epoch,start,end,delta) VALUES (?,?,?,?)', (epoch,100,200,2))
+        conn.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?,?)', ('sample','one','a',150,'model',100,10,1))
+        conn.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?,?)', ('unknown','two','a',250,'unknown',100,0,0))
+    window = usage(db,'a',300)['windows']['total']
+    assert window['quota_estimate_rows'] == []
+    assert window['quota_pending_rows'] == [{'device':'two','model':'unknown','bucket':0}]
+    with db.connect() as conn:
+        conn.execute("INSERT INTO epochs(account,started,baseline,used,reset_at,observed_at,reason) VALUES ('a',300,0,0,1999,300,'reset')")
+        conn.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?,?)', ('new','one','a',350,'model',100,10,1))
+    window = usage(db,'a',400)['windows']['cycle']
+    assert window['quota_estimate_rows'] == []
+    assert window['quota_pending_rows'] == [{'device':'one','model':'model','bucket':0}]
+
+
+def test_cache_quota_is_discounted_part_of_total_and_missing_is_not_zero(tmp_path):
+    db = Database(tmp_path/'cache.sqlite')
+    with db.connect() as conn:
+        epoch = conn.execute("INSERT INTO epochs(account,started,baseline,used,reset_at,observed_at,reason) VALUES ('a',100,0,1,999,200,'reset')").lastrowid
+        conn.execute('INSERT INTO segments(epoch,start,end,delta) VALUES (?,?,?,?)', (epoch,100,200,1))
+        conn.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?,?)', ('cached','one','a',150,'gpt-6-astra',1100,.1725,1))
+        conn.execute('INSERT INTO event_details(id,input_tokens,cached_input_tokens,output_tokens) VALUES (?,?,?,?)', ('cached',1000,900,100))
+        conn.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?,?)', ('fresh','one','a',250,'gpt-6-astra',1100,.1725,1))
+        conn.execute('INSERT INTO event_details(id,input_tokens,cached_input_tokens,output_tokens) VALUES (?,?,?,?)', ('fresh',1000,900,100))
+    window=usage(db,'a',300)['windows']['total']
+    assert window['rows'][0]['cache_tokens'] == 1800
+    assert window['rows'][0]['detail_missing'] == 0
+    assert window['quota_estimate_rows'] == []
+    assert window['quota_rows'][0]['quota'] == 1
+    assert abs(window['quota_rows'][0]['cache_quota']-22500/172500)<1e-10
+    with db.connect() as conn:
+        conn.execute("DELETE FROM event_details WHERE id='fresh'")
+    window=usage(db,'a',300)['windows']['total']
+    assert window['rows'][0]['detail_missing'] == 1100
+    assert window['quota_estimate_rows'] == []
+    with db.connect() as conn:
+        conn.execute('INSERT INTO segments(epoch,start,end,delta) VALUES (?,?,?,?)', (epoch,200,280,1))
+    window=usage(db,'a',300)['windows']['total']
+    assert window['quota_rows'][0]['cache_quota'] is None
+
+
+def test_hour_panning_reads_past_tokens_with_later_official_calibration(tmp_path):
+    db=Database(tmp_path/'pan.sqlite')
+    with db.connect() as conn:
+        epoch=conn.execute("INSERT INTO epochs(account,started,baseline,used,reset_at,observed_at,reason) VALUES ('a',100,0,1,9999,5000,'reset')").lastrowid
+        conn.execute('INSERT INTO segments(epoch,start,end,delta) VALUES (?,?,?,?)',(epoch,100,5000,1))
+        conn.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?,?)',('past','one','a',2000,'gpt-6-astra',100,1,1))
+        conn.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?,?)',('now','one','a',7900,'gpt-6-astra',200,2,1))
+    live=usage(db,'a',8000)
+    past=usage(db,'a',8000,hour_end=4000)
+    assert sum(r['tokens'] for r in live['windows']['hour_curve']['rows'])==200
+    assert sum(r['tokens'] for r in past['windows']['hour_curve']['rows'])==100
+    assert sum(r['quota'] for r in past['windows']['hour_curve']['quota_rows'])==1
+    assert past['windows']['hour_curve']['quota_pending_rows']==[]
+    assert past['windows']['today']==live['windows']['today']
+    assert usage(db,'a',8000)==live
+
+
+def test_hour_history_buffer_keeps_neighbor_buckets_without_expanding_live_view(tmp_path):
+    db=Database(tmp_path/'hour-buffer.sqlite')
+    with db.connect() as conn:
+        conn.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?,?)',('older','one','a',1000,'gpt-6-astra',100,1,1))
+        conn.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?,?)',('recent','one','a',7900,'gpt-6-astra',200,2,1))
+    buffered=usage(db,'a',8000,hour_end=8000,hour_buffer=True)['windows']['hour_curve']
+    live=usage(db,'a',8000)['windows']['hour_curve']
+    assert buffered['count']==1560 and buffered['step']==60
+    assert sum(row['tokens'] for row in buffered['rows'])==300
+    assert live['count']==60 and sum(row['tokens'] for row in live['rows'])==200
+
+
+def test_day_history_has_hourly_records_and_official_quota_without_changing_live_windows(tmp_path):
+    db=Database(tmp_path/'day-buffer.sqlite')
+    now=40*86400
+    with db.connect() as conn:
+        epoch=conn.execute("INSERT INTO epochs(account,started,baseline,used,reset_at,observed_at,reason) VALUES ('a',0,0,1,9999999,?,'reset')",(now,)).lastrowid
+        conn.execute('INSERT INTO segments(epoch,start,end,delta) VALUES (?,?,?,?)',(epoch,0,now,1))
+        for ident,account,at,tokens in [('old','a',now-20*86400,100),('live','a',now-100,200),('foreign','b',now-20*86400,300),('too-old','a',now-35*86400,400)]:
+            conn.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?,?)',(ident,'one',account,at,'gpt-6-astra',tokens,1,1))
+    live=usage(db,'a',now)
+    buffered=usage(db,'a',now,day_end=now,day_buffer=True)
+    window=buffered['windows']['day']
+    assert window['count']==32*24 and window['step']==3600
+    assert sum(row['tokens'] for row in window['rows'])==300
+    assert min(row['first_at'] for row in window['rows'])==now-20*86400
+    assert sum(row['quota'] for row in window['quota_rows'])==2/3
+    assert live['windows']['day']['count']==24
+    assert sum(row['tokens'] for row in live['windows']['day']['rows'])==200
+    assert buffered['windows']['hour_curve']==live['windows']['hour_curve']
+    assert usage(db,'a',now)==live

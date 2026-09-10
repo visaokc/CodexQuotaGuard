@@ -55,11 +55,16 @@ class Database:
               ts REAL NOT NULL, model TEXT NOT NULL, tokens INTEGER NOT NULL,
               weight REAL NOT NULL, known INTEGER NOT NULL);
             CREATE INDEX IF NOT EXISTS events_time ON events(account,ts);
+            CREATE TABLE IF NOT EXISTS event_details (
+              id TEXT PRIMARY KEY, input_tokens INTEGER NOT NULL,
+              cached_input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL);
             ''')
             columns = {row['name'] for row in db.execute('PRAGMA table_info(devices)')}
             for name in ('unbound_active', 'unbound_uncertain'):
                 if name not in columns:
                     db.execute(f'ALTER TABLE devices ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0')
+            if 'reasoning_output_tokens' not in {row['name'] for row in db.execute('PRAGMA table_info(event_details)')}:
+                db.execute('ALTER TABLE event_details ADD COLUMN reasoning_output_tokens INTEGER')
 
     @contextmanager
     def connect(self):

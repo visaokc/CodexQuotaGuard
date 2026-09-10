@@ -38,7 +38,7 @@ def _identity(value):
 def _summary(value):
     if not value:
         return None
-    result = _pick(value, ('account', 'unassigned', 'provisional', 'allocation', 'reset_pending', 'server_time'))
+    result = _pick(value, ('account', 'unassigned', 'provisional', 'allocation', 'reset_pending', 'server_time', 'compensation_enabled'))
     result['token_budget'] = _pick(value.get('token_budget'), ('sampled_tokens', 'used_tokens', 'total_tokens', 'source'))
     result['epoch'] = _pick(value.get('epoch'), ('id', 'account', 'started', 'ended', 'baseline', 'used',
         'reset_at', 'observed_at', 'reason', 'cycle')) or None
@@ -86,10 +86,13 @@ def _view(value):
     for key in ('cycle', 'total', 'today', 'pie_hour', 'pie_six_hours', 'hour', 'hour_curve', 'day', 'week', 'month'):
         source = analytics.get('windows', {}).get(key)
         if source:
-            window = _pick(source, ('start', 'step', 'count', 'quota_ready'))
+            window = _pick(source, ('start', 'step', 'count', 'quota_ready', 'quota_available'))
+            if 'quota_gaps' in source:
+                window['quota_gaps'] = [_pick(r, ('start','end')) for r in source['quota_gaps']]
             window['quota_pending_rows'] = [_pick(r, ('device', 'model', 'bucket')) for r in source.get('quota_pending_rows', [])]
-            window['quota_rows'] = [_pick(r, ('device', 'model', 'bucket', 'quota')) for r in source.get('quota_rows', [])]
-            window['rows'] = [_pick(r, ('device', 'model', 'bucket', 'tokens', 'weight', 'unknown')) for r in source.get('rows', [])]
+            window['quota_estimate_rows'] = [_pick(r, ('device', 'model', 'bucket', 'quota', 'cache_quota')) for r in source.get('quota_estimate_rows', [])]
+            window['quota_rows'] = [_pick(r, ('device', 'model', 'bucket', 'quota', 'cache_quota')) for r in source.get('quota_rows', [])]
+            window['rows'] = [_pick(r, ('device', 'model', 'bucket', 'tokens', 'weight', 'unknown', 'cache_tokens', 'detail_missing', 'input_tokens', 'output_tokens', 'reasoning_tokens', 'reasoning_count', 'reasoning_missing', 'event_count', 'detail_count', 'first_at', 'last_at')) for r in source.get('rows', [])]
             result['analytics']['windows'][key] = window
     result['recovery'] = _pick(value.get('recovery'), ('scanning', 'recovered_events', 'recovered_tokens',
         'inferred_tokens', 'runtime_tokens', 'unresolved_events', 'unresolved_tokens'))
@@ -210,13 +213,13 @@ class WebController:
         payload = {} if payload is None else payload
         if not isinstance(payload, dict):
             return {'ok': False, 'error': '操作参数须为对象'}
-        actions = {'refresh', 'account_scan', 'account_add', 'account_remove', 'account_history', 'cap_save',
-                   'limit_toggle', 'restore', 'note_save', 'color_save', 'device_order_save', 'device_remove', 'settings_save',
+        actions = {'refresh', 'account_scan', 'account_add', 'account_remove', 'account_history', 'chart_history', 'cap_save',
+                   'limit_toggle', 'compensation_toggle', 'restore', 'note_save', 'color_save', 'device_order_save', 'device_remove', 'settings_save',
                    'programs_discover', 'pair_generate', 'pair_join', 'tailscale_login', 'tailscale_switch',
                    'connection_save', 'update_check', 'update_install', 'diagnostics'}
         if action not in actions:
             return {'ok': False, 'error': '未知操作'}
-        if not self._mutation.acquire(blocking=False):
+        if not self._mutation.acquire(blocking=action=='chart_history'):
             return {'ok': False, 'error': '上一项操作尚未结束，请稍候'}
         try:
             if self._closed.is_set():
@@ -281,6 +284,32 @@ class WebController:
         if not self._engine:
             raise ValueError('监测尚未就绪')
         self._engine.set_cap(payload['cap'], expected_account=account)
+
+    def _chart_history(self, payload):
+        from .analytics import usage
+        account = self._tracked(payload)
+        end = payload.get('end')
+        period = payload.get('period', 'hour')
+        if period not in ('hour', 'day'):
+            raise ValueError('图表时间范围无效')
+        if type(end) not in (int,float) or not math.isfinite(end) or end < 0 or end > time.time()+60:
+            raise ValueError('图表时间无效')
+        if not self._engine:
+            raise ValueError('账本尚未就绪')
+        options = dict(day_end=end,day_buffer=True) if period == 'day' else dict(hour_end=end,hour_buffer=True)
+        analytics = usage(self._engine.group_db,account,**options)
+        windows = ('day',) if period == 'day' else ('hour','hour_curve')
+        analytics['windows'] = {k:v for k,v in analytics['windows'].items() if k in windows}
+        return _view({'analytics':analytics})['analytics']
+
+    def _compensation_toggle(self, payload):
+        account = self._tracked(payload)
+        if type(payload.get('enabled')) is not bool:
+            raise ValueError('补偿开关须为布尔值')
+        if not self._engine:
+            raise ValueError('账本尚未就绪')
+        self._engine.commands.put(('compensation', dict(account=account, enabled=payload['enabled'])))
+        self._engine.wakeup.set()
 
     def _limit_toggle(self, payload):
         if not isinstance(payload.get('enabled'), bool):

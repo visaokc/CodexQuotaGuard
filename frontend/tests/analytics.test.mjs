@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {aggregate,devicesFor,quotaValue,niceScale,linePath,curveGeometry,curveY,COLORS,modelOptions,officialUsageColor,officialQuotaRemaining,refreshRemaining,dailyQuotaUsage} from '../src/data.js';
+import {historyMinimum,historyWindow,userBreakdown,aggregate,devicesFor,quotaValue,niceScale,linePath,curveGeometry,curveY,COLORS,modelOptions,officialUsageColor,officialQuotaRemaining,refreshRemaining,dailyQuotaUsage,chartQuotaPercent,trendForMode} from '../src/data.js';
 import {fixture} from './fixture.mjs';
 test('current-cycle comparison exactly matches device rows, independently of historical cache',()=>{
   const data=fixture(),result=aggregate(data,'cycle');
@@ -38,14 +38,15 @@ test('all-user chart series preserve each bucket, device color and stacked total
   const result=aggregate(data,'day');
   assert.deepEqual(result.points,[200,200,70]);
   assert.equal(result.total,470);
-  assert.deepEqual(result.series,[
+  const basic=items=>items.map(({cachePoints,cacheQuotaPoints,cacheMissingPoints,...item})=>item);
+  assert.deepEqual(basic(result.series),[
     {id:'fixture-peer',label:'Peer',color:COLORS[0],points:[50,200,0],quotaPoints:[0,0,0],quotaPendingPoints:[false,false,false]},
     {id:'fixture-local',label:'Local',color:COLORS[1],points:[150,0,70],quotaPoints:[0,0,0],quotaPendingPoints:[false,false,false]},
   ]);
   for(let i=0;i<result.points.length;i++)assert.equal(result.series.reduce((sum,item)=>sum+item.points[i],0),result.points[i]);
   for(const item of result.series)assert.equal(item.points.reduce((sum,value)=>sum+value,0),result.totals[item.id]);
   const selected=aggregate(data,'day','gpt-6-astra','fixture-local');
-  assert.deepEqual(selected.series,[{id:'fixture-local',label:'Local',color:COLORS[1],points:[120,0,70],quotaPoints:[0,0,0],quotaPendingPoints:[false,false,false]}]);
+  assert.deepEqual(basic(selected.series),[{id:'fixture-local',label:'Local',color:COLORS[1],points:[120,0,70],quotaPoints:[0,0,0],quotaPendingPoints:[false,false,false]}]);
   assert.deepEqual(selected.points,[120,0,70]);
   assert.equal(selected.total,190);
   data.view.analytics.account='another-account';
@@ -94,6 +95,8 @@ test('model options use numeric version order and hiding auto-review never remov
   data.view.analytics.windows.day.rows.push({device:'fixture-local',model:'codex-auto-review',bucket:0,tokens:123456,weight:0,unknown:0});
   assert.deepEqual(modelOptions(data).map(o=>o.value),['','gpt-6','gpt-5.10.10','gpt-5.10.2','gpt-5.10','gpt-5.9']);
   assert.equal(aggregate(data,'day').total,before+123456);
+  data.view.analytics.models=['gpt-5.6-luna','gpt-5.6-terra','gpt-6-astra','gpt-5.6-sol'];
+  assert.deepEqual(modelOptions(data).map(o=>o.value),['','gpt-6-astra','gpt-5.6-sol','gpt-5.6-terra','gpt-5.6-luna']);
 });
 test('saved device order is local to its account, colors remain stable and new devices append',()=>{
   const data=fixture(),before=Object.fromEntries(devicesFor(data).map(d=>[d.id,d.color]));
@@ -164,4 +167,86 @@ test('chart quota uses official allocation and personal cap, independent of toke
   assert.deepEqual(aggregate(data,'today').quotaTotals,{'fixture-local':28,'fixture-peer':4});
   data.view.analytics.cycles[0].total_tokens=1;
   assert.equal(aggregate(data,'today','gpt-5.5','fixture-local').quotaPoints[0],28);
+});
+
+test('only official quota is displayed and pending logs retain the last calibrated percentage',()=>{
+  const data=fixture(),window=data.view.analytics.windows.today;
+  window.quota_rows=[{device:'fixture-local',model:'gpt-5.5',bucket:0,quota:1}];
+  window.quota_estimate_rows=[{device:'fixture-local',model:'gpt-5.5',bucket:0,quota:.25}];
+  window.quota_pending_rows=[{device:'fixture-peer',model:'gpt-5.5',bucket:0}];
+  data.settings.quota_display='personal';
+  const result=aggregate(data,'today');
+  assert.equal(result.quotaTotals['fixture-local'],2);
+  assert.equal(result.quotaStates['fixture-local'],undefined);
+  assert.equal(result.quotaStates['fixture-peer'],'pending');
+  assert.equal(chartQuotaPercent(result.quotaPoints[0],true,result.quotaPendingPoints[0],result.quotaEstimatedPoints[0]),'2.00%');
+  const selected=aggregate(data,'today','','fixture-local');
+  assert.equal(chartQuotaPercent(selected.quotaPoints[0],true,selected.quotaPendingPoints[0],selected.quotaEstimatedPoints[0]),'2.00%');
+  assert.equal(chartQuotaPercent(0,true,true,false),'待更新');
+  assert.equal(chartQuotaPercent(2.5,false,false,true),'—');
+  window.quota_estimate_rows=[];window.quota_pending_rows=[];
+  window.quota_rows[0].quota=1.1;
+  const confirmed=aggregate(data,'today');
+  assert.equal(confirmed.quotaTotals['fixture-local'],2.2);
+  assert.deepEqual(confirmed.quotaStates,{});
+  assert.equal(chartQuotaPercent(confirmed.quotaPoints[0],true,false,false),'2.20%');
+});
+
+test('cache modes preserve missing intervals and apply quota conversion once',()=>{
+  const data=fixture(),window=data.view.analytics.windows.day;
+  data.settings.quota_display='personal';
+  window.rows=[{device:'fixture-local',model:'gpt-5.5',bucket:0,tokens:100,cache_tokens:80,detail_missing:0},
+    {device:'fixture-local',model:'gpt-5.5',bucket:1,tokens:100,cache_tokens:null,detail_missing:100}];
+  window.quota_rows=[{device:'fixture-local',model:'gpt-5.5',bucket:0,quota:1,cache_quota:.1}];
+  const original=aggregate(data,'day','','fixture-local'),cached=trendForMode(original,'cache');
+  assert.equal(original.cacheQuotaTotals['fixture-local'],.2);
+  assert.deepEqual(cached.points.slice(0,3),[80,null,0]);
+  assert.equal(cached.total,null);
+  assert.equal(cached.quotaTotals['fixture-local'],.2);
+  assert.equal(trendForMode(original,'combined').points[0],100);
+  assert.equal(original.points[1],100);
+  assert.equal(linePath([null,null]),'');
+  assert.equal((linePath([10,null,20]).match(/M/g)||[]).length,2);
+  assert.ok(!linePath([10,null,20]).includes('C'));
+});
+
+test('user cycle breakdown distinguishes cache miss and reasoning without double counting',()=>{
+  const data=fixture();data.view.analytics.windows.cycle.rows=[{device:'fixture-local',model:'gpt-6-astra',tokens:1100,input_tokens:1000,cache_tokens:800,output_tokens:100,reasoning_tokens:70,detail_missing:0,reasoning_missing:0,event_count:1,detail_count:1,first_at:100,last_at:100},
+    {device:'fixture-local',model:'gpt-5.5',tokens:400,input_tokens:null,cache_tokens:null,output_tokens:null,detail_missing:400,event_count:1,detail_count:0,first_at:110,last_at:110}];
+  const value=userBreakdown(data,'fixture-local');
+  assert.equal(value.tokens,1500);assert.equal(value.miss_tokens,200);assert.equal(value.non_reasoning_tokens,30);
+  assert.equal(value.input_tokens+value.output_tokens,1100);assert.equal(value.hit_rate,80);
+  assert.equal(value.detail_missing,400);assert.equal(value.event_count,2);assert.equal(value.detail_count,1);
+  assert.equal(value.models.find(m=>m.model==='gpt-5.5').hit_rate,null);assert.equal(value.models.find(m=>m.model==='gpt-5.5').coverage,0);
+  assert.equal(value.models[0].usage_share,1100/1500*100);
+  assert.equal(value.models.reduce((total,item)=>total+item.usage_share,0),100);
+  assert.equal(chartQuotaPercent(110,true),'110.00%');
+  assert.equal(userBreakdown(data,'fixture-peer').tokens,0);
+  assert.deepEqual(userBreakdown(data,'fixture-peer').models.map(m=>[m.model,m.tokens,m.usage_share]),[['gpt-6-astra',0,0],['gpt-5.6-sol',0,0],['gpt-5.6-terra',0,0],['gpt-5.6-luna',0,0]]);
+});
+
+test('hour history buffer retains exact minute buckets as the viewport moves',()=>{
+  const source={start:0,step:60,count:180,rows:[{bucket:65,tokens:100},{bucket:120,tokens:200}],quota_rows:[{bucket:65,quota:.2}],quota_pending_rows:[]};
+  const first=historyWindow(source,7200),next=historyWindow(source,7260);
+  assert.equal(first.count,60);assert.equal(first.start,3660);
+  assert.deepEqual(first.rows,[{bucket:4,tokens:100},{bucket:59,tokens:200}]);
+  assert.deepEqual(next.rows,[{bucket:3,tokens:100},{bucket:58,tokens:200}]);
+  assert.deepEqual(source.rows,[{bucket:65,tokens:100},{bucket:120,tokens:200}]);
+});
+
+test('day history uses hourly buckets and stops at the selected recorded history',()=>{
+  const data=fixture(),latest=Math.floor(data.view.analytics.at/3600)*3600;
+  const source={start:latest-32*86400,step:3600,count:32*24,rows:[{device:'fixture-local',model:'gpt-6-astra',bucket:30*24,tokens:100},{device:'fixture-peer',model:'gpt-5.6-sol',bucket:0,tokens:200},{device:'removed-peer',model:'gpt-6-astra',bucket:0,tokens:900}]};
+  assert.equal(historyMinimum(data,source,86400,30*86400,'','fixture-local'),latest-2*86400+23*3600);
+  assert.equal(historyMinimum(data,source,86400,30*86400),latest-30*86400);
+  assert.equal(historyMinimum(data,source,86400,30*86400,'gpt-5.6-luna'),latest);
+  assert.equal(historyMinimum(data,{...source,rows:[]},86400,30*86400),latest);
+  const window=historyWindow(source,latest-86400,86400);
+  assert.equal(window.count,24);assert.equal(window.step,3600);
+  assert.deepEqual(window.rows.filter(r=>r.device==='fixture-local'),[]);
+  const earliest=historyWindow(source,historyMinimum(data,source,86400,30*86400,'','fixture-local'),86400);
+  assert.equal(earliest.rows[0].tokens,100);assert.equal(earliest.rows[0].bucket,0);
+  const calibrated={...source,quota_available:true,quota_ready:false,quota_gaps:[{start:source.start,end:source.start+3600}]};
+  assert.equal(historyWindow(calibrated,latest,86400).quota_ready,true,'gaps outside the visible window do not hide its calibrated percentages');
+  assert.equal(historyWindow(calibrated,source.start+23*3600,86400).quota_ready,false);
 });

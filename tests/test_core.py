@@ -177,6 +177,42 @@ def test_scanner_activity_and_api_exclusion(tmp_path):
     assert scan.activity(420) == (0, 0)
 
 
+def test_scanner_reasoning_is_part_of_output_and_keeps_event_identity(tmp_path):
+    db=Database(tmp_path/'local.sqlite');home=tmp_path/'codex';folder=home/'sessions';folder.mkdir(parents=True)
+    scan=Scanner(db,home,'one',100);scan.seed(A)
+    def record(i,c,o,r,ts):
+        last=(i,c,o,r) if ts==210 else (i-1000,c-800,o-100,r-70)
+        return line('event_msg',dict(type='token_count',info=dict(total_token_usage=dict(input_tokens=i,cached_input_tokens=c,output_tokens=o,reasoning_output_tokens=r),last_token_usage=dict(zip(('input_tokens','cached_input_tokens','output_tokens','reasoning_output_tokens'),last)))),ts)
+    f=folder/'new.jsonl';f.write_text(line('session_meta',dict(id='reasoning'))+line('turn_context',dict(model='gpt-6-astra'),200)+record(1000,800,100,70,210))
+    scan.scan(A)
+    with f.open('a') as out:out.write(record(2200,1700,300,220,220))
+    scan.scan(A);events=sorted(scan.pending(),key=lambda e:e['ts'])
+    assert [e['tokens'] for e in events]==[1100,1400]
+    assert [e['reasoning_output_tokens'] for e in events]==[70,150]
+    assert events[1]['input_tokens']==1200 and events[1]['cached_input_tokens']==900 and events[1]['output_tokens']==200
+    assert events[0]['id']==hashlib.sha256(('reasoning'+json.dumps([1000,800,100])).encode()).hexdigest()
+    scan.scan(A);assert len(scan.pending())==2
+
+
+def test_truncated_counters_do_not_suppress_new_input_and_cache_or_repeat_archives(tmp_path):
+    db=Database(tmp_path/'local.sqlite');home=tmp_path/'codex';folder=home/'sessions';folder.mkdir(parents=True)
+    scan=Scanner(db,home,'one',100);scan.seed(A)
+    def record(current,last,ts):
+        keys=('input_tokens','cached_input_tokens','output_tokens')
+        return line('event_msg',dict(type='token_count',info=dict(total_token_usage=dict(zip(keys,current)),last_token_usage=dict(zip(keys,last)))),ts)
+    f=folder/'timeline.jsonl';f.write_text(line('session_meta',dict(id='s'))+line('turn_context',dict(model='gpt-6-astra'),200)+record([10000,9000,100],[10000,9000,100],210))
+    scan.scan(A)
+    with f.open('a') as out:
+        out.write(record([1000,800,120],[200,150,20],220))
+        out.write(record([1300,1050,150],[300,250,30],230))
+        out.write(record([1300,1050,150],[300,250,30],240))
+    scan.scan(A);events=sorted(scan.pending(),key=lambda e:e['ts'])
+    assert [e['tokens'] for e in events]==[10100,220,330]
+    assert [e['cached_input_tokens'] for e in events]==[9000,150,250]
+    archive=home/'archived_sessions';archive.mkdir();f.rename(archive/'timeline.jsonl')
+    scan.scan(A);assert len(scan.pending())==3
+
+
 def test_activity_is_scoped_to_current_account(tmp_path):
     db = Database(tmp_path/'local.sqlite')
     folder = tmp_path/'codex'/'sessions'
@@ -267,6 +303,7 @@ def test_enforcement_and_reset_resume(tmp_path):
              devices=[dict(id='one', estimated=34, settled=34, cap=33)])
     engine.enforce(s, 101)
     assert fw.calls == ['apply', 'pause']
+    assert not engine.snapshot()['notifications']
     s['epoch']['cycle'] = 'c2'
     s['devices'][0].update(estimated=0, settled=0)
     engine.enforce(s, 102)

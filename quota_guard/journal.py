@@ -63,6 +63,8 @@ class Journal:
                 or len(json.dumps(r)) > 24000):
             raise ValueError('同步记录无效或时钟超前')
         p = r['payload']
+        if r['kind'] == 'profile' and 'compensation_enabled' in p and type(p['compensation_enabled']) is not bool:
+            raise ValueError('补偿开关须为布尔值')
         if r['kind'] == 'profile' and 'fairness_start' in p:
             start = p['fairness_start']
             if not isinstance(start, (int, float)) or not math.isfinite(start) or not 0 <= start <= r['ts']:
@@ -82,6 +84,21 @@ class Journal:
                         or type(e['tokens']) is not int or not 0 <= e['tokens'] <= 1e12
                         or not math.isfinite(e['ts']) or e['ts'] > time.time()+60 or len(e['model']) > 100):
                     raise ValueError('Token 事件无效')
+                detail_keys = ('input_tokens', 'cached_input_tokens', 'output_tokens')
+                if any(key in e for key in detail_keys):
+                    if (not all(type(e.get(key)) is int and 0 <= e[key] <= 1e12 for key in detail_keys)
+                            or e['cached_input_tokens'] > e['input_tokens']
+                            or e['input_tokens']+e['output_tokens'] != e['tokens']):
+                        raise ValueError('Token 明细无效')
+                if 'reasoning_output_tokens' in e and (type(e['reasoning_output_tokens']) is not int
+                        or not 0 <= e['reasoning_output_tokens'] <= e.get('output_tokens', -1)):
+                    raise ValueError('推理 Token 明细无效')
+                if 'replaces' in e:
+                    old=e['replaces']
+                    if (not isinstance(old,dict) or type(old.get('tokens')) is not int or not 0<=old['tokens']<=1e12
+                            or type(old.get('weight')) not in (int,float) or not math.isfinite(old['weight']) or not 0<=old['weight']<=1e9
+                            or 'input_tokens' not in e):
+                        raise ValueError('Token 修订依据无效')
         elif r['kind'] == 'quota':
             if (p['account'] != account or not all(math.isfinite(p[k]) for k in ('used', 'reset_at', 'at'))
                     or not 0 <= p['used'] <= 100 or abs(p['at']-r['ts']) > 60):
@@ -140,8 +157,25 @@ class Journal:
                                    (account, p['device'], p['name'], p['cap']))
                     elif r['kind'] == 'events':
                         for e in p:
+                            if 'replaces' in e:
+                                db.execute('''UPDATE events SET tokens=?,weight=?,known=? WHERE id=? AND device=? AND account=?
+                                    AND ts=? AND model=? AND tokens=? AND weight=?''',
+                                    (e['tokens'],e['weight'],bool(e['known']),e['id'],e['device'],account,e['ts'],e['model'],e['replaces']['tokens'],e['replaces']['weight']))
                             db.execute('INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?,?,?)',
                                        (e['id'], e['device'], account, e['ts'], e['model'], e['tokens'], e['weight'], bool(e['known'])))
+                            if 'input_tokens' in e:
+                                matched = db.execute('SELECT 1 FROM events WHERE id=? AND device=? AND account=? AND ts=? AND model=? AND tokens=? AND weight=?',
+                                    (e['id'],e['device'],account,e['ts'],e['model'],e['tokens'],e['weight'])).fetchone()
+                                if matched:
+                                    if 'replaces' in e:
+                                        db.execute('''UPDATE event_details SET input_tokens=?,cached_input_tokens=?,output_tokens=?,reasoning_output_tokens=? WHERE id=?''',
+                                            (e['input_tokens'],e['cached_input_tokens'],e['output_tokens'],e.get('reasoning_output_tokens'),e['id']))
+                                    db.execute('INSERT OR IGNORE INTO event_details(id,input_tokens,cached_input_tokens,output_tokens) VALUES (?,?,?,?)',
+                                        (e['id'],e['input_tokens'],e['cached_input_tokens'],e['output_tokens']))
+                                    if 'reasoning_output_tokens' in e:
+                                        db.execute('''UPDATE event_details SET reasoning_output_tokens=? WHERE id=?
+                                            AND reasoning_output_tokens IS NULL AND input_tokens=? AND cached_input_tokens=? AND output_tokens=?''',
+                                            (e['reasoning_output_tokens'],e['id'],e['input_tokens'],e['cached_input_tokens'],e['output_tokens']))
                 # LWW caps must be applied after all profiles, including delayed profiles.
                 for r in profiles:
                     if r['kind'] == 'cap':

@@ -147,3 +147,21 @@ def test_default_mode_and_adjusted_limit_are_independent_of_display(tmp_path):
     summary['devices'][0].update(fair_cap=65)
     e.enforce(summary, 102)
     assert not e.blocked
+
+
+def test_removed_profile_does_not_reduce_active_caps_or_leave_stale_cache(tmp_path):
+    db, l, a, b = setup(tmp_path)
+    old = Journal(db, l, 'old')
+    old.append(A, 'profile', dict(device='old', name='old', cap=33), 100)
+    use(a, b, 150, 33, 31, used=64)
+    l.summary(A, 200)
+    result = {d['id']: d for d in l.summary(A, 200, removed={'old'})['devices']}
+    assert result['one']['fair_base_cap'] == 50
+    assert result['one']['fair_cap'] == 50
+    assert result['one']['estimated'] / result['one']['fair_base_cap'] * 100 == pytest.approx(66)
+    assert result['two']['fair_base_cap'] == 50
+    assert result['old']['removed']
+    with db.connect() as conn:
+        assert conn.execute("SELECT 1 FROM devices WHERE id='old'").fetchone()
+    restored = {d['id']: d for d in l.summary(A, 200)['devices']}
+    assert restored['one']['fair_base_cap'] == pytest.approx(50/133*100)

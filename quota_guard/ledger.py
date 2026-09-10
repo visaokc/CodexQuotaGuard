@@ -137,14 +137,16 @@ class Ledger:
                            (row['id'], start, at, used-row['used']))
             db.execute('UPDATE epochs SET used=?,reset_at=?,observed_at=? WHERE id=?', (used, reset, at, row['id']))
 
-    def summary(self, account, now=None):
+    def summary(self, account, now=None, removed=()):
         now = time.time() if now is None else now
+        removed = frozenset(removed)
         with self.lock, self.db.connect() as db:
             epoch = db.execute('SELECT * FROM epochs WHERE account=? ORDER BY id DESC LIMIT 1', (account,)).fetchone()
             devices = {r['id']: dict(r) for r in db.execute('SELECT * FROM devices WHERE account=? ORDER BY name', (account,))}
             for d in devices.values():
                 d.update(estimated=0.0, settled=0.0, tokens=0, weight=0.0, unknown_tokens=0,
-                         online=now-d['seen'] < 100 and bool(d['logged_in']))
+                         online=now-d['seen'] < 100 and bool(d['logged_in']) and d['id'] not in removed,
+                         removed=d['id'] in removed)
             result = dict(account=account, epoch=dict(epoch) if epoch else None, devices=[],
                           unassigned=0.0, provisional=0.0, calibration=None, attribution_gaps=[],
                           allocation='cycle_weighted_v1',
@@ -217,9 +219,11 @@ class Ledger:
                 if coefficients:
                     result['calibration'] = dict(samples=len(coefficients),
                         median=statistics.median(coefficients), minimum=min(coefficients), maximum=max(coefficients))
-            if account not in self.fairness_cache:
-                self.fairness_cache[account] = allocation(db, account, devices)
-            for device, values in self.fairness_cache[account].items():
+            cached = self.fairness_cache.get(account)
+            if cached is None or cached[0] != removed:
+                cached = (removed, allocation(db, account, devices, removed))
+                self.fairness_cache[account] = cached
+            for device, values in cached[1].items():
                 if device in devices:
                     devices[device].update(values)
             result['devices'] = list(devices.values())

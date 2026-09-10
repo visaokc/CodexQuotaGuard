@@ -518,12 +518,8 @@ class Engine:
             for peer in self.mesh.peer_states():
                 self.mesh.send(peer, dict(type='presence', account=account, presence=presence))
         self._end_sync_round(account, now)
-        summary = self.ledger.summary(account, now)
         removed = self.mesh.removed_devices() if self.mesh and hasattr(self.mesh, 'removed_devices') else set()
-        for device in summary['devices']:
-            device['removed'] = device['id'] in removed
-            if device['removed']:
-                device['online'] = False
+        summary = self.ledger.summary(account, now, removed=removed)
         self.db.put('last_summary', summary)
         if not recovery_error:
             self.enforce(summary, now)

@@ -18,7 +18,7 @@ def redistribute(used, caps):
                - (transfer * spare[d] / available if available else 0.) for d in caps}
 
 
-def allocation(db, account, devices):
+def allocation(db, account, devices, removed=()):
     caps = caps_for_total({d: row['cap'] for d, row in devices.items()})
     carry = {d: 0. for d in caps}
     has_facts = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='facts'").fetchone()
@@ -62,6 +62,8 @@ def allocation(db, account, devices):
             carry[device] += change
     # Debt is retained even when it exceeds one full personal allocation.
     # The usable account pool never becomes negative or exceeds its base total.
+    # Preserve historical settlement, but removed profiles own no current quota.
+    caps = caps_for_total({d: row['cap'] for d, row in devices.items() if d not in removed})
     available = {d: max(0., cap-carry[d]) for d, cap in caps.items()}
     pool, total = sum(caps.values()), sum(available.values())
     return {d: dict(carry=0. if abs(carry[d]) < 1e-9 else carry[d], fair_base_cap=cap,

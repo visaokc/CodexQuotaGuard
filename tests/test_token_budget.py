@@ -6,6 +6,7 @@ from quota_guard.journal import Journal
 from quota_guard.ledger import Ledger
 from quota_guard.storage import Database
 from quota_guard.token_budget import budget_text, compact_tokens
+from quota_guard.cycle_statistics import cycle_statistics
 
 
 A, B = 'a'*64, 'b'*64
@@ -30,6 +31,26 @@ def observe(ledger, used, at=200, reset=10000):
 
 def budget(ledger, now=500):
     return ledger.summary(A, now)['token_budget']
+
+
+def test_idle_profile_watermark_does_not_change_peer_cycle_estimate(tmp_path):
+    ledger = setup_ledger(tmp_path)
+    upload(ledger, 'local', 1000000)
+    upload(ledger, 'remote', 3000000)
+    observe(ledger, 10)
+    # Logs after the last increment must not replace the aligned sample.
+    upload(ledger, 'local', 1000000, at=250)
+    observe(ledger, 10, at=300)
+    expected = cycle_statistics(ledger.db, A, 500)['rows'][0]
+    assert expected['total_tokens'] == 40000000
+    for watermark in (0, 190, 400):
+        ledger.ingest(dict(account=A, device='old-unused', name='old',
+                           events=[], scan_at=watermark), 400)
+        actual = cycle_statistics(ledger.db, A, 500)['rows'][0]
+        assert actual['total_tokens'] == expected['total_tokens']
+        assert actual['source'] == expected['source'] == '同步样本'
+        assert actual['sample_tokens'] == 4000000
+        assert actual['sample_percent'] == 10
 
 
 def test_all_devices_including_offline_not_other_accounts(tmp_path):

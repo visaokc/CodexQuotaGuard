@@ -10,6 +10,7 @@ from .journal import Journal
 from .ledger import Ledger
 from .analytics import usage
 from .cycle_statistics import cycle_statistics
+from .sample_pool import checkpoint_input
 from .transport import make_mesh
 from .meter import Scanner
 from .quota import identity, read_quota
@@ -268,6 +269,22 @@ class Engine:
             self.journal.append(account, 'events', batch, now)
             self.scanner.ack([e['id'] for e in batch])
 
+    def publish_sample_checkpoint(self, account, now):
+        if not self.recovery.complete or self.scanner.pending(account=account, limit=1):
+            return
+        with self.group_db.connect() as db:
+            sample = checkpoint_input(db, account, self.config['device_id'], now-120)
+        if sample is None or sample['through'] > now-120:
+            return
+        key = 'published_sample_checkpoint:'+account
+        if self.group_db.get(key) == sample:
+            return
+        profile = dict(device=self.config['device_id'], name=self.config['name'],
+                       cap=self.tracked[account].get('cap', self.config['quota']),
+                       sample_checkpoint=dict(through=sample['through']))
+        self.journal.append(account, 'profile', profile, now)
+        self.group_db.put(key, sample)
+
     def recover_inactive(self, current_account, now):
         # These are old tracked-account requests, not current API usage. Publish
         # locally only; inactive account groups never use the current connection.
@@ -502,6 +519,7 @@ class Engine:
         unbound_active, unbound_uncertain = self.scanner.activity(now, '')
         self.publish_events(account, now)
         if not recovery_error:
+            self.publish_sample_checkpoint(account, now)
             try:
                 self.recover_inactive(account, now)
             except Exception as e:

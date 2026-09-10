@@ -39,7 +39,7 @@ def _summary(value):
     if not value:
         return None
     result = _pick(value, ('account', 'unassigned', 'provisional', 'allocation', 'reset_pending', 'server_time', 'compensation_enabled'))
-    result['token_budget'] = _pick(value.get('token_budget'), ('sampled_tokens', 'used_tokens', 'total_tokens', 'source'))
+    result['token_budget'] = _pick(value.get('token_budget'), ('sampled_tokens', 'used_tokens', 'total_tokens', 'source', 'sample_devices', 'sample_ready', 'sample_segments', 'sample_until', 'sample_tokens', 'sample_percent'))
     result['epoch'] = _pick(value.get('epoch'), ('id', 'account', 'started', 'ended', 'baseline', 'used',
         'reset_at', 'observed_at', 'reason', 'cycle')) or None
     result['devices'] = [_pick(d, ('id', 'name', 'cap', 'seen', 'scan_at', 'active', 'uncertain', 'logged_in',
@@ -78,7 +78,7 @@ def _view(value):
     result['analytics']['cycles'] = []
     for row in analytics.get('cycles', []):
         safe = _pick(row, ('id', 'started', 'ended', 'reset_at', 'reset_type', 'used_percent', 'baseline_percent',
-            'sampled_tokens', 'total_tokens', 'source', 'sample_tokens', 'sample_percent', 'is_current', 'change_percent', 'change_tokens', 'reference_count', 'reference_total_tokens',
+            'sampled_tokens', 'total_tokens', 'source', 'sample_tokens', 'sample_percent', 'sample_devices', 'sample_ready', 'sample_segments', 'sample_until', 'is_current', 'change_percent', 'change_tokens', 'reference_count', 'reference_total_tokens',
             'reference_starts', 'reduction_tokens', 'reduction_percent'))
         safe['models'] = [_pick(m, ('model', 'tokens')) for m in row.get('models', [])]
         result['analytics']['cycles'].append(safe)

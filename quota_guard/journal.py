@@ -63,6 +63,12 @@ class Journal:
                 or len(json.dumps(r)) > 24000):
             raise ValueError('同步记录无效或时钟超前')
         p = r['payload']
+        if r['kind'] == 'profile' and 'sample_checkpoint' in p:
+            value = p['sample_checkpoint']
+            through = value.get('through') if isinstance(value, dict) else None
+            if (type(through) not in (int, float) or not math.isfinite(through)
+                    or not 0 <= through <= r['ts']-120):
+                raise ValueError('样本采集确认无效')
         if r['kind'] == 'profile' and 'compensation_enabled' in p and type(p['compensation_enabled']) is not bool:
             raise ValueError('补偿开关须为布尔值')
         if r['kind'] == 'profile' and 'fairness_start' in p:

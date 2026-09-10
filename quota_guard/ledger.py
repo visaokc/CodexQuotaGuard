@@ -5,6 +5,7 @@ import threading
 import time
 from datetime import datetime
 from .token_budget import estimate_budget
+from .sample_pool import sample_checkpoints
 from .fair_allocation import allocation
 
 
@@ -186,7 +187,8 @@ class Ledger:
                 previous = json.loads(saved[0]) if saved else {}
                 segments = list(db.execute('SELECT * FROM segments WHERE epoch=? ORDER BY end', (epoch['id'],)))
                 result['token_budget'], calibrated = estimate_budget(
-                    result['epoch'], events, devices, segments, now, previous, result['reset_pending'])
+                    result['epoch'], events, devices, segments, now, previous, result['reset_pending'],
+                    checkpoints=sample_checkpoints(db, account))
                 if calibrated and calibrated != previous:
                     db.execute('INSERT OR REPLACE INTO meta VALUES (?,?)', (budget_key, json.dumps(calibrated)))
                 for e in events:

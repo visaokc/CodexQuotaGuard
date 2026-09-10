@@ -94,6 +94,14 @@ try{
   assert.ok(dailyNumber.y+dailyNumber.height<quotaTrack.y,'daily average sits above the progress bar');
   assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).user,'fixture-local','explicit local selection is retained');
   assert.ok((await page.getByTestId('cycle-budget').innerText()).includes('450.00M'));
+  await page.evaluate(()=>{const data=structuredClone(window.__fixture);Object.assign(data.view.analytics.cycles[0],{source:'联合样本',sample_devices:2,sample_ready:1,sample_segments:0,total_tokens:null});window.__CQG_TEST__.applySnapshot(data);});
+  assert.match(await page.getByTestId('cycle-budget').innerText(),/样本 1\/2/);
+  assert.match(await page.getByTestId('cycle-budget').innerText(),/等待样本同步/);
+  assert.equal(await page.getByTestId('cycle-budget').evaluate(n=>n.scrollWidth<=n.clientWidth),true);
+  await page.evaluate(()=>{const data=structuredClone(window.__fixture);Object.assign(data.view.analytics.cycles[0],{source:'联合样本',sample_devices:2,sample_ready:2,sample_segments:5});window.__CQG_TEST__.applySnapshot(data);});
+  assert.match(await page.getByTestId('cycle-budget').getAttribute('title'),/2\/2 台已确认，5 段样本/);
+  await page.screenshot({path:path.join(artifacts,'joint-budget-samples.png')});
+  await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
   assert.equal(await page.locator('.donut-tooltip').count(),0);
   assert.deepEqual(await page.locator('.donut-main-share').allTextContents(),['18.1%','33.0%']);
   await page.evaluate(()=>{const data=structuredClone(window.__fixture);for(const w of Object.values(data.view.analytics.windows))w.quota_ready=false;window.__CQG_TEST__.applySnapshot(data);});

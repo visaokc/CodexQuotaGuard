@@ -3,6 +3,7 @@ import json
 import time
 
 from .token_budget import estimate_budget
+from .sample_pool import sample_checkpoints
 
 
 def cycle_statistics(database, account, now=None):
@@ -13,6 +14,7 @@ def cycle_statistics(database, account, now=None):
         start = float(json.loads(saved[0])) if saved else 0
         pending = bool(db.execute('SELECT 1 FROM meta WHERE key=?', ('reset_candidate:'+account,)).fetchone())
         devices = {r['id']: dict(r) for r in db.execute('SELECT * FROM devices WHERE account=?', (account,))}
+        checkpoints = sample_checkpoints(db, account)
         epochs = db.execute('''SELECT * FROM epochs WHERE account=? AND started<=?
             AND (ended IS NULL OR ended>?) ORDER BY started,reset_at''', (account, now, start)).fetchall()
         confirmed = {}
@@ -34,19 +36,26 @@ def cycle_statistics(database, account, now=None):
             # A mid-cycle statistics cutoff has no matching quota baseline. Keep
             # its observed tokens, but do not extrapolate the full-cycle delta.
             incomplete = start > epoch['started']
-            budget, calibration = estimate_budget(epoch, events, devices, segments, now,
-                previous=None, reset_pending=(is_current and pending) or incomplete)
+            sample_events = events
+            if checkpoints is not None and incomplete:
+                sample_events = list(db.execute('''SELECT * FROM events WHERE account=? AND ts>? AND ts<=?
+                    ORDER BY ts,id''', (account, epoch['started'], end)))
+            budget, calibration = estimate_budget(epoch, sample_events, devices, segments, now,
+                previous=None, reset_pending=(is_current and pending) or (incomplete and checkpoints is None),
+                checkpoints=checkpoints)
             models = {}
             for event in events:
                 models[event['model']] = models.get(event['model'], 0)+event['tokens']
             rows.append(dict(id=cycle, started=epoch['started'], ended=epoch['ended'],
                 reset_at=epoch['reset_at'], used_percent=epoch['used'], baseline_percent=epoch['baseline'],
                 reset_type=confirmed.get(epoch['started']) or {'已确认周期刷新':'自然重置','重置卡重置':'重置卡','官方临时重置':'官方临时重置'}.get(epoch['reason'], '首次记录' if epoch['reason'].startswith('首次连接') else '原因未确认'),
-                sampled_tokens=budget['sampled_tokens'], total_tokens=budget['total_tokens'],
-                source=budget['source'], sample_tokens=calibration.get('sample_tokens'),
-                sample_percent=calibration.get('sample_percent'), is_current=is_current,
+                sampled_tokens=sum(event['tokens'] for event in events), total_tokens=budget['total_tokens'],
+                source=budget['source'], sample_tokens=budget.get('sample_tokens', calibration.get('sample_tokens')),
+                sample_percent=budget.get('sample_percent', calibration.get('sample_percent')), is_current=is_current,
                 change_percent=None, change_tokens=None, models=[dict(model=model, tokens=tokens)
                     for model, tokens in sorted(models.items(), key=lambda item: (-item[1], item[0]))]))
+            rows[-1].update({key: budget[key] for key in
+                ('sample_devices', 'sample_ready', 'sample_segments', 'sample_until') if key in budget})
     references = []
     for row in rows:
         recent = references[-3:]

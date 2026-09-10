@@ -2,7 +2,7 @@
 $env:PYTHONUTF8 = '1'
 Set-Location $PSScriptRoot
 $python = Join-Path $PSScriptRoot 'work\venv\Scripts\python.exe'
-$dist = Join-Path $PSScriptRoot 'dist\0.4.4'
+$dist = Join-Path $PSScriptRoot 'dist\0.4.5'
 if (-not (Test-Path -LiteralPath $python)) { throw '先按 README 创建 work\venv 并安装 requirements-dev.txt' }
 & "$PSScriptRoot\scripts\build_tsnet.ps1"
 & $python -m pytest tests -q

@@ -354,6 +354,32 @@ try{
   const hitBox=await page.getByTestId('trend-hit').boundingBox();
   assert.ok(peakTip.y+peakTip.height<hitBox.y+hitBox.height*.1-5,'tooltip clears the actual peak');
   await page.screenshot({path:path.join(artifacts,'tooltip-peak-avoidance.png')});
+  assert.equal(await page.locator('.tooltip-total-percent').innerText(),'2.00%');
+  await page.getByRole('button',{name:'筛选用户',exact:true}).click();
+  await page.getByRole('option',{name:'全部用户',exact:true}).click();
+  for(const kind of ['曲线','柱状']){
+    await page.getByRole('button',{name:kind,exact:true}).click();await page.waitForTimeout(450);
+    await hoverAt(0);
+    const expected=await page.evaluate(()=>{
+      const rows=window.__fixture.view.analytics.windows.day.rows.filter(r=>r.bucket===0&&r.model==='gpt-5.5'&&['fixture-local','fixture-peer'].includes(r.device));
+      return {total:(rows.reduce((sum,r)=>sum+r.tokens,0)/450e6*100).toFixed(2)+'%',users:Object.fromEntries(rows.map(r=>[r.device,(r.tokens/450e6*100).toFixed(2)+'%']))};
+    });
+    assert.equal(await page.locator('.tooltip-total-percent').innerText(),expected.total);
+    for(const [id,value] of Object.entries(expected.users))assert.equal(await page.locator('.tooltip-series-row[data-device="'+id+'"] .tooltip-user-percent').innerText(),value);
+    assert.ok(await page.locator('.chart-tooltip').evaluate(n=>n.scrollWidth<=n.clientWidth),'tooltip content fits');
+    for(const column of ['.tooltip-series-value','.tooltip-user-percent']){
+      const rightEdges=await page.locator(column).evaluateAll(nodes=>nodes.map(n=>n.getBoundingClientRect().right));
+      assert.ok(Math.abs(rightEdges[0]-rightEdges[1])<.5,'tooltip numeric columns align');
+    }
+
+  }
+  await page.screenshot({path:path.join(artifacts,'tooltip-quota-percent.png')});
+  await page.evaluate(()=>{const data=structuredClone(window.__fixture);data.view.analytics.cycles[0].total_tokens=0;window.__CQG_TEST__.applySnapshot(data);});
+  await hoverAt(0);
+  assert.equal(await page.locator('.tooltip-total-percent').innerText(),'—');
+  assert.deepEqual(await page.locator('.tooltip-user-percent').allTextContents(),['—','—']);
+  await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
+  await page.getByRole('button',{name:'曲线',exact:true}).click();await hoverAt(.5);
   assert.deepEqual(errors,[]);
   const measure=await page.evaluate(async()=>{
     const frames=[];let previous=performance.now(),at=previous;

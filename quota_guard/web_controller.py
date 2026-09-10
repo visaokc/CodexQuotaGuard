@@ -83,7 +83,7 @@ def _view(value):
         safe['models'] = [_pick(m, ('model', 'tokens')) for m in row.get('models', [])]
         result['analytics']['cycles'].append(safe)
     result['analytics']['windows'] = {}
-    for key in ('cycle', 'total', 'hour', 'day', 'week', 'month'):
+    for key in ('cycle', 'total', 'today', 'pie_hour', 'pie_six_hours', 'hour', 'hour_curve', 'day', 'week', 'month'):
         source = analytics.get('windows', {}).get(key)
         if source:
             window = _pick(source, ('start', 'step', 'count'))

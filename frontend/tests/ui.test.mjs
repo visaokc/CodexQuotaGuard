@@ -32,13 +32,25 @@ try{
   assert.ok(titleControls.slice(1).every(n=>n.y===titleControls[1].y&&n.h===titleControls[1].h));
 
   assert.equal(await page.getByTestId('device-row').count(),2);
+  await page.evaluate(()=>{window.__originalActivityNow=Date.now;window.__activityNow=Date.now();Date.now=()=>window.__activityNow;window.__activityFixture=structuredClone(window.__fixture);window.__CQG_TEST__.applySnapshot(structuredClone(window.__activityFixture));});
+  assert.equal(await page.locator('.device-state.using').count(),1);
+  await page.evaluate(()=>{window.__activityNow+=5000;window.__activityFixture.view.summary.devices[0].active=0;window.__CQG_TEST__.applySnapshot(structuredClone(window.__activityFixture));});
+  assert.equal(await page.locator('.device-state.using').count(),1,'short sampling gap does not flash idle');
+  await page.evaluate(()=>{window.__activityNow+=11000;window.__CQG_TEST__.applySnapshot(structuredClone(window.__activityFixture));});
+  assert.equal(await page.locator('.device-state.using').count(),0,'continuous idle expires after fifteen seconds');
+  await page.evaluate(()=>{window.__activityFixture.view.summary.devices[1].active=1;window.__CQG_TEST__.applySnapshot(structuredClone(window.__activityFixture));});
+  assert.equal(await page.locator('.device-state.using').count(),1);
+  await page.evaluate(()=>{window.__activityFixture.view.peers={};window.__CQG_TEST__.applySnapshot(structuredClone(window.__activityFixture));});
+  assert.equal(await page.locator('.device-state.using').count(),0,'offline clears activity immediately');
+  await page.evaluate(()=>{Date.now=window.__originalActivityNow;const cleared=structuredClone(window.__fixture);cleared.view.identity.account='other-account';window.__CQG_TEST__.applySnapshot(cleared);window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture));});
+
   assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).user,'','first open defaults to all users');
   assert.equal(await page.getByRole('button',{name:'趋势时间范围',exact:true}).innerText(),'一天');
   assert.equal(await page.locator('.trend-line').count(),2);
   await page.getByRole('button',{name:'筛选用户',exact:true}).click();
   await page.getByRole('option',{name:/^橙猫猫 · 本机/}).click();
 
-  assert.equal(await page.locator('.trend-legend-share').innerText(),'35.7%');
+  assert.equal(await page.locator('.trend-legend-share').innerText(),(initial.view.analytics.windows.day.rows.filter(r=>r.device==='fixture-local').reduce((sum,r)=>sum+r.tokens,0)/450e6*100).toFixed(1)+'%');
   assert.equal(await page.locator('.trend-legend-share').first().evaluate(n=>getComputedStyle(n).color),'rgb(102, 156, 255)');
 
   assert.equal(await page.getByTestId('daily-quota-average').innerText(),'26.5% / 天');
@@ -49,6 +61,11 @@ try{
   assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).user,'fixture-local','explicit local selection is retained');
   assert.ok((await page.getByTestId('cycle-budget').innerText()).includes('450.00M'));
   assert.equal(await page.locator('.donut-tooltip').count(),0);
+  assert.deepEqual(await page.locator('.donut-share').allTextContents(),['18.1%','33.0%']);
+  await page.evaluate(()=>{const data=structuredClone(window.__fixture);data.view.analytics.cycles[0].total_tokens=0;window.__CQG_TEST__.applySnapshot(data);});
+  assert.deepEqual(await page.locator('.donut-share').allTextContents(),['—','—']);
+  assert.equal(await page.locator('.trend-legend-share').innerText(),'—');
+  await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
   const ordinarySnapshot=await page.evaluate(()=>structuredClone(window.__fixture));
   await page.evaluate(()=>{
     window.__fixture.settings.quota_display='personal';
@@ -105,7 +122,15 @@ try{
   assert.ok(rows.x<summaryBox.x&&rows.width>summaryBox.width,'device cards extend beyond the summary grid');
   const last=await page.getByTestId('device-row').last().boundingBox();assert.ok(last.y+last.height<=555,'both device rows fully visible');
   assert.equal(await page.locator('.donut-svg text').count(),0);
-  assert.deepEqual(await page.locator('.donut-share').allTextContents(),['35.4%','64.6%']);
+  for(const [label,key] of [['近一小时','pie_hour'],['近六小时','pie_six_hours'],['今天','today']]){
+    await page.getByRole('button',{name:'设备占比时间范围',exact:true}).click();
+    await page.getByRole('option',{name:label,exact:true}).click();
+    const expected=await page.evaluate(key=>window.__fixture.view.analytics.windows[key].rows.filter(r=>r.device!=='removed-peer').reduce((sum,r)=>sum+r.tokens,0),key);
+    assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).pie.total,expected);
+  }
+  await page.getByRole('button',{name:'设备占比时间范围',exact:true}).click();
+  await page.getByRole('option',{name:'本周期',exact:true}).click();
+  assert.deepEqual(await page.locator('.donut-share').allTextContents(),['18.1%','33.0%']);
   const pieShares=await page.locator('.donut-share').evaluateAll(nodes=>nodes.map(n=>({x:n.getBoundingClientRect().x,y:n.getBoundingClientRect().y,h:n.getBoundingClientRect().height,weight:getComputedStyle(n).fontWeight})));
   assert.ok(Math.abs(pieShares[0].x-pieShares[1].x)<.5,'pie percentages share one aligned column');
   assert.ok(pieShares.every(n=>Number(n.weight)>=700));
@@ -188,10 +213,19 @@ try{
   await page.getByRole('button',{name:'趋势时间范围',exact:true}).click();
   await page.getByRole('option',{name:'一小时',exact:true}).click();
   await page.getByRole('button',{name:'柱状',exact:true}).click();await page.waitForTimeout(400);
-  assert.equal(await page.locator('.chart-bar').count(),60,'hour view contains sixty fixed minute buckets');
+  assert.equal(await page.locator('.chart-bar').count(),30,'hour view contains thirty fixed two-minute buckets');
   assert.ok((await page.locator('.trend-card h2').innerText()).includes('最近 1 小时'));
   assert.equal((await page.locator('.charts-grid').boundingBox()).height,200);
   await page.screenshot({path:path.join(artifacts,'hour-preview.png')});
+  assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).trend.step,120);
+  await page.getByRole('button',{name:'曲线',exact:true}).click();await page.waitForTimeout(700);
+  const minuteCurve=(await page.evaluate(()=>window.__CQG_TEST__.getState())).trend;
+  assert.equal(minuteCurve.step,60);
+  assert.equal(minuteCurve.points.length,60);
+  await page.screenshot({path:path.join(artifacts,'hour-minute-curve.png')});
+  await page.getByRole('button',{name:'柱状',exact:true}).click();await page.waitForTimeout(450);
+  assert.equal(await page.locator('.chart-bar').count(),30);
+
   await page.getByRole('button',{name:'趋势时间范围',exact:true}).click();
   await page.getByRole('option',{name:'一周',exact:true}).click();await page.waitForTimeout(400);
   assert.equal(await page.locator('.chart-bar').count(),7);
@@ -229,7 +263,7 @@ try{
   await page.getByRole('button',{name:'筛选用户',exact:true}).click();
   await page.getByRole('option',{name:'全部用户',exact:true}).click();await page.waitForTimeout(400);
   assert.equal(await page.locator('.trend-line').count(),2,'all users have separate colored lines');
-  assert.deepEqual(await page.locator('.trend-legend-share').allTextContents(),['35.7%','64.3%']);
+  assert.deepEqual(await page.locator('.trend-legend-share').allTextContents(),[(initial.view.analytics.windows.day.rows.filter(r=>r.device==='fixture-local'&&r.model==='gpt-5.5').reduce((sum,r)=>sum+r.tokens,0)/450e6*100).toFixed(1)+'%',(initial.view.analytics.windows.day.rows.filter(r=>r.device==='fixture-peer'&&r.model==='gpt-5.5').reduce((sum,r)=>sum+r.tokens,0)/450e6*100).toFixed(1)+'%']);
   assert.equal(new Set(await page.locator('.trend-line').evaluateAll(nodes=>nodes.map(n=>n.getAttribute('stroke')))).size,2);
   for(let i=0;i<3;i++)await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
   assert.equal(await page.evaluate(()=>window.__CQG_TEST__.getState().user),'','explicit all users selection survives refresh');

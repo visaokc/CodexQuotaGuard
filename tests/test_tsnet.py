@@ -53,7 +53,10 @@ def test_authenticated_handshake_learns_peer_and_survives_restart(tmp_path):
     assert mesh.addresses == {'b': '100.64.0.2'}
     assert 'b' in mesh.peer_states()
     received.assert_called_once_with('b', dict(type='peer_ready', account='account'))
-    assert TailscaleMesh(cfg, 'account', Mock()).addresses == mesh.addresses
+    restarted = TailscaleMesh(cfg, 'account', Mock())
+    assert restarted.addresses == mesh.addresses
+    restarted.diagnostics.update(state='Running', ready=True)
+    assert not restarted.peer_states(), 'Tailscale running and saved addresses do not prove monitor presence'
     mesh.peers['b'].update(route='Tailscale · 直连', route_at=time.time()-40)
     assert '待确认' in mesh.peer_states()['b']['route']
     mesh.peers['b']['last_seen'] -= 31

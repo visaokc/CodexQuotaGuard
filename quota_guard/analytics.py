@@ -4,7 +4,7 @@ import time
 from datetime import datetime, timezone
 
 
-WINDOWS = {'cycle': (None, 1), 'total': (None, 1), 'hour': (3600, 60), 'day': (86400, 24),
+WINDOWS = {'cycle': (None, 1), 'total': (None, 1), 'today': (None, 1), 'pie_hour': (3600, 1), 'pie_six_hours': (21600, 1), 'hour': (3600, 30), 'hour_curve': (3600, 60), 'day': (86400, 24),
            'week': (7 * 86400, 7), 'month': (30 * 86400, 30)}
 
 
@@ -37,7 +37,13 @@ def usage(database, account, now=None):
                 models.update(row['model'] for row in rows)
                 continue
             step = duration/count if duration is not None else max(1, now)
-            if duration is None:
+            if name in ('pie_hour', 'pie_six_hours'):
+                start = now-duration
+            elif name == 'today':
+                local = datetime.fromtimestamp(now, timezone.utc).astimezone()
+                start = local.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+                step = max(1, now-start)
+            elif duration is None:
                 start = baseline
             else:
                 if name in ('week', 'month'):

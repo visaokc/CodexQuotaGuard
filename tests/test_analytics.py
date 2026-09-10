@@ -312,3 +312,19 @@ def test_official_increment_allocation_uses_weights_event_dates_and_reset_cycles
     with db.connect() as conn:
         conn.execute("UPDATE events SET known=0 WHERE id='reset'")
     assert not usage(db,'a',midnight+100)['windows']['today']['quota_ready']
+
+
+def test_pending_quota_is_distinct_from_zero_and_resolves_on_increment(tmp_path):
+    db=Database(tmp_path/'pending.sqlite')
+    with db.connect() as conn:
+        epoch=conn.execute("INSERT INTO epochs(account,started,baseline,used,reset_at,observed_at,reason) VALUES ('a',100,0,0,999,250,'reset')").lastrowid
+        conn.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?,?)',('event','one','a',200,'model',100,1,1))
+    window=usage(db,'a',300)['windows']['total']
+    assert window['quota_ready']
+    assert window['quota_rows']==[]
+    assert window['quota_pending_rows']==[{'device':'one','model':'model','bucket':0}]
+    with db.connect() as conn:
+        conn.execute('INSERT INTO segments(epoch,start,end,delta) VALUES (?,?,?,?)',(epoch,100,250,1))
+    window=usage(db,'a',300)['windows']['total']
+    assert window['quota_pending_rows']==[]
+    assert window['quota_rows'][0]['quota']==1

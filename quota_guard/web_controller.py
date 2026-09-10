@@ -87,6 +87,7 @@ def _view(value):
         source = analytics.get('windows', {}).get(key)
         if source:
             window = _pick(source, ('start', 'step', 'count', 'quota_ready'))
+            window['quota_pending_rows'] = [_pick(r, ('device', 'model', 'bucket')) for r in source.get('quota_pending_rows', [])]
             window['quota_rows'] = [_pick(r, ('device', 'model', 'bucket', 'quota')) for r in source.get('quota_rows', [])]
             window['rows'] = [_pick(r, ('device', 'model', 'bucket', 'tokens', 'weight', 'unknown')) for r in source.get('rows', [])]
             result['analytics']['windows'][key] = window

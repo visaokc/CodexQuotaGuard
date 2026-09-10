@@ -87,6 +87,9 @@ def usage(database, account, now=None):
                                            rows=[dict(row) for row in rows])
             models.update(row['model'] for row in rows)
         allocated, gaps = quota_events(db, account, now)
+        last_increment = db.execute('SELECT MAX(s.end) FROM segments s JOIN epochs e ON e.id=s.epoch WHERE e.account=? AND s.end<=?', (account, now)).fetchone()[0] or 0
+        waiting = list(db.execute('SELECT device,model,ts FROM events WHERE account=? AND ts>? AND ts<=? AND tokens>0', (account, last_increment, now)))
+
         observed = db.execute('SELECT 1 FROM epochs WHERE account=? LIMIT 1', (account,)).fetchone() is not None
         pending = db.execute('SELECT 1 FROM meta WHERE key=?', ('reset_candidate:'+account,)).fetchone() is not None
         for name, window in result['windows'].items():
@@ -100,6 +103,10 @@ def usage(database, account, now=None):
                 bucket = min(window['count']-1, int((row['ts']-window['start'])/step))
                 key = (row['device'], row['model'], bucket)
                 grouped[key] = grouped.get(key, 0.) + row['quota']
+            waiting_keys = {(r['device'], r['model'], min(window['count']-1, int((r['ts']-window['start'])/step)))
+                for r in waiting if r['ts'] >= start and r['ts'] < now and r['ts'] > baseline
+                and (name != 'cycle' or r['ts'] > window['start'])}
+            window['quota_pending_rows'] = [dict(device=d, model=m, bucket=b) for d, m, b in sorted(waiting_keys)]
             window['quota_rows'] = [dict(device=d, model=m, bucket=b, quota=q) for (d, m, b), q in grouped.items()]
             window['quota_ready'] = observed and not pending and not any(end > start and begin < now for begin, end in gaps)
     result['models'] = sorted(models)

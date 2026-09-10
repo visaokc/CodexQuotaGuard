@@ -39,13 +39,13 @@ test('all-user chart series preserve each bucket, device color and stacked total
   assert.deepEqual(result.points,[200,200,70]);
   assert.equal(result.total,470);
   assert.deepEqual(result.series,[
-    {id:'fixture-peer',label:'Peer',color:COLORS[0],points:[50,200,0],quotaPoints:[0,0,0]},
-    {id:'fixture-local',label:'Local',color:COLORS[1],points:[150,0,70],quotaPoints:[0,0,0]},
+    {id:'fixture-peer',label:'Peer',color:COLORS[0],points:[50,200,0],quotaPoints:[0,0,0],quotaPendingPoints:[false,false,false]},
+    {id:'fixture-local',label:'Local',color:COLORS[1],points:[150,0,70],quotaPoints:[0,0,0],quotaPendingPoints:[false,false,false]},
   ]);
   for(let i=0;i<result.points.length;i++)assert.equal(result.series.reduce((sum,item)=>sum+item.points[i],0),result.points[i]);
   for(const item of result.series)assert.equal(item.points.reduce((sum,value)=>sum+value,0),result.totals[item.id]);
   const selected=aggregate(data,'day','gpt-6-astra','fixture-local');
-  assert.deepEqual(selected.series,[{id:'fixture-local',label:'Local',color:COLORS[1],points:[120,0,70],quotaPoints:[0,0,0]}]);
+  assert.deepEqual(selected.series,[{id:'fixture-local',label:'Local',color:COLORS[1],points:[120,0,70],quotaPoints:[0,0,0],quotaPendingPoints:[false,false,false]}]);
   assert.deepEqual(selected.points,[120,0,70]);
   assert.equal(selected.total,190);
   data.view.analytics.account='another-account';

@@ -155,8 +155,15 @@ class Scanner:
 
     def scan(self, account, multiplier=1.0):
         count = 0
+        # Most retained logs are unchanged. Read their offsets once instead of
+        # opening a SQLite connection for every historical file on every tick.
+        with self.db.connect() as db:
+            offsets = {row['path']: row['offset'] for row in db.execute(
+                "SELECT path,json_extract(state,'$.offset') AS offset FROM cursors")}
         for path in self.files():
             try:
+                if offsets.get(str(path)) == path.stat().st_size:
+                    continue
                 with self.db.connect() as db:
                     row = db.execute('SELECT state FROM cursors WHERE path=?', (str(path),)).fetchone()
                     state = json.loads(row[0]) if row else dict(offset=0, session=str(path), model='unknown')

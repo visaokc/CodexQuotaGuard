@@ -2,7 +2,7 @@
 from decimal import Decimal, InvalidOperation
 import tkinter as tk
 
-import customtkinter as ctk
+from . import skin as ctk
 
 BG, PANEL, FG, MUTED, ACCENT = '#101620', '#1a2432', '#e8eef8', '#8c9eb6', '#69d9bd'
 
@@ -44,12 +44,12 @@ class LimitPanel(ctk.CTkFrame):
         self.card = ctk.CTkFrame(self, corner_radius=13, border_width=2, fg_color=PANEL)
         self.card.pack(fill='both', expand=True, padx=3, pady=3)
         self.card.grid_columnconfigure(0, weight=1)
-        self.title = ctk.CTkLabel(self.card, text='', anchor='w', font=('Microsoft YaHei UI', 16, 'bold'), wraplength=500)
+        self.title = ctk.CTkLabel(self.card, text='', anchor='w', font=('Microsoft YaHei UI', 14, 'bold'), wraplength=400)
         self.title.grid(row=0, column=0, sticky='w', padx=18, pady=(14, 2))
         self.description = ctk.CTkLabel(self.card, text='', text_color=MUTED, justify='left', anchor='w',
-                                       font=('Microsoft YaHei UI', 11), wraplength=510)
+                                       font=('Microsoft YaHei UI', 11), wraplength=400)
         self.description.grid(row=1, column=0, sticky='w', padx=18, pady=(0, 15))
-        self.action = ctk.CTkButton(self.card, text='', command=command, width=216, height=40, corner_radius=9,
+        self.action = ctk.CTkButton(self.card, text='', command=command, width=170, height=40, corner_radius=9,
             font=('Microsoft YaHei UI', 13, 'bold'))
         self.action.grid(row=0, column=1, rowspan=2, padx=(12, 18), pady=18)
 

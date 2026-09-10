@@ -2,7 +2,7 @@
 import time
 from datetime import datetime
 
-import customtkinter as ctk
+from . import skin as ctk
 
 
 def presentation(flow, view, now=None):

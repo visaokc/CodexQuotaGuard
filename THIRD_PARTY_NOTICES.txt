@@ -1,12 +1,45 @@
 Tailscale tsnet v1.102.3 | BSD-3-Clause | See licenses/tsnet for upstream and dependency notices.
-Third-party software packaged with Codex Quota Guard 0.3.2
+Third-party software packaged with Codex Quota Guard 0.4.1
 
 Project implementation is original. Token Monitor and Cockpit Tools were read as references, not vendored.
-Python and Tcl/Tk are bundled by PyInstaller. See corresponding license files.
+Python is bundled by PyInstaller. The WebView2 runtime is supplied by Microsoft on the host system. See corresponding license files.
+Microsoft WebView2 SDK 1.0.3856.49 | See licenses/Microsoft-WebView2-SDK-LICENSE.txt and NOTICE.txt.
 
 cryptography 46.0.5 | Apache-2.0 OR BSD-3-Clause
-customtkinter 5.2.2 | Creative Commons Zero v1.0 Universal
-darkdetect 0.8.0 | BSD-3-Clause
+pywebview 6.2.1 | BSD 3-Clause License
+
+Copyright (c) 2014-2017, Roman Sirokov
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+* Neither the name of the copyright holder nor the names of its
+  contributors may be used to endorse or promote products derived from
+  this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+pythonnet 3.1.0 | MIT
+clr_loader 0.3.1 | See license files
+proxy_tools 0.1.0 | MIT
+bottle 0.13.4 | MIT
 cffi 2.1.1 | MIT-0
 pycparser 3.0 | BSD-3-Clause
 typing_extensions 4.16.0 | PSF-2.0
@@ -15,3 +48,10 @@ pillow 12.1.1 | MIT-CMU
 pystray 0.19.5 | LGPLv3
 six 1.17.0 | MIT
 pyinstaller 6.20.0 | GPLv2-or-later with a special exception which allows to use PyInstaller to build and distribute non-free programs (including commercial ones)
+vue 3.5.42 | MIT
+@vue/shared 3.5.42 | MIT
+@vue/reactivity 3.5.42 | MIT
+@vue/runtime-core 3.5.42 | MIT
+@vue/runtime-dom 3.5.42 | MIT
+@vue/compiler-dom 3.5.42 | MIT
+@vue/compiler-core 3.5.42 | MIT

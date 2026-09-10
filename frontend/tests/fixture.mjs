@@ -1,0 +1,15 @@
+// Explicit isolated UI fixture. This file is not imported by the production bundle.
+export function fixture(){
+  const at=1789027560,account='fixture-account',deviceA='fixture-local',deviceB='fixture-peer';
+  const windows={};
+  for(const [name,seconds,count] of [['cycle',604800,1],['hour',3600,1],['day',86400,24],['week',604800,28],['month',2592000,30],['total',at,1]]){
+    const rows=[];
+    for(let i=0;i<count;i++)for(const [device,scale] of [[deviceA,1],[deviceB,1.8]]){
+      rows.push({device,model:'gpt-5.5',bucket:i,tokens:Math.round((Math.sin(i*.55)**2*.85+.05)*12e6*scale),weight:i*3e6*scale,unknown:0});
+      rows.push({device,model:'gpt-5.3-codex',bucket:i,tokens:Math.round((Math.cos(i*.8)**2*.2)*3e6*scale),weight:i*2e6*scale,unknown:0});
+    }
+    rows.push({device:'removed-peer',model:'gpt-5.5',bucket:0,tokens:1e12,weight:1e12,unknown:0});
+    windows[name]={count,start:at-seconds,step:seconds/count,rows};
+  }
+  return {version:'0.4.1',view:{identity:{account,label:'隔离测试账号',plan:'pro',mode:'account'},status:'监测中 · 所有设备用量均为估算',summary:{epoch:{used:53,baseline:0,reset_at:at+400000},devices:[{id:deviceA,name:'橙猫猫',tokens:81.27e6,estimated:18.76,cap:50,online:true,active:1},{id:deviceB,name:'DESKTOP-N41609F',tokens:148.36e6,estimated:34.24,cap:50,online:true,active:0},{id:'removed-peer',name:'USER-20241018IW',tokens:44e3,estimated:0,cap:33,online:false,removed:true}],unassigned:0,provisional:0},analytics:{account,at,models:['gpt-5.5','gpt-5.3-codex'],windows},sync_caption:'已同步',sync_confirmed_at:at,sync_progress:{[deviceB]:{state:'caught_up'}},sync_receipts:{[deviceB]:at},peers:{[deviceB]:{route:'Tailscale · 直连'}},connection:{state:'Running',ready:true,tailnet:'test-network'},auto_block:false},settings:{device_id:deviceA,name:'橙猫猫',quota:50,quota_display:'account',device_notes:{},device_colors:{},autostart:true,auto_update:true,auto_block:false,codex_home:'C:/isolated-test/.codex',interval:30,multiplier:1,program_paths:['C:/isolated-test/codex.exe'],force_relay:false},accounts:[{account,label:'隔离测试账号',cap:50}],pairing:{ready:true,state:'Running',tailnet:'test-network'},update:{status:'隔离测试 · 不联网更新',ready:false},notices:[]};
+}

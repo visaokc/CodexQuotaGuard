@@ -8,3 +8,7 @@ __pycache__/
 settings.json
 .env
 .private/
+
+frontend/node_modules/
+frontend/test-artifacts/
+outputs/

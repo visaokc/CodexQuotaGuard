@@ -10,7 +10,7 @@ import tkinter as tk
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-import customtkinter as ctk
+from . import skin as ctk
 
 from . import __version__
 from .accounts import enroll
@@ -23,18 +23,47 @@ from .tray import Tray
 from .limit_controls import CapDialog, LimitPanel, limit_presentation
 from .pair_status import PairPanel
 from .token_budget import budget_text
+from .analytics import chart_data, quota_display
+from .charts import Chart, compact, COLORS, blend
+from .app_icon import icon_image
 from .sync_diagnostics import progress_text, report as sync_report
 
-BG, PANEL, FG, MUTED, ACCENT = '#101620', '#1a2432', '#e8eef8', '#8c9eb6', '#69d9bd'
+BG, PANEL, FG, MUTED, ACCENT = '#0c0d0f', '#181a1d', '#eef0f4', '#89909c', '#669cff'
+USER_COLORS = dict(zip(('蓝色', '琥珀', '薄荷', '薰衣草', '玫瑰', '青柠'), COLORS))
+USER_COLORS.update(珊瑚='#f39777', 晴青='#62cde2')
+
+
+def sync_caption(view):
+    states = [p.get('state') for p in view.get('sync_progress', {}).values()]
+    if 'error' in states:
+        return '同步异常'
+    if 'syncing' in states:
+        return '同步中'
+    if any(state in ('waiting', 'stale') for state in states):
+        return '等待确认'
+    if states and all(state == 'caught_up' for state in states):
+        return '已同步'
+    return '等待确认' if view.get('peers') else '未连接'
+
+
+def sync_confirmed_at(view):
+    peers = view.get('sync_progress', {})
+    receipts = view.get('sync_receipts', {})
+    if not peers or any(p.get('state') != 'caught_up' or not receipts.get(peer)
+                        for peer, p in peers.items()):
+        return None
+    return min(receipts[peer] for peer in peers)
 
 
 def button(parent, text, command=None, style=None, **kwargs):
     primary = style == 'Accent.TButton'
-    return ctk.CTkButton(parent, text=text, command=command, height=38, corner_radius=9,
-                         fg_color=ACCENT if primary else '#263549',
-                         hover_color='#8be6cf' if primary else '#344963',
-                         text_color='#102a26' if primary else FG,
-                         font=('Microsoft YaHei UI', 13, 'bold' if primary else 'normal'), **kwargs)
+    options = dict(height=30, width=96, corner_radius=7,
+                   fg_color=ACCENT if primary else '#25282e',
+                   hover_color='#86b1ff' if primary else '#343942',
+                   text_color='#0d1629' if primary else FG,
+                   font=('Microsoft YaHei UI', 11, 'bold' if primary else 'normal'))
+    options.update(kwargs)
+    return ctk.CTkButton(parent, text=text, command=command, **options)
 
 
 class Navigation:
@@ -42,27 +71,47 @@ class Navigation:
         self.sidebar, self.title = sidebar, title
         self.pages = []
         self.buttons = []
+        self.active, self.job = None, None
 
     def add(self, page, text):
         index = len(self.pages)
         self.pages.append(page)
         icons = ['◫', '◎', '⇄', '⚙', 'ⓘ']
-        b = ctk.CTkButton(self.sidebar, text=icons[index]+'   '+text, anchor='w', height=45,
-                         corner_radius=9, fg_color='transparent', hover_color='#26384b',
-                         text_color=MUTED, font=('Microsoft YaHei UI', 14),
+        b = ctk.CTkButton(self.sidebar, text=icons[index]+'  '+text, width=88, height=32,
+                         corner_radius=9, fg_color='transparent', hover_color='#25282e',
+                         text_color=MUTED, font=('Microsoft YaHei UI', 12),
                          command=lambda: self.select(page))
-        b.pack(fill='x', padx=14, pady=4)
+        b.pack(side='left', padx=3, pady=4)
         self.buttons.append((b, text))
 
     def select(self, page):
+        if self.active is page:
+            return
+        if self.job:
+            self.active.after_cancel(self.job)
+            self.job = None
         for p, (b, name) in zip(self.pages, self.buttons):
             if p is page:
-                p.pack(fill='both', expand=True)
-                b.configure(fg_color='#253b40', text_color=ACCENT)
+                b.configure(fg_color='#1c2a40', text_color=ACCENT)
                 self.title.set(name)
             else:
                 p.pack_forget()
+                p.place_forget()
                 b.configure(fg_color='transparent', text_color=MUTED)
+        initial = self.active is None
+        self.active = page
+        if initial:
+            page.pack(fill='both', expand=True)
+            return
+        def tick(frame=0):
+            self.job = None
+            page.place(x=round(16*(1-frame/8)**3), y=0, relwidth=1, relheight=1)
+            if frame < 8:
+                self.job = page.after(16, lambda: tick(frame+1))
+            else:
+                page.place_forget()
+                page.pack(fill='both', expand=True)
+        tick()
 
 
 class Meter(ctk.CTkProgressBar):
@@ -72,16 +121,20 @@ class Meter(ctk.CTkProgressBar):
 
     def __setitem__(self, key, value):
         if key == 'value':
-            self.set(float(value)/100)
+            if getattr(self, '_last_value', None) != value:
+                self._last_value = value
+                self.set(float(value)/100)
 
 
 class DeviceTable(ctk.CTkFrame):
     """A native, keyboard-selectable device list without legacy table borders."""
     def __init__(self, parent, columns, **kwargs):
-        super().__init__(parent, fg_color=PANEL, corner_radius=0)
+        super().__init__(parent, fg_color='transparent', corner_radius=0)
         self.columns, self.rows, self.selected = columns, {}, None
-        self.headers = ctk.CTkFrame(self, fg_color='transparent', height=38)
-        self.headers.pack(fill='x', pady=(0, 8))
+        self.subtitles, self.avatars = {}, {}
+        self.header_labels = {}
+        self.headers = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=10, height=32)
+        self.headers.pack(fill='x', pady=(0, 3))
         self.empty = ctk.CTkLabel(self, text='等待设备数据\n开始监测或匹配另一台设备后，会在这里显示。',
                                   text_color=MUTED, font=('Microsoft YaHei UI', 12))
         self.empty.pack(expand=True)
@@ -89,10 +142,15 @@ class DeviceTable(ctk.CTkFrame):
         self.bind('<Down>', lambda _: self._move(1))
 
     def heading(self, col, text):
+        if col in self.header_labels:
+            self.header_labels[col].configure(text=text)
+            return
         i = self.columns.index(col)
         self.headers.grid_columnconfigure(i, weight=2 if i == 0 else 1, uniform='cols')
-        ctk.CTkLabel(self.headers, text=text, text_color=MUTED, anchor='w' if i == 0 else 'center',
-                     font=('Microsoft YaHei UI', 11)).grid(row=0, column=i, sticky='ew', padx=(10, 4))
+        label = ctk.CTkLabel(self.headers, text=text, text_color=MUTED, anchor='w' if i == 0 else 'center',
+                              font=('Microsoft YaHei UI', 11))
+        label.grid(row=0, column=i, sticky='ew', padx=(10, 4), pady=3)
+        self.header_labels[col] = label
 
     def column(self, *_args, **_kwargs):
         pass
@@ -116,39 +174,75 @@ class DeviceTable(ctk.CTkFrame):
         self.selected = iid
         self.focus_set()
         for key, (row, labels) in self.rows.items():
-            row.configure(fg_color='#263c43' if key == iid else '#1c2939')
+            row.configure(fg_color='#1d2b40' if key == iid else '#181c22',
+                          border_color='#547db7' if key == iid else '#252b34')
 
     def insert(self, parent, index, iid, values, tags=()):
         self.empty.pack_forget()
-        row = ctk.CTkFrame(self, fg_color='#1c2939', corner_radius=10, height=66)
-        row.pack(fill='x', pady=5)
+        row = ctk.CTkFrame(self, fg_color='#181c22', corner_radius=10, height=44,
+                          border_width=1, border_color='#252b34')
+        row.pack(fill='x', pady=3)
         row.bind('<Button-1>', lambda _: self._select(iid))
         labels = []
         for i, value in enumerate(values):
             row.grid_columnconfigure(i, weight=2 if i == 0 else 1, uniform='cols')
+            if i == 0:
+                identity = ctk.CTkFrame(row, fg_color='transparent', corner_radius=0)
+                identity.grid(row=0, column=0, sticky='ew', padx=10, pady=5)
+                avatar = ctk.CTkLabel(identity, text=str(value)[:1], width=34, height=34,
+                    corner_radius=8, fg_color='#24354d', text_color='#8bb8ff',
+                    font=('Microsoft YaHei UI', 14, 'bold'))
+                avatar.pack(side='left', padx=(0, 9))
+                text = ctk.CTkFrame(identity, fg_color='transparent', corner_radius=0)
+                text.pack(side='left', fill='x', expand=True)
+                label = ctk.CTkLabel(text, text=value, anchor='w', height=22,
+                                     font=('Microsoft YaHei UI', 13, 'bold'))
+                label.pack(fill='x')
+                subtitle = ctk.CTkLabel(text, text='', anchor='w', height=18, text_color=MUTED,
+                                        font=('Microsoft YaHei UI', 11))
+                subtitle.pack(fill='x')
+                for widget in (identity, avatar, text, label, subtitle):
+                    widget.bind('<Button-1>', lambda _, iid=iid: self._select(iid))
+                self.subtitles[iid], self.avatars[iid] = subtitle, avatar
+                labels.append(label)
+                continue
             label = ctk.CTkLabel(row, text=value, anchor='w' if i == 0 else 'center',
-                                font=('Microsoft YaHei UI', 12, 'bold' if i in (0, 5) else 'normal'),
-                                corner_radius=6, height=28, wraplength=80 if i == 2 else 0)
-            label.grid(row=0, column=i, sticky='ew', padx=(10, 4), pady=17)
+                                font=('Microsoft YaHei UI', 13, 'bold' if i in (0, 3) else 'normal'),
+                                corner_radius=6, height=28, wraplength=135 if i == 0 else 100 if i == 1 else 0)
+            label.grid(row=0, column=i, sticky='ew', padx=(10, 4), pady=6)
             label.bind('<Button-1>', lambda _, iid=iid: self._select(iid))
             labels.append(label)
         self.rows[iid] = (row, labels)
         self.item(iid, values=values, tags=tags)
 
+    def detail(self, iid, text):
+        self.subtitles[iid].configure(text=text)
+
+    def color(self, iid, color):
+        self.rows[iid][1][3].configure(text_color=color)
+        self.avatars[iid].configure(text_color=color, fg_color=blend('#181c22', color, .18))
+
     def item(self, iid, values=None, tags=()):
         if values is None:
             return {}
         row, labels = self.rows[iid]
+        row.configure(fg_color='#1d2b40' if iid == self.selected else '#181c22',
+                      border_color='#547db7' if iid == self.selected else '#252b34')
         offline = 'offline' in tags
+        self.avatars[iid].configure(text=str(values[0])[:1])
         for i, (label, value) in enumerate(zip(labels, values)):
-            label.configure(text=value, text_color='#73869d' if offline else ACCENT if i == 5 or (i == 0 and 'local' in tags) else FG)
-        labels[1].configure(fg_color='#203e35' if '使用中' in values[1] and not offline else 'transparent',
+            label.configure(text=value)
+            if i in (0, 2):
+                label.configure(text_color='#73869d' if offline else ACCENT if i == 0 and 'local' in tags else FG)
+        labels[1].configure(fg_color='#203656' if '使用中' in values[1] and not offline else 'transparent',
                             text_color=ACCENT if '使用中' in values[1] and not offline else MUTED)
 
     def delete(self, *ids):
         for iid in ids:
             if iid in self.rows:
                 self.rows.pop(iid)[0].destroy()
+                self.subtitles.pop(iid, None)
+                self.avatars.pop(iid, None)
         if not self.rows:
             self.empty.pack(expand=True)
 
@@ -178,8 +272,12 @@ class App:
         self.pair_request = 0
         self.pair_flow = dict(stage='saved' if config.get('link_enabled') or config.get('rendezvous_url') else 'idle')
         self.root.title('Codex 配额管家 · '+__version__)
-        self.root.geometry(f"{min(1240, self.root.winfo_screenwidth()-60)}x{min(840, self.root.winfo_screenheight()-80)}")
-        self.root.minsize(1100, 720)
+        icon = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parents[1]))/'assets'/'app.ico'
+        if os.name == 'nt' and icon.exists():
+            self.root.iconbitmap(str(icon))
+        self.initial_size = (min(750, self.root.winfo_screenwidth()-60), min(570, self.root.winfo_screenheight()-80))
+        self.root.geometry(f'{self.initial_size[0]}x{self.initial_size[1]}')
+        self.root.minsize(730, 570)
         self.root.configure(fg_color=BG)
         self.root.protocol('WM_DELETE_WINDOW', self.close)
         style = ttk.Style(root)
@@ -204,51 +302,54 @@ class App:
         style.configure('Horizontal.TProgressbar', background=ACCENT, troughcolor='#2a3a4f', borderwidth=0)
         shell = ttk.Frame(root)
         shell.pack(fill='both', expand=True)
-        sidebar = ctk.CTkFrame(shell, width=190, corner_radius=0, fg_color='#151e2b')
-        sidebar.pack(side='left', fill='y')
-        sidebar.pack_propagate(False)
-        brand = ctk.CTkFrame(sidebar, fg_color='transparent')
-        brand.pack(fill='x', padx=18, pady=(28, 30))
-        logo = ctk.CTkLabel(brand, text='C', width=42, height=44, corner_radius=12,
-                           fg_color=ACCENT, text_color='#142c29', font=('Segoe UI', 28, 'bold'))
-        logo.pack(side='left')
-        ctk.CTkLabel(brand, text='  Codex\n  配额管家', text_color=FG, justify='left',
-                     font=('Microsoft YaHei UI', 14, 'bold')).pack(side='left')
-        ctk.CTkLabel(sidebar, text='WORKSPACE', text_color='#5d718e', font=('Segoe UI', 10, 'bold')).pack(anchor='w', padx=23, pady=(0, 8))
-        body = ttk.Frame(shell, padding=(28, 0, 28, 0))
-        body.pack(side='left', fill='both', expand=True)
-        head = ttk.Frame(body, padding=(0, 28, 0, 8))
-        head.pack(fill='x')
-        self.page_title = tk.StringVar(value='设备总览')
-        ttk.Label(head, textvariable=self.page_title, font=('Microsoft YaHei UI', 22, 'bold')).pack(side='left')
-        ctk.CTkLabel(head, text='  估算计量  ·  v'+__version__+'  ', text_color=ACCENT, fg_color='#213934',
-                     corner_radius=8, font=('Microsoft YaHei UI', 11), height=28).pack(side='right', pady=5)
-        self.account = tk.StringVar(value='正在识别本机当前登录账号…')
-        ttk.Label(body, textvariable=self.account, style='Muted.TLabel', padding=(0, 0, 0, 16)).pack(anchor='w')
+        top = ctk.CTkFrame(shell, fg_color=BG, height=40)
+        top.pack(fill='x', padx=12, pady=(8, 8))
+        self.brand_icon = ctk.CTkImage(light_image=icon_image(112), dark_image=icon_image(112), size=(28, 28))
+        logo = ctk.CTkLabel(top, text='', width=28, height=28, image=self.brand_icon)
+        logo.pack(side='left', padx=(3, 10))
+        navigation = ctk.CTkFrame(top, fg_color='transparent')
+        navigation.pack(side='left')
+        button(top, text='×', width=28, height=27, command=self.close).pack(side='right', padx=(3, 0))
+        button(top, text='−', width=28, height=27, command=self.minimize).pack(side='right')
+        version = ctk.CTkLabel(top, text='v'+__version__, text_color=MUTED, font=('Segoe UI', 10))
+        version.pack(side='right', padx=6)
+        for surface in (top, logo, version):
+            surface.bind('<Button-1>', self.drag_window)
+            surface.bind('<B1-Motion>', self.move_window)
+            surface.bind('<ButtonRelease-1>', self.end_move)
+            surface.bind('<Double-Button-1>', lambda _: self.root.state(
+                'normal' if self.root.state() == 'zoomed' else 'zoomed'))
+        body = ttk.Frame(shell, padding=(14, 0, 14, 0))
+        body.pack(fill='both', expand=True)
+        self.page_title = tk.StringVar(value='概览')
+        self.account = tk.StringVar(value='正在识别账号…')
         self.status = tk.StringVar(value='启动中…')
-        footer = ttk.Frame(body, padding=(0, 12, 0, 16))
+        footer = ttk.Frame(body, padding=(0, 3, 0, 5))
         footer.pack(side='bottom', fill='x')
-        ttk.Label(footer, textvariable=self.status, style='Muted.TLabel', wraplength=930).pack(anchor='w')
+        ttk.Label(footer, textvariable=self.status, style='Muted.TLabel', font=('Microsoft YaHei UI', 9),
+                  wraplength=690).pack(anchor='w')
         pages = ttk.Frame(body)
         pages.pack(fill='both', expand=True)
-        self.tabs = Navigation(sidebar, self.page_title)
-        self.overview = ctk.CTkScrollableFrame(pages, fg_color=BG, corner_radius=0)
+        self.tabs = Navigation(navigation, self.page_title)
+        self.overview = ctk.CTkFrame(pages, fg_color=BG, corner_radius=0)
         self.accounts_tab = ctk.CTkScrollableFrame(pages, fg_color=BG, corner_radius=0)
         self.pair_tab = ctk.CTkScrollableFrame(pages, fg_color=BG, corner_radius=0)
         self.settings = ctk.CTkScrollableFrame(pages, fg_color=BG, corner_radius=0)
         self.help_tab = ttk.Frame(pages, padding=(0, 6))
-        for tab, title in ((self.overview, '设备总览'), (self.accounts_tab, '账号管理'), (self.pair_tab, '匹配与同步'), (self.settings, '监测与限额'), (self.help_tab, '计量说明')):
+        for tab, title in ((self.overview, '概览'), (self.accounts_tab, '账号'), (self.pair_tab, '同步'),
+                           (self.settings, '设置'), (self.help_tab, '说明')):
             self.tabs.add(tab, text=title)
         self.tabs.select(self.overview)
-        badge = ctk.CTkFrame(sidebar, fg_color='#1d2b3c', corner_radius=12)
-        badge.pack(side='bottom', fill='x', padx=14, pady=20)
-        ctk.CTkLabel(badge, text='设备配对 · 端到端加密', font=('Microsoft YaHei UI', 11), text_color=FG).pack(padx=10, pady=(10, 0))
-        ctk.CTkLabel(badge, text='P2P 优先  /  中转保底', font=('Microsoft YaHei UI', 10), text_color=MUTED).pack(padx=10, pady=(0, 10))
         self._overview()
         self._accounts()
         self._pairing()
         self._settings()
         self._help()
+        grip = tk.Label(root, text='◢', bg=BG, fg='#3c424b', cursor='size_nw_se', font=('Segoe UI', 9))
+        grip.place(relx=1, rely=1, anchor='se', width=14, height=14)
+        grip.bind('<Button-1>', self.begin_resize)
+        grip.bind('<B1-Motion>', self.resize_window)
+        self.root.after(0, self.remove_titlebar)
         if not demo:
             try:
                 self.tray = Tray(self.ui_actions.put, self.show, self.quit)
@@ -261,83 +362,335 @@ class App:
         if self.startup_enabled and getattr(sys, 'frozen', False):
             self.root.after(15000, self.auto_update_tick)
 
+    def remove_titlebar(self):
+        if os.name == 'nt':
+            width, height = (round(self.root._apply_window_scaling(n)) for n in self.initial_size)
+            user = ctypes.windll.user32
+            hwnd = user.GetParent(self.root.winfo_id())
+            rect = (ctypes.c_long*4)()
+            user.GetWindowRect(hwnd, ctypes.byref(rect))
+            padding = rect[3]-rect[1]-self.root.winfo_height()
+            # Tk retains the original nonclient height in its minimum tracking size.
+            self.root.minsize(730, 570-round(self.root._reverse_window_scaling(padding)))
+            style = user.GetWindowLongW(hwnd, -16)
+            # Remove the nonclient strip while preserving taskbar/minimize behavior.
+            user.SetWindowLongW(hwnd, -16, style & ~0x00C40000)
+            user.SetWindowPos(hwnd, 0, 0, 0, width, height, 0x0036)
+            corner, border = ctypes.c_int(2), ctypes.c_uint(0xfffffffe)
+            dwm = ctypes.windll.dwmapi
+            dwm.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(corner), 4)
+            dwm.DwmSetWindowAttribute(hwnd, 34, ctypes.byref(border), 4)
+
+    def drag_window(self, event):
+        self.drag_origin = (event.x_root, event.y_root, self.root.winfo_x(), self.root.winfo_y())
+        self.moving = True
+        self.move_job = None
+
+    def move_window(self, event):
+        x, y, left, top = self.drag_origin
+        self.move_target = (left+event.x_root-x, top+event.y_root-y)
+        if not self.move_job:
+            self.move_job = self.root.after_idle(self.flush_move)
+
+    def flush_move(self):
+        self.move_job = None
+        x, y = self.move_target
+        if os.name == 'nt':
+            user = ctypes.windll.user32
+            user.SetWindowPos(user.GetParent(self.root.winfo_id()), 0, x, y, 0, 0, 0x0015)
+        else:
+            self.root.geometry(f'+{x}+{y}')
+
+    def end_move(self, _=None):
+        if self.move_job:
+            self.root.after_cancel(self.move_job)
+            self.flush_move()
+        self.moving = False
+
+    def begin_resize(self, event):
+        self.resize_origin = (event.x_root, event.y_root, self.root.winfo_width(), self.root.winfo_height())
+
+    def resize_window(self, event):
+        x, y, width, height = self.resize_origin
+        minimum = tuple(round(self.root._apply_window_scaling(n)) for n in (730, 570))
+        width, height = max(minimum[0], width+event.x_root-x), max(minimum[1], height+event.y_root-y)
+        if os.name == 'nt':
+            user = ctypes.windll.user32
+            user.SetWindowPos(user.GetParent(self.root.winfo_id()), 0, 0, 0, width, height, 0x0016)
+        else:
+            self.root.geometry(f'{round(self.root._reverse_window_scaling(width))}x{round(self.root._reverse_window_scaling(height))}')
+
     def _overview(self):
-        cards = ttk.Frame(self.overview)
-        cards.pack(fill='x')
         self.cards = {}
-        for i, (key, title) in enumerate((('global', '账号周额度已用 · 官方快照'), ('local', '本机周额度已用 · 估算'), ('reset', '下一次官方刷新时间'))):
-            cards.columnconfigure(i, weight=1)
-            card = ctk.CTkFrame(cards, fg_color='#18332f' if key == 'local' else PANEL, corner_radius=14,
-                                border_width=1, border_color='#295447' if key == 'local' else '#243244')
-            card.grid(row=0, column=i, sticky='nsew', padx=(0, 12 if i < 2 else 0))
-            ctk.CTkLabel(card, text=title, text_color=MUTED, font=('Microsoft YaHei UI', 11)).pack(anchor='w', padx=18, pady=(17, 2))
+        self.quota_choice = tk.StringVar(value='个人额度 = 100%' if self.config.get('quota_display') == 'personal' else '账号总额度')
+        cards = ctk.CTkFrame(self.overview, fg_color='transparent')
+        cards.pack(fill='x', pady=(0, 7))
+        for i, (key, title) in enumerate((('global', '官方周额度已用'), ('local', '同步状态'), ('reset', '下次官方刷新'))):
+            cards.columnconfigure(i, weight=1, uniform='cards')
+            card = ctk.CTkFrame(cards, fg_color=PANEL, corner_radius=12)
+            card.grid(row=0, column=i, sticky='nsew', padx=(0, 8 if i < 2 else 0))
+            ctk.CTkLabel(card, text=title, text_color=MUTED, height=20,
+                         font=('Microsoft YaHei UI', 11)).pack(anchor='w', padx=12, pady=(4, 0))
             value = tk.StringVar(value='—')
             ctk.CTkLabel(card, textvariable=value, text_color=ACCENT if key == 'local' else FG,
-                     font=('Segoe UI', 31 if key != 'reset' else 23, 'bold')).pack(anchor='w', padx=18, pady=(4, 8))
-            if key == 'global':
-                self.account_tokens = tk.StringVar(value=budget_text(None))
-                self.account_tokens_label = ctk.CTkLabel(card, textvariable=self.account_tokens,
-                    text_color=MUTED, font=('Microsoft YaHei UI', 10))
-                self.account_tokens_label.pack(anchor='w', padx=18, pady=(0, 4))
-            hints = {'global': '官方额度 + 已同步设备日志', 'local': '按整个周期加权 Token 重算', 'reset': '以官方最新快照为准'}
-            ctk.CTkLabel(card, text=hints[key], text_color=MUTED, font=('Microsoft YaHei UI', 10)).pack(anchor='w', padx=18, pady=(0, 14))
+                         height=27, font=('Microsoft YaHei UI', 20 if key == 'global' else 18, 'bold')).pack(anchor='w', padx=12, pady=(0, 3))
             self.cards[key] = value
-        self.meter = Meter(self.overview)
-        self.meter.pack(fill='x', pady=(22, 10))
-        self.detail = tk.StringVar(value='正在核对本机日志与账号证据，自动补记漏采历史。')
-        ttk.Label(self.overview, textvariable=self.detail, style='Muted.TLabel', wraplength=900, justify='left').pack(anchor='w', pady=(0, 17))
-        self.limit_panel = LimitPanel(self.overview, self.limit_action)
-        self.limit_panel.pack(fill='x', pady=(0, 18))
-        self.limit_panel.render(limit_presentation({}, self.config.get('tracked_accounts', {})))
-        row = ttk.Frame(self.overview)
-        row.pack(fill='x', pady=(0, 10))
-        ttk.Label(row, text='同账号设备', font=('Microsoft YaHei UI', 13, 'bold')).pack(side='left')
-        button(row, text='设置本机账号配额', command=self.change_cap).pack(side='right')
-        columns = ('name', 'status', 'route', 'active', 'tokens', 'used', 'cap')
-        table_card = ctk.CTkFrame(self.overview, fg_color=PANEL, corner_radius=14, border_width=1, border_color='#243244')
-        table_card.pack(fill='both', expand=True)
-        self.table = DeviceTable(table_card, columns=columns)
-        for col, title, width in zip(columns, ('设备', '状态', '连接', '活动会话*', '本周期 Token', '估算已用', '设备配额'), (164, 135, 95, 85, 110, 90, 82)):
+            if key == 'local':
+                self.sync_time = tk.StringVar(value='最近同步 —')
+                self.last_sync = (None, None)
+                ctk.CTkLabel(card, textvariable=self.sync_time, text_color=MUTED, height=12,
+                             font=('Microsoft YaHei UI', 10)).pack(anchor='w', padx=12, pady=(0, 8))
+            if key == 'global':
+                self.meter = Meter(card)
+                self.meter.configure(height=4)
+                self.meter.pack(fill='x', padx=12, pady=(0, 7))
+        self.account_tokens = tk.StringVar(value=budget_text(None))
+        controls = ctk.CTkFrame(self.overview, fg_color='transparent')
+        controls.pack(fill='x', pady=(0, 6))
+        self.model_choice = tk.StringVar(value='全部模型')
+        self.model_menu = ctk.CTkOptionMenu(controls, values=['全部模型'], variable=self.model_choice,
+            command=lambda _: self.render_charts(), width=172, height=27, fg_color='#25282e',
+            button_color='#303640', button_hover_color='#3e4755', font=('Segoe UI', 11))
+        self.model_menu.pack(side='left')
+        self.chart_choice = tk.StringVar(value='曲线')
+        ctk.CTkSegmentedButton(controls, values=['曲线', '柱状'], variable=self.chart_choice,
+            command=lambda _: self.render_charts(), height=27, selected_color='#294876',
+            font=('Microsoft YaHei UI', 12)).pack(side='right', padx=(8, 0))
+        self.device_choice = tk.StringVar(value='全部用户')
+        self.device_filter = None
+        self.device_choices = {'全部用户': None}
+        self.device_menu = ctk.CTkOptionMenu(controls, values=['全部用户'], variable=self.device_choice,
+            command=self.select_chart_device, width=144, height=27, fg_color='#25282e',
+            button_color='#303640', button_hover_color='#3e4755', font=('Microsoft YaHei UI', 10))
+        self.device_menu.pack(side='left', padx=8)
+        self.window_choice = tk.StringVar(value='一天')
+        ctk.CTkSegmentedButton(controls, values=['一天', '一周', '一月'], variable=self.window_choice,
+            command=lambda _: self.render_charts(), height=27, selected_color='#294876',
+            font=('Microsoft YaHei UI', 12)).pack(side='right')
+        charts = ctk.CTkFrame(self.overview, fg_color='transparent')
+        charts.pack(fill='x')
+        charts.columnconfigure(0, weight=0, minsize=300)
+        charts.columnconfigure(1, weight=1)
+        pie_card = ctk.CTkFrame(charts, fg_color=PANEL, corner_radius=12)
+        pie_card.grid(row=0, column=0, sticky='nsew', padx=(0, 8))
+        line_card = ctk.CTkFrame(charts, fg_color=PANEL, corner_radius=12)
+        line_card.grid(row=0, column=1, sticky='nsew')
+        ctk.CTkLabel(pie_card, text='设备使用占比', text_color=FG, height=24,
+                     font=('Microsoft YaHei UI', 11, 'bold')).pack(anchor='w', padx=10, pady=(4, 0))
+        self.trend_title = tk.StringVar(value='最近 24 小时')
+        ctk.CTkLabel(line_card, textvariable=self.trend_title, height=24,
+                     font=('Microsoft YaHei UI', 11, 'bold')).pack(anchor='w', padx=10, pady=(4, 0))
+        self.pie_chart = Chart(pie_card, 'pie', width=284, height=116)
+        self.pie_chart.pack(fill='both', expand=True, padx=4, pady=(0, 5))
+        self.pie_window = tk.StringVar(value='本周期')
+        pie_footer = ctk.CTkFrame(pie_card, fg_color='transparent', height=30)
+        pie_footer.place(in_=self.pie_chart, relx=0, rely=1, anchor='sw', relwidth=1)
+        self.pie_detail = tk.StringVar()
+        self.pie_chart.detail_callback = self.pie_detail.set
+        ctk.CTkLabel(pie_footer, textvariable=self.pie_detail, text_color=MUTED,
+                     font=('Segoe UI', 10), anchor='w', height=27).pack(side='left', padx=9)
+        ctk.CTkOptionMenu(pie_footer,
+            values=['本周期', '最近一小时', '历史累计', '一天使用', '七天使用', '一个月使用'],
+            variable=self.pie_window, command=lambda _: self.render_charts(),
+            width=130, height=27, fg_color='#25282e', button_color='#303640',
+            button_hover_color='#3e4755', font=('Microsoft YaHei UI', 10)).pack(side='right', padx=4)
+        self.line_chart = Chart(line_card, 'line', width=300, height=128)
+        self.line_chart.pack(fill='both', expand=True, padx=4, pady=(0, 5))
+        self.chart_note = tk.StringVar(value='占比基于同账号已同步日志；不代表官方一小时额度。')
+        ctk.CTkLabel(line_card, textvariable=self.chart_note, text_color=MUTED, height=21,
+                     font=('Microsoft YaHei UI', 9), anchor='w', wraplength=360).pack(fill='x', padx=10, pady=(0, 5))
+        row = ctk.CTkFrame(self.overview, fg_color='transparent')
+        row.pack(fill='x', pady=(1, 3))
+        ctk.CTkLabel(row, text='同账号设备', font=('Microsoft YaHei UI', 12, 'bold')).pack(side='left')
+        button(row, text='备注', width=53, height=26, command=self.edit_device_note).pack(side='right', padx=(5, 0))
+        button(row, text='颜色', width=53, height=26, command=self.edit_device_color).pack(side='right', padx=(5, 0))
+        button(row, text='移除', width=53, height=26, command=self.remove_device).pack(side='right', padx=(5, 0))
+        columns = ('name', 'status', 'tokens', 'used')
+        self.table = DeviceTable(self.overview, columns=columns)
+        for col, title in zip(columns, ('用户 / 设备', '状态', '周期 Token', '估算已用')):
             self.table.heading(col, text=title)
-            self.table.column(col, width=width, minwidth=70, anchor='w' if col == 'name' else 'center')
-        self.table.pack(fill='both', expand=True, padx=12, pady=10)
-        self.table.tag_configure('local', foreground=ACCENT)
-        self.table.tag_configure('online', foreground=FG)
-        self.table.tag_configure('offline', foreground='#72849c')
-        self.note = tk.StringVar(value='只显示已配对并运行本工具的设备，不是 OpenAI 官方登录设备列表。')
-        ttk.Label(self.overview, textvariable=self.note, style='Muted.TLabel', wraplength=1030).pack(anchor='w', pady=12)
-        self.observed = tk.StringVar(value='正在读取本机会话活动…')
-        ctk.CTkLabel(self.overview, textvariable=self.observed, text_color=ACCENT, justify='left',
-                     wraplength=900, font=('Microsoft YaHei UI', 12)).pack(anchor='w', pady=(0, 10))
-        buttons = ttk.Frame(self.overview)
-        buttons.pack(fill='x')
-        button(buttons, text='刷新', command=lambda: self.engine and self.engine.wakeup.set()).pack(side='left')
-        button(buttons, text='匹配另一台设备', style='Accent.TButton', command=lambda: self.tabs.select(self.pair_tab)).pack(side='left', padx=8)
-        button(buttons, text='从组中移除选中设备', command=self.remove_device).pack(side='left', padx=8)
-        button(buttons, text='导出同步诊断', command=self.export_sync_diagnostics).pack(side='left', padx=8)
+        self.table.pack(fill='x')
+        # Existing detailed diagnostics live on account/sync pages, not the dashboard.
+        self.detail = tk.StringVar()
+        self.note = tk.StringVar()
+        self.observed = tk.StringVar()
         self.sync_progress_label = tk.StringVar(value='账本同步：等待进度')
-        ttk.Label(self.overview, textvariable=self.sync_progress_label, style='Muted.TLabel',
-                  wraplength=1000).pack(anchor='w', pady=(10, 0))
-        self.cycle_tokens = tk.StringVar(value='本额度周期 Token：—')
-        ttk.Label(self.overview, textvariable=self.cycle_tokens, font=('Microsoft YaHei UI', 13, 'bold')).pack(anchor='w', pady=(18, 10))
+        self.cycle_tokens = tk.StringVar()
         self.history_values = {}
-        history = ttk.Frame(self.overview)
-        history.pack(fill='x', pady=(0, 10))
-        for i, (unit, title) in enumerate([('day', '本机今日 Token'), ('week', '本机自然周 Token'), ('month', '本机本月 Token')]):
-            history.columnconfigure(i, weight=1, uniform='history')
-            card = ctk.CTkFrame(history, fg_color=PANEL, corner_radius=12)
-            card.grid(row=0, column=i, sticky='ew', padx=(0, 10) if i < 2 else 0)
-            ctk.CTkLabel(card, text=title, text_color=MUTED, font=('Microsoft YaHei UI', 11)).pack(anchor='w', padx=16, pady=(10, 0))
-            value = tk.StringVar(value='—')
-            ctk.CTkLabel(card, textvariable=value, font=('Segoe UI', 24, 'bold')).pack(anchor='w', padx=16, pady=(0, 10))
-            self.history_values[unit] = value
-        ttk.Label(self.overview, text='日／自然周／月历史不随额度刷新清零；完整记录见“账号管理 → 查看选中账号账本”。',
-                  style='Muted.TLabel', wraplength=850).pack(anchor='w')
+
+    def render_charts(self):
+        view = self.last_view
+        ident = view.get('identity') or {}
+        data = view.get('analytics') or {}
+        if data.get('account') != ident.get('account'):
+            data = {}
+        choices = ['全部模型'] + data.get('models', [])
+        self.model_menu.configure(values=choices)
+        if self.model_choice.get() not in choices:
+            self.model_choice.set('全部模型')
+        model = None if self.model_choice.get() == '全部模型' else self.model_choice.get()
+        metric = 'tokens'
+        devices = {d['id']: d for d in (view.get('summary') or {}).get('devices', []) if not d.get('removed')}
+        data = dict(data, windows={name: dict(window, rows=[r for r in window['rows'] if r['device'] in devices])
+                                  for name, window in data.get('windows', {}).items()})
+        pie_period = {'本周期': 'cycle', '最近一小时': 'hour', '历史累计': 'total', '一天使用': 'day',
+                      '七天使用': 'week', '一个月使用': 'month'}[self.pie_window.get()]
+        hour = chart_data(data, pie_period, model, metric)
+        if pie_period == 'cycle' and model is None:
+            # Use the same snapshot as the device rows, avoiding the chart cache delay.
+            hour['devices'] = {key: d.get('tokens', 0) for key, d in devices.items()}
+        window = {'一天': 'day', '一周': 'week', '一月': 'month'}[self.window_choice.get()]
+        aliases = self.config.get('device_notes', {}).get(ident.get('account'), {})
+        choices = {'全部用户': None}
+        for device in sorted(devices):
+            d = devices.get(device, {})
+            label = aliases.get(device) or d.get('name', device[:10])
+            if device == self.config['device_id']:
+                label += ' · 本机'
+            elif d.get('removed'):
+                label += ' · 历史'
+            if label in choices:
+                label += ' · '+device[:6]
+            choices[label] = device
+        if self.device_filter not in choices.values():
+            self.device_filter = None
+        self.device_choices = choices
+        selected = next(label for label, device in choices.items() if device == self.device_filter)
+        if self.device_choice.get() != selected:
+            self.device_choice.set(selected)
+        self.device_menu.configure(values=list(choices))
+        trend = chart_data(data, window, model, metric, self.device_filter)
+        values, labels = [], []
+        order = sorted({id for id, d in devices.items() if not d.get('removed')} | set(hour['devices']))
+        pairs = [(device, hour['devices'].get(device, 0)) for device in order]
+        for device, value in pairs[:3]:
+            d = devices.get(device, {})
+            labels.append(aliases.get(device) or d.get('name', device[:10]))
+            values.append(value)
+        if len(pairs) > 3:
+            labels.append('其他设备')
+            values.append(sum(value for _, value in pairs[3:]))
+        unit = 'Token' if trend['metric'] == 'tokens' else '权重'
+        colors = [self.device_color(device) for device, _ in pairs[:3]]
+        if len(pairs) > 3:
+            colors.append('#89909c')
+        self.pie_chart.set_data(values, labels, colors=colors)
+        kind = 'bar' if self.chart_choice.get() == '柱状' else 'line'
+        if self.line_chart.kind != kind:
+            self.line_chart.kind = kind
+            self.line_chart.values = []
+            self.line_chart.key = None
+        self.line_chart.set_data(trend['points'], start=trend['start'], step=trend['step'], unit=unit,
+                                 colors=[self.device_color(self.device_filter)] if self.device_filter else [ACCENT])
+        period = {'day': '24 小时', 'week': '7 天', 'month': '30 天'}[window]
+        self.trend_title.set(f"最近 {period} · {compact(trend['total'])} {unit}")
+        notes = []
+        if metric == 'weight':
+            if hour['unknown']:
+                notes.append('饼图时段有未知模型，按 Token')
+            if trend['unknown']:
+                notes.append('曲线含未知模型，按 Token')
+        self.chart_note.set('；'.join(notes) if notes else
+            '模型加权用量 · 悬停查看数值' if metric == 'weight' else '原始 Token 用量 · 悬停查看数值')
+
+    def select_chart_device(self, label):
+        self.device_filter = self.device_choices[label]
+        self.render_charts()
+
+    def select_quota_display(self, value):
+        self.config['quota_display'] = 'personal' if value == '个人额度 = 100%' else 'account'
+        if not self.demo:
+            save_config(self.folder/'settings.json', self.config)
+        self.render(self.last_view)
+
+    def edit_device_note(self):
+        selected = self.table.selection()
+        if not selected:
+            self.status.set('请先选择一台设备，再点击备注。')
+            return
+        account = (self.last_view.get('identity') or {}).get('account')
+        if not account:
+            return
+        device = selected[0]
+        win = ctk.CTkToplevel(self.root)
+        win.title('设备备注')
+        win.geometry('350x185')
+        win.resizable(False, False)
+        win.transient(self.root)
+        win.configure(fg_color=BG)
+        ctk.CTkLabel(win, text='仅在本机显示；留空恢复设备原名。', text_color=MUTED,
+                     font=('Microsoft YaHei UI', 11)).pack(anchor='w', padx=18, pady=(18, 8))
+        entry = ctk.CTkEntry(win, height=33)
+        entry.pack(fill='x', padx=18)
+        entry.insert(0, self.config.get('device_notes', {}).get(account, {}).get(device, ''))
+        def save():
+            self.save_device_note(account, device, entry.get())
+            win.destroy()
+            self.render(self.last_view)
+        button(win, text='保存备注', style='Accent.TButton', command=save).pack(anchor='e', padx=18, pady=16)
+        win.bind('<Return>', lambda _: save())
+        win.bind('<Escape>', lambda _: win.destroy())
+
+    def device_color(self, device):
+        account = (self.last_view.get('identity') or {}).get('account')
+        color = self.config.get('device_colors', {}).get(account, {}).get(device)
+        if color in USER_COLORS.values():
+            return color
+        ids = sorted(set(self.device_choices.values())-{None})
+        return COLORS[(ids.index(device) if device in ids else 0) % len(COLORS)]
+
+    def edit_device_color(self):
+        selected = self.table.selection()
+        if not selected:
+            self.status.set('请先选择一台设备，再点击颜色。')
+            return
+        account = (self.last_view.get('identity') or {}).get('account')
+        if not account:
+            return
+        win = ctk.CTkToplevel(self.root)
+        win.title('用户颜色')
+        win.geometry('390x180')
+        win.resizable(False, False)
+        win.transient(self.root)
+        win.configure(fg_color=BG)
+        ctk.CTkLabel(win, text='选择预设颜色', font=('Microsoft YaHei UI', 14, 'bold')).pack(pady=(14, 8))
+        palette = ctk.CTkFrame(win, fg_color='transparent')
+        palette.pack(padx=12)
+        def choose(color):
+            self.save_device_color(account, selected[0], color)
+            self.render(self.last_view)
+            win.destroy()
+        for i, (name, color) in enumerate(USER_COLORS.items()):
+            button(palette, text='● '+name, width=80, height=36, fg_color=blend(PANEL, color, .18),
+                   text_color=color, hover_color=blend(PANEL, color, .35),
+                   command=lambda c=color: choose(c)).grid(row=i//4, column=i%4, padx=4, pady=4)
+        win.bind('<Escape>', lambda _: win.destroy())
+
+    def save_device_color(self, account, device, color):
+        self.config.setdefault('device_colors', {}).setdefault(account, {})[device] = color
+        if not self.demo:
+            save_config(self.folder/'settings.json', self.config)
+
+    def save_device_note(self, account, device, text):
+        notes = self.config.setdefault('device_notes', {}).setdefault(account, {})
+        value = text.strip()[:40]
+        if value:
+            notes[device] = value
+        else:
+            notes.pop(device, None)
+        if not self.demo:
+            save_config(self.folder/'settings.json', self.config)
 
     def _pairing(self):
+        tools = ttk.Frame(self.pair_tab)
+        tools.pack(fill='x', pady=(0, 10))
+        button(tools, text='刷新连接', command=lambda: self.engine and self.engine.wakeup.set()).pack(side='left')
+        button(tools, text='导出同步诊断', command=self.export_sync_diagnostics).pack(side='left', padx=8)
+        ttk.Label(self.pair_tab, textvariable=self.sync_progress_label, style='Muted.TLabel',
+                  wraplength=660).pack(anchor='w', pady=(0, 10))
         ttk.Label(self.pair_tab, text='让设备彼此连接', font=('Microsoft YaHei UI', 18, 'bold')).pack(anchor='w')
         ttk.Label(self.pair_tab, text='一个匹配码，连接你的工作站、笔记本和家用电脑。配对信息持久保存，重启自动重连。',
-                  style='Muted.TLabel', wraplength=920).pack(anchor='w', pady=(8, 20))
+                  style='Muted.TLabel', wraplength=660).pack(anchor='w', pady=(8, 20))
         cards = ttk.Frame(self.pair_tab)
         cards.pack(fill='x')
         for i, (num, title, desc, action, command) in enumerate([
@@ -348,7 +701,7 @@ class App:
             card.grid(row=0, column=i, sticky='nsew', padx=(0, 14) if i == 0 else 0)
             ctk.CTkLabel(card, text=num, text_color=ACCENT, font=('Segoe UI', 24, 'bold')).pack(anchor='w', padx=22, pady=(18, 2))
             ctk.CTkLabel(card, text=title, text_color=FG, font=('Microsoft YaHei UI', 17, 'bold')).pack(anchor='w', padx=22)
-            ctk.CTkLabel(card, text=desc, text_color=MUTED, font=('Microsoft YaHei UI', 11), wraplength=390,
+            ctk.CTkLabel(card, text=desc, text_color=MUTED, font=('Microsoft YaHei UI', 11), wraplength=275,
                          justify='left').pack(anchor='w', padx=22, pady=(8, 18))
             button(card, text=action, style='Accent.TButton' if i == 0 else None, command=command).pack(fill='x', padx=22, pady=(0, 20))
         self.pair_panel = PairPanel(self.pair_tab, self.retry_pair)
@@ -357,7 +710,7 @@ class App:
         self.mesh_label = tk.StringVar(value='连接诊断：尚未启动')
         self.tailnet_label = tk.StringVar(value='内嵌节点所属网络：尚未连接')
         ctk.CTkLabel(self.pair_tab, textvariable=self.tailnet_label, text_color=FG,
-                     font=('Microsoft YaHei UI', 12), wraplength=850, justify='left').pack(anchor='w', pady=(12, 0))
+                     font=('Microsoft YaHei UI', 12), wraplength=660, justify='left').pack(anchor='w', pady=(12, 0))
         ctk.CTkLabel(self.pair_tab, textvariable=self.mesh_label, text_color=ACCENT, font=('Microsoft YaHei UI', 12)).pack(anchor='w', pady=(16, 6))
         button(self.pair_tab, text='授权登录 Tailscale（浏览器）', command=self.login_tailscale).pack(anchor='w', pady=8)
         button(self.pair_tab, text='换账号 / 切换 Tailscale 网络', command=self.switch_tailscale_network).pack(anchor='w', pady=4)
@@ -373,16 +726,19 @@ class App:
         ttk.Label(self.pair_tab, text='内嵌 Tailscale，无需另装客户端。两端首次需授权加入同一 Tailscale 网络，再交换新版匹配码。\n'
                   '优先直连，失败由 Tailscale DERP 中转；不再使用 Syncthing 公共中转。路径以近期探测为准。\n'
                   '旧设备组发起方刷新匹配码可保留账本；双方须升级并添加同一 Codex 账号。',
-                  style='Muted.TLabel', wraplength=920, justify='left').pack(side='bottom', anchor='w', pady=12)
+                  style='Muted.TLabel', wraplength=660, justify='left').pack(side='bottom', anchor='w', pady=12)
 
     def _accounts(self):
+        for variable in (self.account_tokens, self.cycle_tokens, self.detail, self.observed, self.note):
+            ttk.Label(self.accounts_tab, textvariable=variable, style='Muted.TLabel',
+                      wraplength=660).pack(anchor='w', pady=(0, 6))
         card = ctk.CTkFrame(self.accounts_tab, fg_color=PANEL, corner_radius=14)
         card.pack(fill='x', pady=(0, 20))
         ctk.CTkLabel(card, text='扫描登录账号 · 独立计量', text_color=FG,
                      font=('Microsoft YaHei UI', 20, 'bold')).pack(anchor='w', padx=22, pady=(20, 12))
         self.detected_account = tk.StringVar(value='等待读取当前登录账号…')
         ctk.CTkLabel(card, textvariable=self.detected_account, text_color=ACCENT,
-                     font=('Microsoft YaHei UI', 13), wraplength=770, justify='left').pack(anchor='w', padx=22, pady=(0, 15))
+                     font=('Microsoft YaHei UI', 13), wraplength=640, justify='left').pack(anchor='w', padx=22, pady=(0, 15))
         row = ctk.CTkFrame(card, fg_color='transparent')
         row.pack(fill='x', padx=22, pady=(0, 22))
         button(row, text='扫描当前登录', command=self.scan_account).pack(side='left')
@@ -399,7 +755,7 @@ class App:
         ttk.Label(self.accounts_tab, text='扫描只识别当前账号，点击“添加”后才开始统计。每个账号分别保存 Token、设备配额与周刷新周期。\n'
                   '中转 API、未添加账号不查询订阅额度，不参与账号组同步或触发订阅限额。\n'
                   '账号名单仅保存在本机；配对不会自动添加账号。切换边界和无法确认归属的会话不强行计入。',
-                  style='Muted.TLabel', justify='left', wraplength=850).pack(anchor='w', pady=20)
+                  style='Muted.TLabel', justify='left', wraplength=660).pack(anchor='w', pady=20)
         self.refresh_account_list()
 
     def refresh_account_list(self):
@@ -489,7 +845,7 @@ class App:
 
     def entry(self, parent, title, value, show=None):
         row = ttk.Frame(parent)
-        row.pack(fill='x', pady=5)
+        row.pack(fill='x', pady=3)
         ttk.Label(row, text=title, width=23).pack(side='left')
         var = tk.StringVar(value=str(value))
         widget = ctk.CTkEntry(row, textvariable=var, show=show or '', height=36, corner_radius=8, fg_color=PANEL, border_color='#2b3d54', text_color=FG, font=('Microsoft YaHei UI', 12))
@@ -497,6 +853,19 @@ class App:
         return var
 
     def _settings(self):
+        quota_row = ctk.CTkFrame(self.settings, fg_color=PANEL, corner_radius=12)
+        quota_row.pack(fill='x', pady=(0, 12))
+        ctk.CTkLabel(quota_row, text='设备配额', font=('Microsoft YaHei UI', 13, 'bold')).pack(side='left', padx=14, pady=12)
+        self.quota_settings = tk.StringVar(value='当前账号本机配额：—')
+        ctk.CTkLabel(quota_row, textvariable=self.quota_settings, text_color=MUTED,
+                     font=('Microsoft YaHei UI', 11)).pack(side='left', padx=8)
+        button(quota_row, text='调整配额', command=self.change_cap).pack(side='right', padx=12, pady=10)
+        ctk.CTkOptionMenu(self.settings, values=['账号总额度', '个人额度 = 100%'], variable=self.quota_choice,
+            command=self.select_quota_display, width=195, height=30,
+            font=('Microsoft YaHei UI', 12)).pack(anchor='w', pady=(0, 12))
+        self.limit_panel = LimitPanel(self.settings, self.limit_action)
+        self.limit_panel.pack(fill='x', pady=(0, 12))
+        self.limit_panel.render(limit_presentation({}, self.config.get('tracked_accounts', {})))
         update_card = ctk.CTkFrame(self.settings, fg_color=PANEL, corner_radius=14,
                                   border_width=1, border_color='#295447')
         update_card.pack(fill='x', pady=(0, 16))
@@ -507,18 +876,18 @@ class App:
         update_row = ctk.CTkFrame(update_card, fg_color='transparent')
         update_row.pack(fill='x', padx=18, pady=(0, 12))
         self.update_status = tk.StringVar(value='GitHub 官方仓库 · 签名校验 · 原地更新后自动重启，保留账号与账本')
-        ctk.CTkLabel(update_row, textvariable=self.update_status, text_color=MUTED, wraplength=580,
+        ctk.CTkLabel(update_row, textvariable=self.update_status, text_color=MUTED, wraplength=440,
                      justify='left', font=('Microsoft YaHei UI', 11)).pack(side='left')
         self.update_button = button(update_row, text='检测更新', command=lambda: self.check_update(True))
         self.update_button.pack(side='right')
         self.limit_setup_note = tk.StringVar(value='')
-        ctk.CTkLabel(self.settings, textvariable=self.limit_setup_note, text_color='#f2b46f', wraplength=850,
+        ctk.CTkLabel(self.settings, textvariable=self.limit_setup_note, text_color='#f2b46f', wraplength=660,
                      justify='left', font=('Microsoft YaHei UI', 12)).pack(anchor='w', pady=(0, 6))
         self.autostart = tk.BooleanVar(value=self.config.get('autostart', True))
         ctk.CTkCheckBox(self.settings, text='Windows 登录后自动启动（默认开启）', variable=self.autostart,
                        font=('Microsoft YaHei UI', 12)).pack(anchor='w', pady=(4, 12))
-        ttk.Label(self.settings, text='点击 X 隐藏到托盘；后台约每 30 秒检查，受限时约每 2 秒检查账号切换。彻底退出请使用托盘菜单。',
-                  style='Muted.TLabel', wraplength=850).pack(anchor='w', pady=(0, 10))
+        ttk.Label(self.settings, text='点击 X 隐藏到托盘；后台约每 5 秒检查，前台及受限时约每 2 秒检查。彻底退出请使用托盘菜单。',
+                  style='Muted.TLabel', wraplength=660).pack(anchor='w', pady=(0, 10))
         self.device_name = self.entry(self.settings, '本机设备名称', self.config['name'])
         self.home = self.entry(self.settings, 'Codex 数据目录', self.config['codex_home'])
         self.cap = self.entry(self.settings, '新账号默认配额（%）', self.config['quota'])
@@ -530,9 +899,9 @@ class App:
                   '检测到当前配置切换成 API 或其他账号后，先解除原账号的限制。不清空原账号账本。\n'
                   '防火墙按 EXE 生效，不能隔离同一 EXE 内同时运行的多账号／API 会话；不要用于混合并行模式。\n'
                   '不会阻断 sing-box 本身或整台电脑。远端已接收的请求可能仍继续计费。',
-                  style='Muted.TLabel', wraplength=950).pack(anchor='w', pady=(0, 10))
+                  style='Muted.TLabel', wraplength=660).pack(anchor='w', pady=(0, 10))
         self.program_note = tk.StringVar(value='启动时自动查找 Codex 后台 EXE；不会选择 node.exe、Python 或桌面 GUI 外壳。')
-        ttk.Label(self.settings, textvariable=self.program_note, style='Muted.TLabel', wraplength=900).pack(anchor='w')
+        ttk.Label(self.settings, textvariable=self.program_note, style='Muted.TLabel', wraplength=660).pack(anchor='w')
         self.paths = tk.Listbox(self.settings, height=4, bg=PANEL, fg=FG, selectbackground='#345269', relief='flat',
                                 font=('Consolas', 9), highlightthickness=0)
         self.paths.pack(fill='x', pady=8)
@@ -546,7 +915,7 @@ class App:
         button(row, text='保存监测设置', style='Accent.TButton', command=self.save_settings).pack(side='right')
         ttk.Label(self.settings, text='权重系数只影响新采集记录。快速模式优先读取 Codex 配置；临时会话参数未必可识别。\n'
                   '当前权限：'+('管理员' if is_admin() else '普通用户；可右键 EXE 选择“以管理员身份运行”'),
-                  style='Muted.TLabel', wraplength=950).pack(anchor='w', pady=16)
+                  style='Muted.TLabel', wraplength=660).pack(anchor='w', pady=16)
 
     def save_update_setting(self):
         self.config['auto_update'] = self.auto_update.get()
@@ -1176,6 +1545,18 @@ class App:
 
     def render(self, view):
         self.last_view = view
+        self.render_charts()
+        self.cards['local'].set(sync_caption(view))
+        sync_account = (view.get('identity') or {}).get('account')
+        confirmed = sync_confirmed_at(view)
+        if self.last_sync[0] != sync_account:
+            self.last_sync = (sync_account, None)
+        if confirmed:
+            self.last_sync = (sync_account, confirmed)
+        at = self.last_sync[1]
+        stamp = datetime.fromtimestamp(at) if at else None
+        self.sync_time.set('最近同步 '+(stamp.strftime('%H:%M:%S' if stamp.date() == datetime.now().date()
+                                                     else '%m-%d %H:%M:%S') if stamp else '—'))
         self.render_limit(view)
         ident = view.get('identity') or {}
         self.show_detected_account(ident)
@@ -1200,11 +1581,12 @@ class App:
         summary = view.get('summary')
         self.account_tokens.set(budget_text((summary or {}).get('token_budget')))
         if not summary or not summary.get('epoch'):
+            self.quota_settings.set('当前账号本机配额：—')
             self.cycle_tokens.set('本额度周期 Token：—')
             for value in self.history_values.values():
                 value.set('—')
-            for v in self.cards.values():
-                v.set('—')
+            for key in ('global', 'reset'):
+                self.cards[key].set('—')
             self.table.delete(*self.table.get_children())
             self.meter['value'] = 0
             self.detail.set('等待可用的账号周额度快照；不把未知数据记为 0%。')
@@ -1215,7 +1597,9 @@ class App:
         for unit, value in self.history_values.items():
             value.set(number((view.get('history') or {}).get('current', {}).get(unit, 0)))
         self.cards['global'].set(f"{e['used']:.0f}%")
-        self.cards['local'].set(f"{local.get('estimated', 0):.2f}% / {local.get('cap', self.config['quota']):g}%")
+        personal = self.config.get('quota_display') == 'personal'
+        self.quota_settings.set(f"当前账号本机配额：{local.get('cap', self.config['quota']):g}%")
+        self.table.heading('used', text='个人已用' if personal else '估算已用')
         self.cards['reset'].set(datetime.fromtimestamp(e['reset_at']).strftime('%m-%d  %H:%M'))
         self.meter['value'] = e['used']
         self.detail.set(f"账号剩余 {100-e['used']:.0f}%   ·   监测前基线 {e['baseline']:.0f}%   ·   未归属 {summary['unassigned']:.2f}%   ·   待稳定分摊 {summary['provisional']:.2f}%"
@@ -1230,7 +1614,8 @@ class App:
         for d in summary['devices']:
             if d.get('removed'):
                 continue
-            name = d['name']+('（本机）' if d['id'] == self.config['device_id'] else '')
+            alias = self.config.get('device_notes', {}).get(ident.get('account'), {}).get(d['id'])
+            name = (alias or d['name'])+(' · 本机' if d['id'] == self.config['device_id'] else '')
             unknown = d.get('unbound_active', 0)
             state = ('Codex 使用中' if d['active'] else '活动·待归属' if unknown else '暂无近期活动') if d['online'] else '离线/已切换'
             if not d['online'] and d['id'] in view.get('peers', {}):
@@ -1239,12 +1624,17 @@ class App:
             active = (str(d['active'])+(' + ?'+str(d['uncertain']) if d['uncertain'] else '')) if d['online'] else '—'
             if d['online'] and unknown:
                 active += f' + {unknown}待归属'
-            values = (name, state, route, active, number(d['tokens']), f"{d['estimated']:.2f}%", f"{d['cap']:g}%")
+            displayed, cap = quota_display(d['estimated'], d['cap'], personal)
+            values = (name, state, number(d['tokens']),
+                      f'{displayed:.2f}%' if displayed is not None else '—')
             if d['id'] in old:
                 self.table.item(d['id'], values=values, tags=('local' if d['id'] == self.config['device_id'] else 'online' if d['online'] else 'offline',))
                 old.remove(d['id'])
             else:
                 self.table.insert('', 'end', iid=d['id'], values=values, tags=('local' if d['id'] == self.config['device_id'] else 'online' if d['online'] else 'offline',))
+            detail = d['name'] if alias else ('本机设备' if d['id'] == self.config['device_id'] else route)
+            self.table.detail(d['id'], detail)
+            self.table.color(d['id'], self.device_color(d['id']))
         for iid in old:
             self.table.delete(iid)
         calibration = summary.get('calibration')
@@ -1266,7 +1656,7 @@ class App:
                 return
         if self.engine:
             view = self.engine.snapshot()
-            if not self.hidden:
+            if not self.hidden and not getattr(self, 'moving', False):
                 self.render(view)
             for note in view.get('notifications', []):
                 if self.tray and self.hidden:
@@ -1275,14 +1665,33 @@ class App:
                     messagebox.showinfo('Codex 设备配额提醒', note, parent=self.root)
         self.root.after(2000 if self.hidden else 1000, self.refresh)
 
+    def window_transition(self, showing, done=None):
+        if getattr(self, 'window_job', None):
+            self.root.after_cancel(self.window_job)
+        frames = 12 if showing else 8
+        def tick(frame=0):
+            self.window_job = None
+            t = 1-(1-frame/frames)**3
+            self.root.attributes('-alpha', t if showing else 1-.8*t)
+            if frame < frames:
+                self.window_job = self.root.after(16, lambda: tick(frame+1))
+            else:
+                if done:
+                    done()
+                self.root.attributes('-alpha', 1)
+        tick()
+
+    def minimize(self):
+        self.window_transition(False, self.root.iconify)
+
     def close(self):
         if self.tray:
             self.hidden = True
             if self.engine:
                 self.engine.background_mode = True
-            self.root.withdraw()
+            self.window_transition(False, self.root.withdraw)
         else:
-            self.root.iconify()
+            self.minimize()
 
     def show(self):
         self.hidden = False
@@ -1291,6 +1700,7 @@ class App:
             self.engine.wakeup.set()
         self.root.deiconify()
         self.root.lift()
+        self.window_transition(True)
 
     def quit(self):
         if self.busy:

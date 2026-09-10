@@ -256,6 +256,7 @@ def test_overview_deletes_removed_row_without_mutating_history():
     app.config = dict(defaults(), device_id='a')
     app.pair_flow = {}
     app.history_values = {}
+    app.last_sync = (None, None)
     app.cards = {k: Mock() for k in ('global', 'local', 'reset')}
     app.meter = {}
     app.table.get_children.return_value = ('a', 'b')

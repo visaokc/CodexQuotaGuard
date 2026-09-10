@@ -47,10 +47,15 @@ class HistoryRecovery:
         """
         complete = True
         self.runtime.scan(since)
+        with self.db.connect() as db:
+            offsets = {row['path']: row['offset'] for row in db.execute(
+                "SELECT path,json_extract(state,'$.offset') AS offset FROM recovery_cursors WHERE source=?",
+                (self.source,))}
         for folder in ('sessions', 'archived_sessions'):
             for path in sorted((self.home/folder).rglob('*.jsonl')):
                 try:
-                    if path.stat().st_mtime < since:
+                    stat = path.stat()
+                    if stat.st_mtime < since or offsets.get(str(path)) == stat.st_size:
                         continue
                     with self.db.connect() as db:
                         row = db.execute('SELECT state FROM recovery_cursors WHERE source=? AND path=?',
@@ -164,10 +169,13 @@ class HistoryRecovery:
             anchors, barriers, candidates = defaultdict(list), defaultdict(list), defaultdict(list)
             previous = {}
             rows = db.execute('SELECT * FROM recovery_usage WHERE source=? ORDER BY session,ts,id', (self.source,)).fetchall()
-            self.runtime.prepare(rows, existing, scope_cuts)
+            # Reuse decoding within this reconciliation only. A later call still
+            # rereads every witness, including late facts and rewritten evidence.
+            payloads = {row['id']: json.loads(row['payload']) for row in rows}
+            self.runtime.prepare(rows, existing, scope_cuts, payloads=payloads)
             runtime_blocked = set()
             for row in rows:
-                p = json.loads(row['payload'])
+                p = payloads[row['id']]
                 old = previous.get(row['session'])
                 current = p['current']
                 delta = [max(0, c-b) for c, b in zip(current, old or [0, 0, 0])]

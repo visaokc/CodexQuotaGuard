@@ -8,6 +8,7 @@ import time
 from .firewall import Firewall
 from .journal import Journal
 from .ledger import Ledger
+from .analytics import usage
 from .transport import make_mesh
 from .meter import Scanner
 from .quota import identity, read_quota
@@ -50,6 +51,7 @@ class Engine:
         self.last_broadcast = 0
         self.notice_key = None
         self.thread = None
+        self.analytics_cache = {}
         self.background_mode = False
         self.quota_error = ''
         self.quota_error_since = None
@@ -104,6 +106,7 @@ class Engine:
             self.mesh.close()
             self.mesh = None
         self.last_snapshot, self.last_read = None, 0
+        self.analytics_cache = {}
         self.last_quota_publish = 0
         self.quota_error = ''
         self.quota_error_since = None
@@ -238,7 +241,7 @@ class Engine:
             with self.view_lock:
                 self.view.update(summary=None, status=('当前账号未添加：不统计、不查询额度、不连接设备组'
                                  if ident['mode'] == 'account' else 'API / 未登录模式：不统计当前用量，仅核对已绑定旧请求'),
-                                 active=0, uncertain=0, peers={}, mesh='未连接', history=None,
+                                 active=0, uncertain=0, peers={}, mesh='未连接', history=None, analytics=None,
                                  pair_scope=False, connection={}, sync_receipts={}, sync_progress={},
                                  sync_vectors={}, local_vector={}, sync_errors={}, tracked_since=None)
             return
@@ -361,9 +364,13 @@ class Engine:
             return
         peers = self.mesh.peer_states() if self.mesh else {}
         local_vector = self.journal.vector(account)
+        if (not self.analytics_cache or now-self.analytics_cache['at'] >= 10
+                or self.analytics_cache['account'] != account
+                or self.analytics_cache.get('cycle_start') != (summary.get('epoch') or {}).get('started')):
+            self.analytics_cache = usage(self.group_db, account, now)
         sync_errors = {p: error for p, error in self.sync_errors.items() if p not in removed}
         with self.view_lock:
-            self.view.update(summary=summary, history=self.ledger.history(account, self.config['device_id'], now),
+            self.view.update(summary=summary, analytics=self.analytics_cache, history=self.ledger.history(account, self.config['device_id'], now),
                 recovery=recovered,
                 tracked_since=self.tracked[account]['added_at'],
                 status='监测中 · 所有设备用量均为估算' if self.mesh else '本机监测中 · 尚未配置异地匹配服务',

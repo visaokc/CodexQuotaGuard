@@ -83,7 +83,7 @@ class RuntimeEvidence:
                 self.available, self.complete = True, False
         return self.complete
 
-    def prepare(self, rows, existing, scope_cuts=()):
+    def prepare(self, rows, existing, scope_cuts=(), payloads=None):
         self.keys, self.owners, self.witnesses = {}, defaultdict(set), defaultdict(list)
         self.provider_conflicts = set()
         turns, cuts = defaultdict(list), defaultdict(list)
@@ -93,7 +93,7 @@ class RuntimeEvidence:
             for r in db.execute('SELECT process,at FROM runtime_auth_cuts WHERE source=? ORDER BY at', (self.source,)):
                 cuts[r['process']].append(r['at'])
         for row in rows:
-            p = json.loads(row['payload'])
+            p = payloads[row['id']] if payloads is not None else json.loads(row['payload'])
             matches = turns.get((row['session'], p.get('turn_id')), [])
             has_turn = bool(matches)
             matches = [r for r in matches if r['first_at']-1 <= row['ts'] <= r['last_at']+2]

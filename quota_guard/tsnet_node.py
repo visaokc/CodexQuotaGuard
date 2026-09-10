@@ -8,11 +8,38 @@ import queue
 import secrets
 import subprocess
 import sys
+import tempfile
 import threading
 import urllib.request
 from urllib.parse import urlsplit
 
 from .child_job import ChildJob
+
+
+def install_binary(root, folder):
+    """Keep the verified helper at one path so firewall consent survives restarts."""
+    source = Path(root)/'vendor'/'tsnet'/'cqg-tsnet.exe'
+    manifest = source.with_name('manifest.json')
+    if not source.is_file() or not manifest.is_file():
+        raise RuntimeError('安装包缺少内嵌 Tailscale 组件，请使用完整新版安装包')
+    content = source.read_bytes()
+    expected = json.loads(manifest.read_text(encoding='utf-8'))['sha256']
+    if hashlib.sha256(content).hexdigest() != expected:
+        raise RuntimeError('内嵌 Tailscale 组件校验失败')
+    target = Path(folder)/'runtime'/'cqg-tsnet.exe'
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == expected:
+        return target
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=target.parent, prefix='tsnet-', suffix='.tmp', delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(content)
+        os.replace(temporary, target)
+    finally:
+        if temporary and temporary.exists():
+            temporary.unlink()
+    return target
 
 
 def tail_ip(value):
@@ -53,12 +80,7 @@ class EmbeddedNode:
 
     def start(self):
         root = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parents[1]))
-        binary = root/'vendor'/'tsnet'/'cqg-tsnet.exe'
-        manifest = root/'vendor'/'tsnet'/'manifest.json'
-        if not binary.is_file() or not manifest.is_file():
-            raise RuntimeError('安装包缺少内嵌 Tailscale 组件，请使用完整新版安装包')
-        if hashlib.sha256(binary.read_bytes()).hexdigest() != json.loads(manifest.read_text())['sha256']:
-            raise RuntimeError('内嵌 Tailscale 组件校验失败')
+        binary = install_binary(root, self.folder)
         state = self.folder/'tailscale'
         state.mkdir(parents=True, exist_ok=True)
         # Do not inherit unrelated machine-wide auth keys, control servers or exit-node configuration.

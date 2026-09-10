@@ -28,6 +28,9 @@ try{
   assert.deepEqual(errors,[]);
   assert.equal(await page.getByTestId('device-row').count(),2);
   const rows=await page.getByTestId('device-row').first().boundingBox();assert.ok(rows.y>300);
+  assert.equal(await page.getByTestId('device-row').first().evaluate(n=>getComputedStyle(n).borderTopWidth),'0px');
+  const summaryBox=await page.locator('.summary-grid').boundingBox();
+  assert.ok(rows.x<summaryBox.x&&rows.width>summaryBox.width,'device cards extend beyond the summary grid');
   const last=await page.getByTestId('device-row').last().boundingBox();assert.ok(last.y+last.height<=555,'both device rows fully visible');
   assert.equal(await page.locator('.donut-svg text').count(),0);
   assert.ok(!(await page.getByTestId('pie-chart').innerText()).includes('%'));
@@ -46,6 +49,12 @@ try{
   assert.equal(await page.locator('.donut-tooltip').innerText(),'81.27M Token','pointer leave restores local usage');
   const arcLengths=await page.locator('.donut-piece circle').evaluateAll(nodes=>nodes.map(n=>Number(n.getAttribute('stroke-dasharray').split(' ')[0])));
   assert.ok(Math.abs(arcLengths.reduce((a,b)=>a+b,0)-(314.159-6))<.01,'two devices retain visible gaps without changing Token totals');
+  await page.evaluate(()=>{const data=structuredClone(window.__fixture);data.view.summary.epoch.used=80;window.__CQG_TEST__.applySnapshot(data);});
+  await page.waitForTimeout(450);
+  const track=await page.locator('.quota-progress').boundingBox(),fill=await page.locator('.quota-progress i').boundingBox();
+  assert.ok(Math.abs(fill.x+fill.width-track.x-track.width)<1,'remaining quota is anchored at the right edge');
+  assert.ok(Math.abs(fill.width/track.width-.2)<.01,'20 percent remaining retains 20 percent width');
+  await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
   const normalUsageColor=await page.getByTestId('official-remaining').evaluate(node=>getComputedStyle(node).color);
   for(const [used,color] of [[91,'rgb(237, 141, 152)'],[90,'rgb(232, 191, 117)'],[80,normalUsageColor],[null,normalUsageColor]]){
     await page.evaluate(used=>{const data=structuredClone(window.__fixture);data.view.summary.epoch.used=used;window.__CQG_TEST__.applySnapshot(data);},used);
@@ -119,13 +128,15 @@ try{
   assert.equal(await page.getByRole('heading',{name:'用户设置',exact:true}).count(),1);
   assert.equal(await page.locator('.palette button').count(),8);
   await page.getByRole('button',{name:'关闭对话框',exact:true}).click();
+  await page.waitForTimeout(200);
+  assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).selectedDevice,'','closing user settings clears selection');
   assert.equal(await page.locator('.device-heading').count(),0);
   await page.getByRole('button',{name:'筛选模型',exact:true}).click();
   assert.deepEqual(await page.locator('.select-option>span:first-child').allTextContents(),['全部模型','gpt-5.10','gpt-5.9','gpt-5.5','gpt-5.3-codex']);
   await page.locator('.select-menu').evaluate(e=>e.dataset.identity='persistent-menu');
   for(let i=0;i<20;i++)await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
   assert.equal(await page.locator('.select-menu').getAttribute('data-identity'),'persistent-menu');
-  assert.equal(await page.getByTestId('device-row').first().evaluate(e=>e.classList.contains('selected')),true);
+  assert.equal(await page.getByTestId('device-row').first().evaluate(e=>e.classList.contains('selected')),false);
   await page.screenshot({path:path.join(artifacts,'dropdown.png')});
   await page.getByRole('option',{name:'gpt-5.5',exact:true}).click();
   assert.equal(await page.evaluate(()=>window.__CQG_TEST__.getState().model),'gpt-5.5');
@@ -141,6 +152,7 @@ try{
   await page.locator('.palette button').nth(4).click();
   await page.getByRole('button',{name:'保存用户设置',exact:true}).click();
   await page.locator('.modal-backdrop').waitFor({state:'hidden'});
+  assert.equal(await page.locator('.device-row.selected').count(),0,'saving user settings clears the device highlight');
   assert.equal(await page.evaluate(()=>window.__commands.at(-1).action),'color_save');
   assert.ok((await page.getByTestId('device-row').first().innerText()).includes('测试工作站'));
   const firstRow=await page.getByTestId('device-row').first().boundingBox(),secondRow=await page.getByTestId('device-row').last().boundingBox();
@@ -167,6 +179,8 @@ try{
   assert.equal(await page.locator('.modal h2').innerText(),'用户设置');
   assert.equal(await page.locator('.user-note-label input').inputValue(),'测试工作站');
   await page.getByRole('button',{name:'关闭对话框',exact:true}).click();
+  await page.waitForTimeout(200);
+  assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).selectedDevice,'','closing user settings clears selection');
   await page.getByRole('button',{name:'添加 EXE',exact:true}).click();
   assert.ok((await page.locator('.program-list').innerText()).includes('extra-codex.exe'));
   await page.getByRole('button',{name:'保存监测设置',exact:true}).click();

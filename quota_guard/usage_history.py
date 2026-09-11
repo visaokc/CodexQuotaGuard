@@ -19,6 +19,16 @@ def archive_boundary(database, rules, now):
     return min(hits) if hits else None
 
 
+def archive_end(database, rules, now):
+    """Include late old-cycle logs in account1's archive until its real reset."""
+    declaration = rules['policy']['clean_start']
+    with database.connect() as db:
+        row = db.execute('''SELECT MIN(started) FROM epochs WHERE account=? AND started>?
+            AND ABS(reset_at-?)>120 AND started<=?''',
+            (declaration['account'], declaration['started'], declaration['reset_at'], now)).fetchone()
+    return row[0] if row[0] is not None else now
+
+
 def range_window(database, ranges, rules=None, attributed=None):
     from .shared_view import person_rows
     result = dict(start=min((r['start'] for r in ranges), default=0), step=1, count=1,
@@ -67,14 +77,17 @@ def range_window(database, ranges, rules=None, attributed=None):
 
 def donut_windows(database, analytics, rules, attributed, cutoff):
     result = {}
-    cutoff = -1 if cutoff is None else cutoff
+    archived_account = ((rules or {}).get('policy') or {}).get('clean_start', {}).get('account')
+    archived_until = archive_end(database, rules, analytics['at']) if cutoff is not None else -1
+    def boundary(account):
+        return archived_until if account == archived_account else -1
     for name in ('cycle', 'today', 'pie_hour', 'pie_six_hours', 'pie_twelve_hours', 'week', 'month', 'total'):
         source = analytics['windows'][name]
         if name == 'cycle':
-            ranges = [dict(account=c['account'], start=max(c['started'], cutoff), end=c['matched_until'],
-                           after=max(c['started'], cutoff)) for c in analytics['cycle_pair']['cycles']]
+            ranges = [dict(account=c['account'], start=max(c['started'], boundary(c['account'])), end=c['matched_until'],
+                           after=max(c['started'], boundary(c['account']))) for c in analytics['cycle_pair']['cycles']]
         else:
-            ranges = [dict(account=a, start=max(source['start'], cutoff), end=analytics['at'], after=cutoff)
+            ranges = [dict(account=a, start=max(source['start'], boundary(a)), end=analytics['at'], after=boundary(a))
                       for a in analytics['account_ids']]
         result[name] = range_window(database, ranges, rules, attributed)
     return result

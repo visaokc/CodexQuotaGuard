@@ -25,7 +25,8 @@ def test_exhaustion_archives_exact_event_boundary_without_changing_trend_or_fact
         before = [tuple(r) for r in connection.execute('SELECT * FROM events ORDER BY id')]
     data = shared_usage(db, 'group:test', {A:'账号1', B:'账号2'}, 400, rules=rules)
     assert data['donut_archive_at'] == 200
-    assert sum(r['tokens'] for r in data['donut_windows']['pie_hour']['rows']) == 1100
+    assert sum(r['tokens'] for r in data['donut_windows']['pie_hour']['rows']) == 2200
+    assert {r['account'] for r in data['donut_windows']['pie_hour']['rows']} == {B}
     assert sum(r['tokens'] for r in data['windows']['hour_curve']['rows']) == 3300
     assert sum(r['tokens'] for r in range_window(db, [dict(account=a, start=0, end=200) for a in (A,B)], rules)['rows']) == 2200
     safe = _view({'analytics': data})['analytics']
@@ -58,7 +59,8 @@ def test_personal_history_reads_selected_account_cycle_and_rejects_unknown_scope
     monkeypatch.setattr('quota_guard.web_controller.time.time', lambda: 400)
     archived = controller.command('member_history', dict(account=scope, cycle='archive'))
     assert archived['ok'], archived
-    assert sum(r['tokens'] for r in archived['data']['windows']['cycle']['rows']) == 2200
+    assert sum(r['tokens'] for r in archived['data']['windows']['cycle']['rows']) == 1100
+    assert {r['account'] for r in archived['data']['windows']['cycle']['rows']} == {A}
     second = next(c for c in data['cycles'] if c['account'] == B)
     result = controller.command('member_history', dict(account=scope, cycle=second['id']))
     assert result['ok'], result

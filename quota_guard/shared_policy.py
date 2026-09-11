@@ -53,6 +53,8 @@ def validate(value, origin, at):
                 or row.get('type') not in ('natural', 'card', 'official')):
             raise ValueError('重置确认无效')
     costs = value.get('shared_costs', [])
+    if 'rollover_since' in value and (not timestamp(value['rollover_since']) or value['rollover_since'] > value['effective']):
+        raise ValueError('结余结转起点无效')
     if value.get('unknown_weight') not in (None, 'interval_average_v1'):
         raise ValueError('未知模型分摊规则无效')
     if not isinstance(costs, list) or len(costs) > 64:
@@ -140,6 +142,7 @@ def load_rules(database, accounts, now):
                 or following['bindings'][:len(policy['bindings'])] != policy['bindings']
                 or following.get('shared_costs', [])[:len(policy.get('shared_costs', []))] != policy.get('shared_costs', [])
                 or (policy.get('clean_start') and following.get('clean_start') != policy['clean_start'])
+                or ('rollover_since' in policy and following.get('rollover_since') != policy['rollover_since'])
                 or (policy.get('rules_locked') and not following.get('rules_locked'))):
             return dict(result, status='conflict', reason='共享组规则链不一致')
         chain.append(following)
@@ -201,6 +204,8 @@ def publish_change(journal, rules, device, name, cap, changes, now):
     previous = rules.get('policy')
     if not previous or previous['admin'] != device:
         raise ValueError('只有共享组管理员可以修改共同规则')
+    if 'rollover_since' in previous and changes.get('rollover_since', previous['rollover_since']) != previous['rollover_since']:
+        raise ValueError('结余结转起点不可修改')
     policy = copy.deepcopy(previous)
     policy.update(changes, revision=previous['revision']+1, previous=digest(previous), effective=now)
     validate(policy, device, now)

@@ -44,7 +44,7 @@ def _summary(value):
     result['epoch'] = _pick(value.get('epoch'), ('id', 'account', 'started', 'ended', 'baseline', 'used',
         'reset_at', 'observed_at', 'reason', 'cycle')) or None
     result['devices'] = [_pick(d, ('id', 'name', 'cap', 'seen', 'scan_at', 'active', 'uncertain', 'logged_in',
-        'unbound_active', 'unbound_uncertain', 'estimated', 'settled', 'carry', 'fair_cap', 'fair_base_cap', 'tokens', 'weight', 'unknown_tokens', 'online', 'removed', 'quota_pending', 'avatar', 'device_ids', 'local', 'joined', 'available', 'available_cap', 'debt', 'pending_debt', 'confirmed_debt', 'by_account', 'fair_usage', 'active_model', 'confirmed_available', 'confirmed_available_cap'))
+        'unbound_active', 'unbound_uncertain', 'estimated', 'settled', 'carry', 'fair_cap', 'fair_base_cap', 'tokens', 'weight', 'unknown_tokens', 'online', 'removed', 'quota_pending', 'avatar', 'device_ids', 'local', 'joined', 'available', 'rollover', 'available_cap', 'debt', 'pending_debt', 'confirmed_debt', 'by_account', 'fair_usage', 'active_model', 'confirmed_available', 'confirmed_available_cap'))
         for d in value.get('devices', [])]
     result['attribution_gaps'] = [_pick(d, ('start', 'end', 'delta', 'reason', 'devices', 'unknown_models'))
                                   for d in value.get('attribution_gaps', [])]
@@ -380,7 +380,7 @@ class WebController:
         view = self._engine.snapshot()
         cycles = view.get('analytics', {}).get('cycles', [])
         selected = next((c for c in cycles if str(c['id']) == payload.get('cycle')), None)
-        from .usage_history import archive_boundary, range_window
+        from .usage_history import archive_boundary, archive_end, range_window
         from .shared_policy import load_rules
         from .shared_quota import attribution
         now = time.time()
@@ -388,7 +388,7 @@ class WebController:
         rules = load_rules(self._engine.group_db, accounts, now) if self._config.get('shared_billing_v1') else None
         cutoff = archive_boundary(self._engine.group_db, rules, now)
         if payload.get('cycle') == 'archive' and cutoff is not None:
-            ranges = [dict(account=a, start=0, end=cutoff) for a in accounts]
+            ranges = [dict(account=a, start=0, end=archive_end(self._engine.group_db, rules, now)) for a in accounts if a == rules['policy']['clean_start']['account']]
         elif selected and selected.get('account', scope) in accounts:
             ranges = [dict(account=selected.get('account', scope), start=selected['started'],
                            end=min(selected.get('ended') or now, now), after=selected['started'])]

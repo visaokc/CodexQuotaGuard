@@ -129,7 +129,7 @@ def accounting(rules, attributed, now):
     if (rules.get('status') != 'ready' and clean.get('state') != 'active') or len(attributed['anchors']) != 2:
         return result
     anchors = attributed['anchors']
-    pool = Pool(rules['accounts'])
+    pool = Pool(rules['accounts'], rollover_since=policy.get('rollover_since'))
     actions, issues = [], []
     if clean:
         actions.append((0, 0, 'policy', dict(compensation=True)))
@@ -199,7 +199,7 @@ def accounting(rules, attributed, now):
             reason='账号1旧周期仅归档、不计新账；账号2当前周期起算' if clean.get('trigger') == 'immediate' else '旧阶段两人等分结清，不留欠款'))
     if issues:
         for person in result['people'].values():
-            person.update(available=None, by_account={a: None for a in pool.accounts}, pending=None, confirmed=None, debt=None, fair_usage=None)
+            person.update(available=None, rollover=None, by_account={a: None for a in pool.accounts}, pending=None, confirmed=None, debt=None, fair_usage=None)
     return result
 
 

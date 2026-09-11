@@ -30,11 +30,13 @@ def split(amount, weights):
 
 
 class Pool:
-    def __init__(self, accounts, compensation=False):
+    def __init__(self, accounts, compensation=False, rollover_since=None):
         self.accounts = list(accounts)
         self.enabled = compensation
         self.stock = {a: {p: 0 for p in PERSONS} for a in accounts}
         self.entitlements = {a: {p: 0 for p in PERSONS} for a in accounts}
+        self.rollover_since = rollover_since
+        self.bank = {p: 0 for p in PERSONS}
         self.remaining = {a: 0 for a in accounts}
         self.pending = {a: {p: 0 for p in PERSONS} for a in accounts}
         self.confirmed = {p: 0 for p in PERSONS}
@@ -85,6 +87,17 @@ class Pool:
             self.stock[other][person] -= exchange
             self.record('exchange', at, account, person=person, other_account=other, amount=points(exchange))
             left -= exchange
+        if left and self.bank[person]:
+            redeemed = min(left, self.bank[person])
+            portions = split(redeemed, {p: self.stock[account][p] for p in PERSONS if p != person})
+            # Redeem a saved right against real inventory. Its previous holder
+            # receives the saved right, so nobody loses their personal balance.
+            for holder, part in portions.items():
+                self.stock[account][holder] -= part
+                self.bank[holder] += part
+            self.bank[person] -= redeemed
+            left -= redeemed
+            self.record('redeem', at, account, person=person, amount=points(redeemed))
         if left:
             portions = split(left, {p: self.stock[account][p] for p in PERSONS if p != person})
             for holder, part in portions.items():
@@ -109,6 +122,12 @@ class Pool:
             self.record('confirm' if confirm else 'waive', at, account, reason='exempt' if exempt else cause,
                         balances={p: points(v) for p, v in old.items()})
         self.pending[account] = {p: 0 for p in PERSONS}
+        if self.rollover_since is not None and at >= self.rollover_since:
+            for p in PERSONS:
+                saved = self.stock[account][p]
+                self.bank[p] += saved
+                if saved:
+                    self.record('rollover', at, account, person=p, amount=points(saved))
         self.record('expire', at, account, amount=points(self.remaining[account]))
         self.grant(account, remaining, cycle, at)
 
@@ -124,6 +143,7 @@ class Pool:
 
     def check(self):
         assert sum(self.confirmed.values()) == 0
+        assert all(value >= 0 for value in self.bank.values())
         for account in self.accounts:
             assert sum(self.stock[account].values()) == self.remaining[account]
             assert sum(self.pending[account].values()) == 0
@@ -131,9 +151,10 @@ class Pool:
             assert 0 <= self.remaining[account] <= FULL
 
     def summary(self):
-        return {p: dict(available=points(sum(self.stock[a][p] for a in self.accounts)),
+        return {p: dict(available=points(sum(self.stock[a][p] for a in self.accounts)+self.bank[p]),
+                       rollover=points(self.bank[p]),
                        available_cap=points(sum(self.entitlements[a][p] for a in self.accounts)),
-                       fair_usage=points(sum(self.entitlements[a][p]-self.stock[a][p] for a in self.accounts)+self.debt(p)),
+                       fair_usage=points(sum(self.entitlements[a][p]-self.stock[a][p] for a in self.accounts)-self.bank[p]+self.debt(p)),
                        by_account={a: points(self.stock[a][p]) for a in self.accounts},
                        pending=points(sum(self.pending[a][p] for a in self.accounts)),
                        confirmed=points(self.confirmed[p]), debt=points(self.debt(p))) for p in PERSONS}

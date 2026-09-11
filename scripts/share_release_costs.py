@@ -36,6 +36,7 @@ def main():
     parser.add_argument('--through', type=float)
     parser.add_argument('--apply', action='store_true')
     parser.add_argument('--average-unknown', action='store_true', help='Enable the explicitly authorized average-weight convention')
+    parser.add_argument('--enable-rollover', action='store_true', help='Enable authorized unused-balance carry from this rule onward')
     args = parser.parse_args()
     folder = args.data_dir.resolve()
     now = time.time()
@@ -75,6 +76,9 @@ def main():
         changes = dict(shared_costs=previous+additions) if additions else {}
         if args.average_unknown and rules['policy'].get('unknown_weight') != 'interval_average_v1':
             changes['unknown_weight'] = 'interval_average_v1'
+        if args.enable_rollover and 'rollover_since' not in rules['policy']:
+            changes['rollover_since'] = now
+        report['rollover_since'] = changes.get('rollover_since', rules['policy'].get('rollover_since'))
         if changes:
             publish_change(Journal(database, Ledger(database), cfg['device_id']), rules, cfg['device_id'], cfg['name'], cfg['quota'], changes, now)
             revised = load_rules(database, accounts, now)

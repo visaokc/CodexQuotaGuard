@@ -150,23 +150,34 @@ def test_member_tokens_and_all_donut_ranges_share_without_changing_curves_or_eve
         assert [tuple(r) for r in connection.execute('SELECT * FROM events ORDER BY id')] == stored
 
 
-def test_daily_donut_only_shares_new_ledger_rows_and_keeps_archive_separate(tmp_path):
+def test_daily_donut_archives_only_account1_and_keeps_account2_whole_cycle(tmp_path):
     from test_clean_start import setup_clean
     from quota_guard.usage_history import range_window
     db, journals, _ = setup_clean(tmp_path)
     for at in (150,200,201,250):
         add_event(journals, account=B, at=at)
+    add_event(journals, account=A, at=190)
+    add_event(journals, account=A, at=240)
     journals['one'].append(A, 'quota', dict(account=A, used=100, reset_at=800, at=200), 200)
     declare(db, journals, through=220, now=300)
     rules = load_rules(db, [A,B], 400)
     view = shared_usage(db, 'group:test', {A:'a',B:'b'}, 400, rules=rules)
     assert view['donut_archive_at'] == 200
     daily = view['donut_windows']['today']['rows']
-    assert [sum(r['tokens'] for r in daily if r['device']==p) for p in ('person1','person2','person3')] == [1467,367,366]
-    archived = range_window(db, [dict(account=B,start=100,end=200)], rules)['rows']
+    assert [sum(r['tokens'] for r in daily if r['device']==p) for p in ('person1','person2','person3')] == [2201,1101,1098]
+    assert {r['account'] for r in daily} == {B}
+    from quota_guard.usage_history import archive_end
+    archived = range_window(db, [dict(account=A,start=100,end=archive_end(db,rules,400))], rules)['rows']
     assert sum(r['tokens'] for r in archived) == 2200
-    assert sum(r['tokens'] for r in daily) == 2200
-    assert sum(r['tokens'] for r in view['windows']['hour_curve']['rows']) == 4400
+    assert sum(r['tokens'] for r in daily) == 4400
+    assert view['donut_windows']['cycle']['rows'] == view['windows']['cycle']['rows']
+    assert sum(r['tokens'] for r in view['windows']['hour_curve']['rows']) == 6600
+    for at in (801,820):
+        journals['one'].append(A,'quota',dict(account=A,used=0,reset_at=1500,at=at),at)
+    add_event(journals,account=A,at=825)
+    later = shared_usage(db,'group:test',{A:'a',B:'b'},830,rules=load_rules(db,[A,B],830))
+    assert sum(r['tokens'] for r in later['donut_windows']['total']['rows'] if r['account']==A) == 1100
+    assert sum(r['tokens'] for r in later['donut_windows']['total']['rows'] if r['account']==B) == 4400
 
 
 def test_token_split_conserves_details_and_missing_values_with_integer_rounding():

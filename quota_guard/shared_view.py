@@ -223,7 +223,7 @@ def shared_overview(database, scope, accounts, members, local, now, analytics, r
                 fair_cap=200/3, estimated=quota, settled=quota, quota_pending=pending,
                 carry=value['fair_usage']-quota if value.get('fair_usage') is not None else 0,
                 fair_usage=value.get('fair_usage'),
-                tokens=totals.get(person, 0), available=available, available_cap=value.get('available_cap'), debt=debt, pending_debt=value.get('pending'),
+                tokens=totals.get(person, 0), available=available, rollover=value.get('rollover'), available_cap=value.get('available_cap'), debt=debt, pending_debt=value.get('pending'),
                 confirmed_available=confirmed.get('available'), confirmed_available_cap=confirmed.get('available_cap'),
                 confirmed_debt=value.get('confirmed'), by_account=value.get('by_account', {}), removed=False,
                 active=sum(d.get('active', 0) for d in device_rows), uncertain=sum(d.get('uncertain', 0) for d in device_rows),

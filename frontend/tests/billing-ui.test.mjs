@@ -37,7 +37,7 @@ try{
   assert.equal(await page.locator('.device-row .avatar img').count(),3);
   assert.ok((await page.locator('.device-row .avatar img').evaluateAll(images=>images.map(i=>i.complete&&i.naturalWidth>0))).every(Boolean));
   assert.equal(await page.locator('.device-usage').first().innerText(),'0.0%');
-  assert.equal(await page.locator('.device-columns>span').last().innerText(),'可用额度');
+  assert.equal(await page.locator('.device-columns>span').last().innerText(),'个人余额');
   assert.equal(await page.locator('.model-badge.gold').innerText(),'GPT-6 Astra');
   assert.equal(await page.locator('.model-badge:not(.gold)').innerText(),'GPT-5.6 Sol');
   const badgeLayout=await page.getByTestId('device-row').evaluateAll(rows=>rows.map(row=>{
@@ -60,7 +60,7 @@ try{
   assert.equal(await page.getByTestId('connection-state').nth(1).innerText(),'在线');
   const activeRow=page.getByTestId('device-row').first();
   assert.equal(await activeRow.locator('.member-activity').innerText(),'Codex 使用中');
-  for(const [active,model,state] of [[1,null,'识别模型中'],[0,'gpt-6-astra','暂无近期活动'],[1,'gpt-6-astra','Codex 使用中']]){
+  for(const [active,model,state] of [[1,null,'识别模型中'],[0,'gpt-6-astra','—'],[1,'gpt-6-astra','Codex 使用中']]){
     await page.evaluate(({active,model})=>{Object.assign(window.__fixture.view.summary.devices[0],{active,active_model:model});window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture));},{active,model});
     assert.equal(await activeRow.locator('.member-activity').innerText(),state);
     assert.equal(await activeRow.locator('.model-badge').count(),state==='Codex 使用中'?1:0);
@@ -80,6 +80,11 @@ try{
   assert.equal(filtered.pie.quotaTotals.person1,undefined);assert.equal(filtered.pie.quotaTotals.person3,billingFixture().view.analytics.windows.today.quota_rows.filter(r=>r.device==='person3').reduce((n,r)=>n+r.quota*1.5,0));
   await page.getByRole('button',{name:'筛选账号',exact:true}).click();await page.getByRole('option',{name:'两账号合计',exact:true}).click();
   await page.getByTestId('device-row').first().click();await page.locator('.user-pool-summary').waitFor();
+  await page.evaluate(()=>{const data=structuredClone(window.__fixture);Object.assign(data.view.summary.devices[0],{available:400/3,available_cap:200/3,rollover:200/3});window.__CQG_TEST__.applySnapshot(data);});
+  assert.equal(await page.locator('.user-pool-summary>div').first().locator('strong').innerText(),'200.0%');
+  assert.equal(await page.locator('.user-pool-summary>div').first().locator('small').innerText(),'其中结转 100.0%');
+  assert.equal(await page.locator('.device-usage').first().innerText(),'200.0%');
+  await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
   assert.equal(await page.locator('.user-account-breakdown article').count(),0);assert.equal(await page.locator('.user-pool-summary>div').count(),3);assert.match(await page.getByTestId('shared-consumption-card').innerText(),/均摊消耗/);assert.ok(!(await page.getByTestId('shared-consumption-card').innerText()).includes('软件开发'));
   assert.deepEqual((await page.locator('.user-model-card header strong').allTextContents()).slice(0,4),['GPT-6 Astra','GPT-5.6 Sol','GPT-5.6 Terra','GPT-5.6 Luna']);
   await page.evaluate(()=>{const data=structuredClone(window.__fixture),rows=data.view.analytics.windows.cycle.rows;rows.push({...rows.find(r=>r.device==='person1'),model:'codex-auto-review',tokens:72633});window.__CQG_TEST__.applySnapshot(data);});
@@ -176,13 +181,13 @@ try{
   assert.equal(await page.locator('.device-row .avatar img').first().getAttribute('src'),'avatars/person2.jpg');
   assert.equal(await page.locator('.legend-name').first().innerText(),'A');
   assert.equal(await page.locator('.device-usage').first().innerText(),'—');
-  await page.getByRole('button',{name:'设备占比时间范围',exact:true}).click();await page.getByRole('option',{name:'新账周期',exact:true}).click();
+  await page.getByRole('button',{name:'设备占比时间范围',exact:true}).click();await page.getByRole('option',{name:'本周期',exact:true}).click();
   assert.equal(await page.locator('.donut-main-share').first().innerText(),'34.5%');await page.waitForTimeout(200);
   assert.equal(await page.locator('.device-quota-cell small').count(),0,'unavailable balance is explained once, not repeated as unknown under every member');
   assert.ok((await page.locator('.billing-status').innerText()).includes('已确认消费继续显示'));
   await page.evaluate(()=>{const data=structuredClone(window.__fixture);data.view.billing.last_confirmed={at:data.view.analytics.at-60,pending_quota:1};Object.assign(data.view.summary.devices.find(d=>d.id==='person2'),{confirmed_available:30,confirmed_available_cap:100/3});window.__CQG_TEST__.applySnapshot(data);});
   assert.equal(await page.locator('.device-usage').first().innerText(),'90.0%*');
-  assert.equal(await page.locator('.device-columns>span').last().innerText(),'上次确认可用*');
+  assert.equal(await page.locator('.device-columns>span').last().innerText(),'上次确认余额*');
   assert.ok((await page.locator('.billing-status').innerText()).includes('1.00 点待分摊'));
   await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
 

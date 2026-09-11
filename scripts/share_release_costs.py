@@ -1,6 +1,7 @@
 """Preview/apply the explicitly authorized repair interval before release upload."""
 import argparse
 import ctypes
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -22,7 +23,7 @@ from quota_guard.storage import Database
 
 
 def copy_database(source, target):
-    with sqlite3.connect(source.as_uri()+'?mode=ro', uri=True) as old, sqlite3.connect(target) as new:
+    with closing(sqlite3.connect(source.as_uri()+'?mode=ro', uri=True)) as old, closing(sqlite3.connect(target)) as new:
         old.backup(new)
         assert new.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
 

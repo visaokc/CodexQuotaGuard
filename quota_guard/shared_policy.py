@@ -55,6 +55,9 @@ def validate(value, origin, at):
     costs = value.get('shared_costs', [])
     if 'rollover_since' in value and (not timestamp(value['rollover_since']) or value['rollover_since'] > value['effective']):
         raise ValueError('结余结转起点无效')
+    if 'unused_expiry_from' in value and (not timestamp(value['unused_expiry_from'])
+            or not value.get('rollover_since', 0) <= value['unused_expiry_from'] <= value['effective']):
+        raise ValueError('未用份额到期规则起点无效')
     if value.get('unknown_weight') not in (None, 'interval_average_v1'):
         raise ValueError('未知模型分摊规则无效')
     if not isinstance(costs, list) or len(costs) > 64:
@@ -143,6 +146,7 @@ def load_rules(database, accounts, now):
                 or following.get('shared_costs', [])[:len(policy.get('shared_costs', []))] != policy.get('shared_costs', [])
                 or (policy.get('clean_start') and following.get('clean_start') != policy['clean_start'])
                 or ('rollover_since' in policy and following.get('rollover_since') != policy['rollover_since'])
+                or ('unused_expiry_from' in policy and following.get('unused_expiry_from') != policy['unused_expiry_from'])
                 or (policy.get('rules_locked') and not following.get('rules_locked'))):
             return dict(result, status='conflict', reason='共享组规则链不一致')
         chain.append(following)
@@ -206,6 +210,8 @@ def publish_change(journal, rules, device, name, cap, changes, now):
         raise ValueError('只有共享组管理员可以修改共同规则')
     if 'rollover_since' in previous and changes.get('rollover_since', previous['rollover_since']) != previous['rollover_since']:
         raise ValueError('结余结转起点不可修改')
+    if 'unused_expiry_from' in previous and changes.get('unused_expiry_from', previous['unused_expiry_from']) != previous['unused_expiry_from']:
+        raise ValueError('未用份额到期规则起点不可修改')
     policy = copy.deepcopy(previous)
     policy.update(changes, revision=previous['revision']+1, previous=digest(previous), effective=now)
     validate(policy, device, now)

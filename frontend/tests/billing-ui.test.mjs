@@ -38,6 +38,8 @@ try{
   assert.ok((await page.locator('.device-row .avatar img').evaluateAll(images=>images.map(i=>i.complete&&i.naturalWidth>0))).every(Boolean));
   assert.equal(await page.locator('.device-usage').first().innerText(),'0.0%');
   assert.equal(await page.locator('.device-columns>span').last().innerText(),'个人余额');
+  const tokenBasis=await page.locator('.device-columns>span').nth(1).getAttribute('title');
+  assert.ok(tokenBasis.includes('包含均摊')&&tokenBasis.includes('不按 Token 总数同比扣减'));
   assert.equal(await page.locator('.model-badge.gold').innerText(),'GPT-6 Astra');
   assert.equal(await page.locator('.model-badge:not(.gold)').innerText(),'GPT-5.6 Sol');
   const badgeLayout=await page.getByTestId('device-row').evaluateAll(rows=>rows.map(row=>{
@@ -80,10 +82,19 @@ try{
   assert.equal(filtered.pie.quotaTotals.person1,undefined);assert.equal(filtered.pie.quotaTotals.person3,billingFixture().view.analytics.windows.today.quota_rows.filter(r=>r.device==='person3').reduce((n,r)=>n+r.quota*1.5,0));
   await page.getByRole('button',{name:'筛选账号',exact:true}).click();await page.getByRole('option',{name:'两账号合计',exact:true}).click();
   await page.getByTestId('device-row').first().click();await page.locator('.user-pool-summary').waitFor();
-  await page.evaluate(()=>{const data=structuredClone(window.__fixture);Object.assign(data.view.summary.devices[0],{available:400/3,available_cap:200/3,rollover:200/3});window.__CQG_TEST__.applySnapshot(data);});
-  assert.equal(await page.locator('.user-pool-summary>div').first().locator('strong').innerText(),'200.0%');
-  assert.equal(await page.locator('.user-pool-summary>div').first().locator('small').innerText(),'其中结转 100.0%');
-  assert.equal(await page.locator('.device-usage').first().innerText(),'200.0%');
+  for(const [cap,basis,debt] of [[100/3,'100% = 33.33 点','6.0%'],[200/3,'100% = 66.67 点','3.0%']]){
+    await page.evaluate(cap=>{const data=structuredClone(window.__fixture);Object.assign(data.view.summary.devices[0],{available:cap/2,available_cap:cap,debt:2,pending_debt:1,confirmed_debt:1});data.view.account_summaries[0].epoch.used=100;window.__CQG_TEST__.applySnapshot(data);},cap);
+    assert.equal(await page.locator('.user-pool-summary>div').first().locator('strong').innerText(),'50.0%');
+    assert.equal(await page.getByTestId('personal-basis').innerText(),basis);
+    assert.equal(await page.locator('.user-pool-summary>div').nth(1).locator('strong').innerText(),debt);
+    assert.equal(await page.locator('.device-usage').first().innerText(),'50.0%');
+    assert.ok((await page.locator('.user-summary-note').innerText()).includes(basis));
+    assert.ok(!(await page.locator('.user-pool-summary').innerText()).includes('其中结转'));
+  }
+  await page.evaluate(()=>{const data=structuredClone(window.__fixture);Object.assign(data.view.summary.devices[0],{available:35,available_cap:100/3,debt:-2,pending_debt:-1,confirmed_debt:-1});window.__CQG_TEST__.applySnapshot(data);});
+  assert.equal(await page.locator('.user-pool-summary>div').nth(1).locator('span').innerText(),'待获补偿');
+  assert.equal(await page.locator('.user-pool-summary>div').nth(1).locator('strong').innerText(),'6.0%');
+  assert.equal(await page.locator('.device-usage').first().innerText(),'105.0%');
   await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
   assert.equal(await page.locator('.user-account-breakdown article').count(),0);assert.equal(await page.locator('.user-pool-summary>div').count(),3);assert.match(await page.getByTestId('shared-consumption-card').innerText(),/均摊消耗/);assert.ok(!(await page.getByTestId('shared-consumption-card').innerText()).includes('软件开发'));
   assert.deepEqual((await page.locator('.user-model-card header strong').allTextContents()).slice(0,4),['GPT-6 Astra','GPT-5.6 Sol','GPT-5.6 Terra','GPT-5.6 Luna']);
@@ -147,6 +158,10 @@ try{
   await page.locator('.paired-device').first().getByRole('button',{name:'移除',exact:true}).click();
   await page.locator('.modal').getByRole('button',{name:'确认',exact:true}).click();
   assert.ok((await page.evaluate(()=>window.__commands)).some(c=>c.action==='device_remove'&&c.payload.device==='fixture-peer'));
+  await page.getByTestId('nav-help').click();
+  const help=await page.locator('.prose').innerText();
+  assert.ok(help.includes('账号额度用尽不会缩小这个基准')&&help.includes('未用且未被借用的部分到期消失'));
+  assert.ok(help.includes('历史周期百分比也使用该基准')&&!help.includes('启用结转后'));
   await page.getByTestId('nav-settings').click();await page.locator('.group-policy-panel').waitFor();
   const toggle=page.getByRole('switch',{name:'跨周期补偿',exact:true});assert.equal(await toggle.isEnabled(),true);
   await toggle.click();assert.ok((await page.evaluate(()=>window.__commands)).some(c=>c.action==='compensation_toggle'&&c.payload.revision===1&&c.payload.enabled===true));
@@ -168,7 +183,7 @@ try{
   assert.equal(await page.getByTestId('display-mode-locked').innerText(),'补偿显示模式 · 固定');
   assert.equal(await page.getByRole('switch',{name:'跨周期补偿',exact:true}).count(),0);
   assert.equal(await page.getByRole('button',{name:'额度显示基准',exact:true}).count(),0);
-  assert.ok((await page.locator('.settings-line').first().innerText()).includes('66.67%'));
+  assert.ok((await page.locator('.settings-line').first().innerText()).includes('100% = 66.67 点'));
   assert.equal(await page.getByTestId('settings-user').first().locator('strong').innerText(),'A');
   await page.evaluate(()=>{window.__fixture.view.shared_group.can_manage=true;window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture));});
   assert.equal(await page.locator('.membership-advanced').getAttribute('open'),null);
@@ -189,6 +204,10 @@ try{
   assert.equal(await page.locator('.device-usage').first().innerText(),'90.0%*');
   assert.equal(await page.locator('.device-columns>span').last().innerText(),'上次确认余额*');
   assert.ok((await page.locator('.billing-status').innerText()).includes('1.00 点待分摊'));
+  assert.ok((await page.locator('.billing-status').innerText()).includes('Token 已实时更新且含均摊'));
+  const confirmedTitle=await page.locator('.device-usage').first().getAttribute('title');
+  assert.match(confirmedTitle,/上次确认余额（\d{2}-\d{2} \d{2}:\d{2}）/);
+  assert.ok(confirmedTitle.includes('Token 为实时日志统计且含均摊')&&confirmedTitle.includes('不代表当前余额'));
   await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
 
   const fills=await page.locator('.pool-track').evaluate(track=>({width:track.clientWidth,right:track.getBoundingClientRect().right,rows:[...track.children].map(n=>({left:n.getBoundingClientRect().left,right:n.getBoundingClientRect().right,width:n.getBoundingClientRect().width}))}));

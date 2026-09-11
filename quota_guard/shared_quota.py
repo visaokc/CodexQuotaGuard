@@ -131,6 +131,8 @@ def accounting(rules, attributed, now):
     anchors = attributed['anchors']
     pool = Pool(rules['accounts'], rollover_since=policy.get('rollover_since'))
     actions, issues = [], []
+    if policy.get('unused_expiry_from') is not None and policy['unused_expiry_from'] <= now:
+        actions.append((policy['unused_expiry_from'], .25, 'policy', dict(kind='expire_saved')))
     if clean:
         actions.append((0, 0, 'policy', dict(compensation=True)))
     else:
@@ -168,6 +170,8 @@ def accounting(rules, attributed, now):
     for at, order, account, action in actions:
         if order == 0:
             pool.compensation(action['compensation'], at)
+        elif action['kind'] == 'expire_saved':
+            pool.expire_saved(at)
         elif action['kind'] == 'initial':
             cycle = action['cycle']
             pool.grant(account, max(0, FULL-units(action['used'])), [cycle['started'], cycle['reset_at']], at, initial=True)

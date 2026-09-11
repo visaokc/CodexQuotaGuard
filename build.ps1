@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Stop'
 $env:PYTHONUTF8 = '1'
 Set-Location $PSScriptRoot
 $python = Join-Path $PSScriptRoot 'work\venv\Scripts\python.exe'
-$dist = Join-Path $PSScriptRoot 'dist\0.6.3'
+$dist = Join-Path $PSScriptRoot 'dist\0.6.4'
 if (-not (Test-Path -LiteralPath $python)) { throw '先按 README 创建 work\venv 并安装 requirements-dev.txt' }
 & "$PSScriptRoot\scripts\build_tsnet.ps1"
 & $python -m pytest tests -q
@@ -19,7 +19,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Updater build failed' }
 if ($LASTEXITCODE -ne 0) { throw 'Client build failed' }
 & $python -m PyInstaller --noconfirm --clean --onefile --windowed --uac-admin --name '恢复Codex网络' --icon assets\app.ico --distpath $dist --workpath work\build-recovery recover_main.py
 if ($LASTEXITCODE -ne 0) { throw 'Recovery build failed' }
-Copy-Item -LiteralPath README.md,VALIDATION.md,THIRD_PARTY_NOTICES.txt -Destination $dist -Force
+Copy-Item -LiteralPath README.md,VALIDATION.md,AGENTS.md,THIRD_PARTY_NOTICES.txt -Destination $dist -Force
 Copy-Item -LiteralPath licenses -Destination $dist -Recurse -Force
 New-Item -ItemType Directory -Force -Path (Join-Path $dist 'licenses\tsnet') | Out-Null
 Copy-Item -LiteralPath vendor\tsnet\LICENSE.txt,vendor\tsnet\THIRD_PARTY_LICENSES.txt -Destination (Join-Path $dist 'licenses\tsnet') -Force

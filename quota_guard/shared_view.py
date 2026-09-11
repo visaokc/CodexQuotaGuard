@@ -232,7 +232,7 @@ def shared_overview(database, scope, accounts, members, local, now, analytics, r
         summary.update(devices=people_rows, compensation_enabled=billing['compensation_enabled'],
                        allocation='shared_official_v1', billing_status=billing['status'], billing_reason=billing['reason'])
         summary['token_budget']['sampled_tokens'] = sum(row['tokens'] for row in people_rows)
-        summary['token_budget']['source'] = '两账号完整配对周期 · Token 实记'
+        summary['token_budget']['source'] = '两账号完整配对周期 · 分摊后 Token'
         return dict(summary=summary, account_summaries=cards, members=people_rows, billing=billing,
                     daily_usage=daily_usage(database, cards, people_rows, analytics, now))
     return dict(summary=summary, account_summaries=cards, members=list(people.values()))

@@ -141,6 +141,15 @@ class Pool:
     def debt(self, person):
         return self.confirmed[person]+sum(value[person] for value in self.pending.values())
 
+    def expire_saved(self, at):
+        """End the retired carry rule without changing inventory or borrowed rights."""
+        for person, amount in self.bank.items():
+            if amount:
+                self.record('expire_saved', at, person=person, amount=points(amount))
+        self.bank = {p: 0 for p in PERSONS}
+        self.rollover_since = None
+        self.check()
+
     def check(self):
         assert sum(self.confirmed.values()) == 0
         assert all(value >= 0 for value in self.bank.values())

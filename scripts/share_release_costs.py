@@ -37,7 +37,10 @@ def main():
     parser.add_argument('--apply', action='store_true')
     parser.add_argument('--average-unknown', action='store_true', help='Enable the explicitly authorized average-weight convention')
     parser.add_argument('--enable-rollover', action='store_true', help='Enable authorized unused-balance carry from this rule onward')
+    parser.add_argument('--expire-unused', action='store_true', help='End unused carry; each account expires its unused inventory at reset')
     args = parser.parse_args()
+    if args.enable_rollover and args.expire_unused:
+        parser.error('Choose only one unused-balance rule')
     folder = args.data_dir.resolve()
     now = time.time()
     through = args.through if args.through is not None else now
@@ -78,7 +81,10 @@ def main():
             changes['unknown_weight'] = 'interval_average_v1'
         if args.enable_rollover and 'rollover_since' not in rules['policy']:
             changes['rollover_since'] = now
+        if args.expire_unused and 'unused_expiry_from' not in rules['policy']:
+            changes['unused_expiry_from'] = now
         report['rollover_since'] = changes.get('rollover_since', rules['policy'].get('rollover_since'))
+        report['unused_expiry_from'] = changes.get('unused_expiry_from', rules['policy'].get('unused_expiry_from'))
         if changes:
             publish_change(Journal(database, Ledger(database), cfg['device_id']), rules, cfg['device_id'], cfg['name'], cfg['quota'], changes, now)
             revised = load_rules(database, accounts, now)

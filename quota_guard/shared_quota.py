@@ -179,3 +179,21 @@ def accounting(rules, attributed, now):
         for person in result['people'].values():
             person.update(available=None, by_account={a: None for a in pool.accounts}, pending=None, confirmed=None, debt=None, fair_usage=None)
     return result
+
+
+def last_confirmed(database, rules, attributed, now):
+    """Historical balance only: never substitute incomplete attribution for live inventory."""
+    anchors, clean = attributed['anchors'], attributed.get('clean_start', {})
+    pending = [s for s in attributed['streams'] if not s['ready'] and s['account'] in anchors
+               and s['end'] > anchors[s['account']]['at']
+               and not (clean and s['account'] == clean['account']
+                        and s['cycle_start'] == anchors[s['account']]['cycle']['started'])]
+    if not pending:
+        return None
+    at = min(s['end'] for s in pending)-0.000001
+    if at < max([a['at'] for a in anchors.values()]+[clean.get('at') or 0]):
+        return None
+    previous = accounting(rules, attribution(database, rules, at), at)
+    if previous['status'] != 'active':
+        return None
+    return dict(at=at, people=previous['people'], pending_quota=sum(points(s['units']) for s in pending))

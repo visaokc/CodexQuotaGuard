@@ -105,6 +105,9 @@ def shared_usage(database, scope, accounts, now=None, rules=None, **options):
                 cycle['reset_type'] = {'natural':'自然重置','card':'重置卡','official':'官方临时重置'}.get(cause, cause)
         result['quota_unavailable'] = ''
         result['billing'] = accounting(rules, attributed, now)
+        if not options and result['billing']['status'] == 'syncing':
+            from .shared_quota import last_confirmed
+            result['billing']['last_confirmed'] = last_confirmed(database, rules, attributed, now)
         result['official_events'] = attributed['events']
         for name, window in result['windows'].items():
             window['rows'] = [mapped for row in window['rows'] for mapped in person_rows(database, row, rules, now)]
@@ -137,6 +140,11 @@ def shared_usage(database, scope, accounts, now=None, rules=None, **options):
                     window['quota_pending_rows'].append({k: row[k] for k in ('account','device','model','bucket')})
             window['quota_ready'] = window['quota_available'] = bool(attributed['epochs'])
         result['rules'] = rules
+    if not options:
+        from .usage_history import archive_boundary, donut_windows
+        result['donut_archive_at'] = archive_boundary(database, rules, now)
+        if result['donut_archive_at'] is not None:
+            result['donut_windows'] = donut_windows(database, result, rules, attributed, result['donut_archive_at'])
     return result
 
 
@@ -167,7 +175,8 @@ def shared_overview(database, scope, accounts, members, local, now, analytics, r
         record = records.get(device, {})
         online = device == local or person.get('online', False)
         current = person.get('current_account')
-        activity = record if online and current == record.get('account') else {}
+        activity = record if (online and current == record.get('account')
+                              and (device == local or 0 <= now-record.get('seen', 0) < 30)) else {}
         devices.append(dict(id=device, name=person.get('name') or record.get('name') or device[:8],
             cap=200/3, fair_base_cap=200/3, fair_cap=None, carry=0,
             estimated=None, settled=None, quota_pending=True, tokens=totals.get(device, 0),
@@ -192,6 +201,7 @@ def shared_overview(database, scope, accounts, members, local, now, analytics, r
             device_rows = [d for d in devices if d['id'] in attached]
             quota = sum(row['quota'] for row in analytics['windows']['cycle']['quota_rows'] if row['device'] == person)
             value = billing.get('people', {}).get(person, {})
+            confirmed = (billing.get('last_confirmed') or {}).get('people', {}).get(person, {})
             debt, available = value.get('debt'), value.get('available')
             pending = any(row['device'] == person for row in analytics['windows']['cycle']['quota_pending_rows'])
             name = next((people[d]['name'] for d in attached if people[d].get('name')), '待加入成员' if index == 2 else '成员'+str(index+1))
@@ -203,6 +213,7 @@ def shared_overview(database, scope, accounts, members, local, now, analytics, r
                 carry=value['fair_usage']-quota if value.get('fair_usage') is not None else 0,
                 fair_usage=value.get('fair_usage'),
                 tokens=totals.get(person, 0), available=available, available_cap=value.get('available_cap'), debt=debt, pending_debt=value.get('pending'),
+                confirmed_available=confirmed.get('available'), confirmed_available_cap=confirmed.get('available_cap'),
                 confirmed_debt=value.get('confirmed'), by_account=value.get('by_account', {}), removed=False,
                 active=sum(d.get('active', 0) for d in device_rows), uncertain=sum(d.get('uncertain', 0) for d in device_rows),
                 unbound_active=sum(d.get('unbound_active', 0) for d in device_rows), unbound_uncertain=sum(d.get('unbound_uncertain', 0) for d in device_rows),

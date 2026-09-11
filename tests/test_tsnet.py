@@ -59,7 +59,7 @@ def test_authenticated_handshake_learns_peer_and_survives_restart(tmp_path):
     assert not restarted.peer_states(), 'Tailscale running and saved addresses do not prove monitor presence'
     mesh.peers['b'].update(route='Tailscale · 直连', route_at=time.time()-40)
     assert '待确认' in mesh.peer_states()['b']['route']
-    mesh.peers['b']['last_seen'] -= 31
+    mesh.peers['b']['last_seen'] -= 91
     assert not mesh.peer_states()
 
 

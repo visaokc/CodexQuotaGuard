@@ -13,6 +13,7 @@ from .tsnet_node import EmbeddedNode, route_label, tail_ip
 class TailscaleMesh:
     history_limit = 400
     history_bytes = 160*1024
+    offline_after = 90
 
     def __init__(self, config, account, on_message):
         self.config, self.account, self.on_message = dict(config), account, on_message
@@ -141,7 +142,7 @@ class TailscaleMesh:
         with self.lock:
             now = time.time()
             return {p: dict(s, route=s['route'] if now-s.get('route_at', 0)<35 else 'Tailscale · 路径待确认')
-                    for p, s in self.peers.items() if now-s['last_seen']<30 and p not in self.removed and self.device not in self.removed}
+                    for p, s in self.peers.items() if now-s['last_seen']<self.offline_after and p not in self.removed and self.device not in self.removed}
 
     def send(self, peer, value):
         # Anti-entropy regenerates unacknowledged facts. Separate account mailboxes.
@@ -286,7 +287,8 @@ class TailscaleMesh:
                                 self.node.request('send', dict(ip=ip, envelope=envelope))
                             except OSError as e:
                                 with self.lock:
-                                    self.peers.pop(peer, None)
+                                    # Only authenticated silence expires presence;
+                                    # one failed send does not prove a disconnect.
                                     self.peer_error = ('匹配地址不在当前节点可见的 tailnet 中，请核对两端内嵌节点所属网络'
                                         if getattr(e, 'code', None) == 400 else '对端同步端口不可达，请检查对端节点、网络或访问规则')
                                 break

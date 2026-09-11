@@ -44,7 +44,7 @@ def _summary(value):
     result['epoch'] = _pick(value.get('epoch'), ('id', 'account', 'started', 'ended', 'baseline', 'used',
         'reset_at', 'observed_at', 'reason', 'cycle')) or None
     result['devices'] = [_pick(d, ('id', 'name', 'cap', 'seen', 'scan_at', 'active', 'uncertain', 'logged_in',
-        'unbound_active', 'unbound_uncertain', 'estimated', 'settled', 'carry', 'fair_cap', 'fair_base_cap', 'tokens', 'weight', 'unknown_tokens', 'online', 'removed', 'quota_pending', 'avatar', 'device_ids', 'local', 'joined', 'available', 'available_cap', 'debt', 'pending_debt', 'confirmed_debt', 'by_account', 'fair_usage', 'active_model'))
+        'unbound_active', 'unbound_uncertain', 'estimated', 'settled', 'carry', 'fair_cap', 'fair_base_cap', 'tokens', 'weight', 'unknown_tokens', 'online', 'removed', 'quota_pending', 'avatar', 'device_ids', 'local', 'joined', 'available', 'available_cap', 'debt', 'pending_debt', 'confirmed_debt', 'by_account', 'fair_usage', 'active_model', 'confirmed_available', 'confirmed_available_cap'))
         for d in value.get('devices', [])]
     result['attribution_gaps'] = [_pick(d, ('start', 'end', 'delta', 'reason', 'devices', 'unknown_models'))
                                   for d in value.get('attribution_gaps', [])]
@@ -88,7 +88,9 @@ def _view(value):
     result['sync_confirmed_at'] = (min(receipts[p] for p in result['sync_progress'])
         if states and all(s == 'caught_up' for s in states) and all(receipts.get(p) for p in result['sync_progress']) else None)
     analytics = value.get('analytics') or {}
-    result['analytics'] = _pick(analytics, ('account', 'at', 'models', 'cycle_start', 'statistics_start', 'quota_unavailable'))
+    result['analytics'] = _pick(analytics, ('account', 'at', 'models', 'cycle_start', 'statistics_start', 'quota_unavailable', 'donut_archive_at'))
+    if analytics.get('donut_windows'):
+        result['analytics']['donut_windows'] = _view({'analytics': {'windows': analytics['donut_windows']}})['analytics']['windows']
     if analytics.get('cycle_pair'):
         pair = analytics['cycle_pair']
         result['analytics']['cycle_pair'] = _pick(pair, ('status', 'complete', 'reason', 'overlap_seconds'))
@@ -105,7 +107,7 @@ def _view(value):
     if value.get('daily_usage'):
         result['daily_usage'] = _pick(value['daily_usage'], ('total','people','unassigned','basis'))
     if value.get('billing'):
-        result['billing'] = _pick(value['billing'], ('status','reason','people','anchors','active_since','compensation_enabled','entries','clean_start'))
+        result['billing'] = _pick(value['billing'], ('status','reason','people','anchors','active_since','compensation_enabled','entries','clean_start','last_confirmed'))
     for key in ('cycle', 'total', 'today', 'pie_hour', 'pie_six_hours', 'pie_twelve_hours', 'hour', 'hour_curve', 'six_hours', 'twelve_hours', 'day', 'week', 'month'):
         source = analytics.get('windows', {}).get(key)
         if source:
@@ -183,7 +185,7 @@ class WebController:
                 self._config['program_paths'] = discover_programs()
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
                 pass
-        self._engine = Engine(self._database, self._config)
+        self._engine = Engine(self._database, self._config, account_enroller=self._auto_enroll)
         self._engine.background_mode = self._hidden
         self._engine.start()
         if self._startup_enabled:
@@ -236,13 +238,13 @@ class WebController:
         payload = {} if payload is None else payload
         if not isinstance(payload, dict):
             return {'ok': False, 'error': '操作参数须为对象'}
-        actions = {'refresh', 'account_scan', 'account_add', 'account_remove', 'account_history', 'chart_history', 'cap_save',
+        actions = {'refresh', 'account_scan', 'account_add', 'account_remove', 'account_history', 'member_history', 'chart_history', 'cap_save',
                    'limit_toggle', 'compensation_toggle', 'restore', 'note_save', 'color_save', 'device_order_save', 'device_remove', 'settings_save',
                    'programs_discover', 'pair_generate', 'pair_join', 'tailscale_login', 'tailscale_switch',
                    'connection_save', 'update_check', 'update_install', 'diagnostics', 'group_rule'}
         if action not in actions:
             return {'ok': False, 'error': '未知操作'}
-        if not self._mutation.acquire(blocking=action=='chart_history'):
+        if not self._mutation.acquire(blocking=action in ('chart_history', 'member_history')):
             return {'ok': False, 'error': '上一项操作尚未结束，请稍候'}
         try:
             if self._closed.is_set():
@@ -296,11 +298,38 @@ class WebController:
             self._engine.wakeup.set()
 
     def _account_scan(self, _payload):
-        return _identity(identity(self._config['codex_home']))
+        ident = identity(self._config['codex_home'])
+        if self._engine:
+            self._engine.wakeup.set()
+        return _identity(ident)
+
+    def _auto_enroll(self, ident, now):
+        account = ident.get('account')
+        if (not self._config.get('shared_billing_v1') or ident.get('mode') != 'account' or not self._engine
+                or account in self._config.get('tracked_accounts', {})
+                or account in self._config.get('auto_enroll_excluded', [])):
+            return False
+        # Never block a worker behind a UI restart waiting for that worker to exit.
+        if not self._mutation.acquire(blocking=False):
+            return False
+        try:
+            from .shared_policy import load_rules
+            with self._engine.group_db.connect() as db:
+                accounts = [row[0] for row in db.execute('SELECT DISTINCT account FROM facts')]
+            rules = load_rules(self._engine.group_db, accounts, now)
+            if not rules.get('policy') or account not in rules['accounts']:
+                return False
+            enroll(self._config, ident, now)
+            self._save()
+            self._engine.tracked.update(self._config['tracked_accounts'])
+            return True
+        finally:
+            self._mutation.release()
 
     def _account_add(self, _payload):
         ident = identity(self._config['codex_home'])
         enroll(self._config, ident)
+        self._config['auto_enroll_excluded'] = [a for a in self._config.get('auto_enroll_excluded', []) if a != ident['account']]
         self._save(restart=True)
         return _identity(ident)
 
@@ -308,6 +337,7 @@ class WebController:
         self._confirm(payload)
         account = self._tracked(payload)
         self._config['tracked_accounts'].pop(account)
+        self._config['auto_enroll_excluded'] = sorted(set(self._config.get('auto_enroll_excluded', [])) | {account})
         self._save(restart=True)
 
     def _account_history(self, payload):
@@ -342,6 +372,31 @@ class WebController:
         if not self._engine:
             raise ValueError('监测尚未就绪')
         self._engine.set_cap(payload['cap'], expected_account=account)
+
+    def _member_history(self, payload):
+        scope = self._display_scope(payload)
+        if not self._engine:
+            raise ValueError('账本尚未就绪')
+        view = self._engine.snapshot()
+        cycles = view.get('analytics', {}).get('cycles', [])
+        selected = next((c for c in cycles if str(c['id']) == payload.get('cycle')), None)
+        from .usage_history import archive_boundary, range_window
+        from .shared_policy import load_rules
+        from .shared_quota import attribution
+        now = time.time()
+        accounts = [c['account'] for c in view.get('account_summaries', [])] if scope.startswith('group:') else [scope]
+        rules = load_rules(self._engine.group_db, accounts, now) if self._config.get('shared_billing_v1') else None
+        cutoff = archive_boundary(self._engine.group_db, rules, now)
+        if payload.get('cycle') == 'archive' and cutoff is not None:
+            ranges = [dict(account=a, start=0, end=cutoff) for a in accounts]
+        elif selected and selected.get('account', scope) in accounts:
+            ranges = [dict(account=selected.get('account', scope), start=selected['started'],
+                           end=min(selected.get('ended') or now, now), after=selected['started'])]
+        else:
+            raise ValueError('该周期尚未同步或不存在')
+        attributed = attribution(self._engine.group_db, rules, now) if rules else None
+        window = range_window(self._engine.group_db, ranges, rules, attributed)
+        return _view({'analytics': dict(account=scope, windows={'selected': window, 'cycle': window})})['analytics']
 
     def _chart_history(self, payload):
         from .analytics import usage

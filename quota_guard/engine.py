@@ -22,11 +22,12 @@ from .shared_view import shared_usage, shared_overview
 
 
 class Engine:
-    def __init__(self, database, config, quota_reader=None, firewall=None, identity_reader=identity, mesh_factory=make_mesh):
+    def __init__(self, database, config, quota_reader=None, firewall=None, identity_reader=identity, mesh_factory=make_mesh, account_enroller=None):
         self.db, self.config = database, copy.deepcopy(config)
         self.config['_data_dir'] = str(database.path.parent)
         self.quota_reader = quota_reader or (lambda home: read_quota(home, expected_account=self.last_identity['account']))
         self.identity_reader = identity_reader
+        self.account_enroller = account_enroller
         self.mesh_factory = mesh_factory
         self.firewall = firewall or Firewall()
         group = hashlib.sha256(config['group_secret'].encode()).hexdigest()[:20]
@@ -510,9 +511,10 @@ class Engine:
             self.config['auto_block'] = False
             self.blocked = False
         ident = self.identity_reader(self.config['codex_home'])
+        enrolled = bool(self.account_enroller and not self.is_tracked(ident) and self.account_enroller(ident, now))
         first = self.last_identity is None
         changed = not first and self.scope_key(self.last_identity) != self.scope_key(ident)
-        if first or changed:
+        if first or changed or enrolled:
             block = self.db.get('block_state')
             if first and self.blocked and (not self.config['auto_block'] or not self.is_tracked(ident)
                                           or (block and block.get('account') != ident['account'])):

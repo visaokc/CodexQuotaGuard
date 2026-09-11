@@ -14,9 +14,10 @@ try{
   const page=await browser.newPage({viewport:{width:750,height:680},deviceScaleFactor:1,colorScheme:'dark'}),errors=[];
   page.on('pageerror',error=>errors.push(error.message));
   page.on('console',message=>{if(message.type()==='error')errors.push(message.text());});
-  await page.addInitScript(data=>{window.__fixture=data;window.__commands=[];window.__CQG_TEST_BRIDGE__={snapshot:async()=>{if(!window.__hasSnapshot){window.__hasSnapshot=true;await new Promise(resolve=>setTimeout(resolve,150));}return structuredClone(window.__fixture);},command:async(action,payload)=>{window.__commands.push({action,payload});if(action==='chart_history')return{ok:true,data:structuredClone(window.__history||window.__fixture.view.analytics)};return {ok:true,data:{}};},window_action:async()=>({ok:true})};},billingFixture());
+  await page.addInitScript(data=>{window.__fixture=data;window.__commands=[];window.__CQG_TEST_BRIDGE__={snapshot:async()=>{if(!window.__hasSnapshot){window.__hasSnapshot=true;await new Promise(resolve=>setTimeout(resolve,150));}return structuredClone(window.__fixture);},command:async(action,payload)=>{window.__commands.push({action,payload});if(action==='member_history'){await new Promise(r=>setTimeout(r,payload.cycle==='archive'?120:15));const data=structuredClone(window.__fixture.view.analytics);data.windows.cycle=structuredClone(window.__memberWindows[payload.cycle]);return{ok:true,data};}if(action==='chart_history')return{ok:true,data:structuredClone(window.__history||window.__fixture.view.analytics)};return {ok:true,data:{}};},window_action:async()=>({ok:true})};},billingFixture());
   await page.goto(`http://127.0.0.1:${server.address().port}/?test=1`);
   await page.locator('.app-shell.ready').waitFor();await page.evaluate(()=>window.__CQG_TEST__.pausePolling());await page.waitForTimeout(400);
+  assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).piePeriod,'today');
   assert.equal(await page.getByTestId('pool-remaining').innerText(),'62.0%');
   assert.equal(await page.locator('.pool-track').getAttribute('aria-valuemax'),'100');
   assert.deepEqual(await page.locator('.pool-track i').evaluateAll(nodes=>nodes.map(n=>n.style.width)),['23.5%','38.5%']);
@@ -39,9 +40,13 @@ try{
   assert.equal(await page.locator('.device-columns>span').last().innerText(),'可用额度');
   assert.equal(await page.locator('.model-badge.gold').innerText(),'GPT-6 Astra');
   assert.equal(await page.locator('.model-badge:not(.gold)').innerText(),'GPT-5.6 Sol');
-  const badgeLayout=await page.getByTestId('device-row').evaluateAll(rows=>rows.map(row=>{const bounds=row.getBoundingClientRect(),name=row.querySelector('.device-label').getBoundingClientRect(),online=row.querySelector('.connection-badge').getBoundingClientRect(),model=row.querySelector('.member-runtime').getBoundingClientRect(),tokens=row.querySelector('.device-tokens').getBoundingClientRect();return {onlineX:online.x,nameGap:online.left-name.right,modelGap:model.left-online.right,centerError:Math.abs((online.top+online.bottom)/2-(bounds.top+bounds.bottom)/2),overlap:model.right>tokens.left};}));
-  assert.ok(badgeLayout.every(row=>row.nameGap>=12&&row.nameGap<=16&&row.modelGap>=12&&row.modelGap<=16&&row.centerError<=1&&!row.overlap));
-  assert.equal(new Set(badgeLayout.map(row=>row.onlineX)).size,1,'badges keep aligned positions across member names');
+  const badgeLayout=await page.getByTestId('device-row').evaluateAll(rows=>rows.map(row=>{
+    const nodes=['.connection-badge','.model-badge, .model-placeholder','.member-activity','.device-tokens','.device-quota-cell'].map(s=>row.querySelector(s).getBoundingClientRect());
+    return nodes.map(r=>({x:r.x+r.width/2,y:r.y+r.height/2,left:r.left,right:r.right}));
+  }));
+  for(const row of badgeLayout){const step=row[1].x-row[0].x;for(let i=1;i<row.length;i++){assert.ok(Math.abs(row[i].x-row[i-1].x-step)<1,'status, model, use, token and quota have equal center spacing');assert.ok(Math.abs(row[i].y-row[0].y)<1);assert.ok(row[i].left>row[i-1].right);}}
+  assert.equal(new Set(badgeLayout.map(row=>row[0].x)).size,1);
+  assert.equal(await page.locator('.member-activity.using').first().evaluate(n=>getComputedStyle(n).backgroundColor),'rgb(37, 65, 107)');
   await page.getByRole('button',{name:'筛选模型',exact:true}).click();
   for(const name of ['GPT-6 Astra','GPT-5.6 Sol','GPT-5.6 Terra','GPT-5.6 Luna'])assert.equal(await page.getByRole('option',{name,exact:true}).count(),1);
   await page.waitForTimeout(200);await page.screenshot({path:path.join(artifacts,'billing-model-names.png')});
@@ -53,6 +58,16 @@ try{
   }
   await page.evaluate(()=>{window.__fixture.view.summary.devices[0]=window.__initialPerson;window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture));});
   assert.equal(await page.getByTestId('connection-state').nth(1).innerText(),'在线');
+  const activeRow=page.getByTestId('device-row').first();
+  assert.equal(await activeRow.locator('.member-activity').innerText(),'Codex 使用中');
+  for(const [active,model,state] of [[1,null,'识别模型中'],[0,'gpt-6-astra','暂无近期活动'],[1,'gpt-6-astra','Codex 使用中']]){
+    await page.evaluate(({active,model})=>{Object.assign(window.__fixture.view.summary.devices[0],{active,active_model:model});window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture));},{active,model});
+    assert.equal(await activeRow.locator('.member-activity').innerText(),state);
+    assert.equal(await activeRow.locator('.model-badge').count(),state==='Codex 使用中'?1:0);
+  }
+  const runtimeOrder=await activeRow.evaluate(row=>['.connection-badge','.model-badge','.member-activity','.device-tokens','.device-quota-cell'].map(selector=>{const r=row.querySelector(selector).getBoundingClientRect();return [r.left,r.right,r.top+r.height/2];}));
+  for(let i=1;i<runtimeOrder.length;i++){assert.ok(runtimeOrder[i][0]>runtimeOrder[i-1][1]);assert.ok(Math.abs(runtimeOrder[i][2]-runtimeOrder[0][2])<1);}
+
   for(const size of [{width:750,height:680},{width:730,height:650}]){
     await page.setViewportSize(size);await page.waitForTimeout(200);
     const box=await page.getByTestId('device-row').last().boundingBox();assert.ok(box.y+box.height<=size.height);
@@ -62,15 +77,36 @@ try{
   await page.screenshot({path:path.join(artifacts,'billing-overview-dark.png')});
   await page.getByRole('button',{name:'筛选账号',exact:true}).click();await page.getByRole('option',{name:'账号2',exact:true}).click();
   const filtered=await page.evaluate(()=>window.__CQG_TEST__.getState());
-  assert.equal(filtered.pie.quotaTotals.person1,undefined);assert.equal(filtered.pie.quotaTotals.person3,3);
+  assert.equal(filtered.pie.quotaTotals.person1,undefined);assert.equal(filtered.pie.quotaTotals.person3,billingFixture().view.analytics.windows.today.quota_rows.filter(r=>r.device==='person3').reduce((n,r)=>n+r.quota*1.5,0));
   await page.getByRole('button',{name:'筛选账号',exact:true}).click();await page.getByRole('option',{name:'两账号合计',exact:true}).click();
   await page.getByTestId('device-row').first().click();await page.locator('.user-pool-summary').waitFor();
   assert.equal(await page.locator('.user-account-breakdown article').count(),2);
   assert.deepEqual((await page.locator('.user-model-card header strong').allTextContents()).slice(0,4),['GPT-6 Astra','GPT-5.6 Sol','GPT-5.6 Terra','GPT-5.6 Luna']);
   await page.screenshot({path:path.join(artifacts,'billing-member.png')});
+  await page.evaluate(()=>{
+    const make=tokens=>({start:0,step:1,count:1,quota_ready:true,rows:[{device:'person1',account:'fixture-account',model:'gpt-6-astra',bucket:0,tokens,input_tokens:tokens-10,output_tokens:10,cache_tokens:tokens-20,event_count:1,detail_count:1,detail_missing:0}],quota_rows:[{device:'person1',account:'fixture-account',model:'gpt-6-astra',bucket:0,quota:5,cache_quota:1}]});
+    window.__memberWindows={archive:make(1234),second:make(5678),first:make(9999)};
+    window.__fixture.view.analytics.donut_archive_at=window.__fixture.view.analytics.at-100;
+    window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture));
+  });
+  await page.getByRole('button',{name:'个人明细周期',exact:true}).click();await page.getByRole('option',{name:/封存记录/}).click();
+  await page.locator('.user-cycle-primary').waitFor();
+  assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).userCycle.tokens,1234);
+  assert.equal(await page.locator('.user-pool-summary').count(),0,'historical use does not show present quota as old quota');
+  assert.ok(!(await page.locator('.user-account-breakdown').innerText()).includes('该账号可用'));
+  await page.getByRole('button',{name:'个人明细周期',exact:true}).click();await page.getByRole('option',{name:/账号1 ·/}).click();
+  await page.locator('.user-cycle-primary').waitFor();assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).userCycle.tokens,5678);
+  await page.screenshot({path:path.join(artifacts,'billing-member-history.png')});
+  await page.getByRole('button',{name:'个人明细周期',exact:true}).click();await page.getByRole('option',{name:'当前配对周期',exact:true}).click();await page.locator('.user-pool-summary').waitFor();
+
   await page.getByRole('button',{name:'关闭对话框',exact:true}).click();
   await page.getByTestId('nav-stats').click();await page.locator('.pool-journal').waitFor();
   assert.equal(await page.getByTestId('cycle-record').count(),2);
+  await page.evaluate(()=>{const data=structuredClone(window.__fixture);data.view.analytics.windows.cycle.quota_rows=data.view.analytics.windows.cycle.quota_rows.filter(r=>r.device!=='person1');data.view.analytics.windows.cycle.quota_pending_rows=[{device:'person1',account:'fixture-account',model:'gpt-6-astra',bucket:0}];window.__CQG_TEST__.applySnapshot(data);});
+  assert.equal(await page.locator('.pool-members-summary b').first().innerText(),'0.00%');
+  assert.ok((await page.locator('.pool-members-summary small').first().innerText()).includes('新增待分摊'));
+  await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
+
   assert.deepEqual((await page.locator('.cycle-model-card>span').allTextContents()).slice(0,4),['GPT-6 Astra','GPT-5.6 Sol','GPT-5.6 Terra','GPT-5.6 Luna']);
   await page.locator('.pool-stats-head').getByRole('button',{name:'账号2',exact:true}).click();assert.equal(await page.getByTestId('cycle-record').count(),1);
   await page.screenshot({path:path.join(artifacts,'billing-stats.png')});
@@ -121,9 +157,16 @@ try{
   assert.equal(await page.locator('.device-row .avatar img').first().getAttribute('src'),'avatars/person2.jpg');
   assert.equal(await page.locator('.legend-name').first().innerText(),'A');
   assert.equal(await page.locator('.device-usage').first().innerText(),'—');
-  assert.equal(await page.locator('.donut-main-share').first().innerText(),'34.5%');
+  await page.getByRole('button',{name:'设备占比时间范围',exact:true}).click();await page.getByRole('option',{name:'本周期',exact:true}).click();
+  assert.equal(await page.locator('.donut-main-share').first().innerText(),'34.5%');await page.waitForTimeout(200);
   assert.equal(await page.locator('.device-quota-cell small').count(),0,'unavailable balance is explained once, not repeated as unknown under every member');
   assert.ok((await page.locator('.billing-status').innerText()).includes('已确认消费继续显示'));
+  await page.evaluate(()=>{const data=structuredClone(window.__fixture);data.view.billing.last_confirmed={at:data.view.analytics.at-60,pending_quota:1};Object.assign(data.view.summary.devices.find(d=>d.id==='person2'),{confirmed_available:30,confirmed_available_cap:100/3});window.__CQG_TEST__.applySnapshot(data);});
+  assert.equal(await page.locator('.device-usage').first().innerText(),'90.0%*');
+  assert.equal(await page.locator('.device-columns>span').last().innerText(),'上次确认可用*');
+  assert.ok((await page.locator('.billing-status').innerText()).includes('1.00 点待分摊'));
+  await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
+
   const fills=await page.locator('.pool-track').evaluate(track=>({width:track.clientWidth,right:track.getBoundingClientRect().right,rows:[...track.children].map(n=>({left:n.getBoundingClientRect().left,right:n.getBoundingClientRect().right,width:n.getBoundingClientRect().width}))}));
   assert.ok(Math.abs(fills.rows[0].right-fills.right)<1,'account 1 starts at the right edge');
   assert.ok(Math.abs(fills.rows[1].right-fills.rows[0].left)<1,'colored segments remain continuous and grow toward the left');

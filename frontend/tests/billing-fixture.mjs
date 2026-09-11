@@ -13,7 +13,7 @@ export function billingFixture(){
   data.accounts=view.account_summaries.map(({account,label})=>({account,label}));
   view.summary.compensation_enabled=false;view.summary.allocation='shared_official_v1';view.summary.billing_status='active';
   for(const [index,person] of view.summary.devices.entries())Object.assign(person,{id:'person'+(index+1),device_ids:[ids[index]],local:index===0,
-    cap:200/3,fair_base_cap:200/3,active_model:['gpt-6-astra','gpt-5.6-sol',null][index],avatar:'person'+(index+1)+'.jpg',joined:true,estimated:[75,23,2][index],available:[0,50,50][index],debt:0,pending_debt:0,confirmed_debt:0,
+    cap:200/3,fair_base_cap:200/3,active:index<2?1:0,active_model:['gpt-6-astra','gpt-5.6-sol',null][index],avatar:'person'+(index+1)+'.jpg',joined:true,estimated:[75,23,2][index],available:[0,50,50][index],debt:0,pending_debt:0,confirmed_debt:0,
     by_account:{'fixture-account':[0,25,25][index],'fixture-account-b':[0,25,25][index]}});
   for(const window of Object.values(view.analytics.windows)){
     window.rows.forEach(row=>{const index=ids.indexOf(row.device);row.device='person'+(index+1);row.account=index===2?'fixture-account-b':'fixture-account';});

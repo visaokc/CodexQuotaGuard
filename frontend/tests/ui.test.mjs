@@ -105,6 +105,8 @@ try{
   await page.screenshot({path:path.join(artifacts,'joint-budget-samples.png')});
   await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
   assert.equal(await page.locator('.donut-tooltip').count(),0);
+  assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).piePeriod,'today');
+  await page.getByRole('button',{name:'设备占比时间范围',exact:true}).click();await page.getByRole('option',{name:'本周期',exact:true}).click();
   assert.deepEqual(await page.locator('.donut-main-share').allTextContents(),['18.1%','33.0%']);
   await page.evaluate(()=>{const data=structuredClone(window.__fixture);for(const w of Object.values(data.view.analytics.windows))w.quota_ready=false;window.__CQG_TEST__.applySnapshot(data);});
   assert.deepEqual(await page.locator('.donut-main-share').allTextContents(),['—','—']);

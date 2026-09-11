@@ -3,9 +3,11 @@ export const COLOR_NAMES = ['蓝色','琥珀','薄荷','薰衣草','玫瑰','青
 const STANDARD_MODELS=['gpt-6-astra','gpt-5.6-sol','gpt-5.6-terra','gpt-5.6-luna'];
 const MODEL_NAMES={'gpt-6-astra':'GPT-6 Astra','gpt-5.6-sol':'GPT-5.6 Sol','gpt-5.6-terra':'GPT-5.6 Terra','gpt-5.6-luna':'GPT-5.6 Luna'};
 export function displayModelName(model){return MODEL_NAMES[model]||model;}
+function hiddenModel(model){return model==='codex-auto-review'||model==='unknown';}
+export function cycleUnknown(cycle){return (cycle.models||[]).filter(row=>hiddenModel(row.model)).reduce((sum,row)=>sum+(row.tokens||0),0);}
 export function cycleModels(cycle){
   const rows=cycle.models||[],total=cycle.sampled_tokens??rows.reduce((n,m)=>n+m.tokens,0);
-  return [...new Set([...STANDARD_MODELS,...rows.map(m=>m.model)])].map(model=>{
+  return [...new Set([...STANDARD_MODELS,...rows.map(m=>m.model)])].filter(model=>!hiddenModel(model)).map(model=>{
     const tokens=rows.find(m=>m.model===model)?.tokens||0;
     return {model,tokens,usage_share:total>0?tokens/total*100:0};
   });
@@ -64,7 +66,7 @@ export function modelVersionOrder(a,b){
 export function modelOptions(snapshot){
   const data=snapshot.view?.analytics||{},account=snapshot.view?.display_account||snapshot.view?.identity?.account;
   return [{value:'',label:'全部模型'},...(data.account===account?data.models||[]:[])
-    .filter(model=>model!=='codex-auto-review')
+    .filter(model=>!hiddenModel(model))
     .sort(modelVersionOrder)
     .map(value=>({value,label:displayModelName(value)}))];
 }
@@ -158,7 +160,7 @@ export function userBreakdown(snapshot,device,window='cycle'){
   };
   const fixed=STANDARD_MODELS;
   const totals=sum(rows),extra=[...new Set(rows.map(row=>row.model))].filter(model=>!fixed.includes(model));
-  const models=[...fixed,...extra].map(model=>({model,...sum(rows.filter(row=>row.model===model))}));
+  const models=[...fixed,...extra].filter(model=>!hiddenModel(model)).map(model=>({model,...sum(rows.filter(row=>row.model===model))}));
   for(const model of models)model.usage_share=totals.tokens>0?model.tokens/totals.tokens*100:0;
   const quota=aggregate(snapshot,window,'',device);
   return {...totals,models,quota:quota.quotaUnavailable||chartQuotaPercent(quota.quotaTotals[device],quota.quotaReady,quota.quotaStates[device]==='pending',quota.quotaStates[device]==='estimated'),cacheQuota:quota.quotaUnavailable||chartQuotaPercent(quota.cacheQuotaTotals[device],quota.quotaReady&&!quota.cacheMissingTotals[device],quota.quotaStates[device]==='pending',quota.quotaStates[device]==='estimated')};

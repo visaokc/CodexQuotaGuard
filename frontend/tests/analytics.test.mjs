@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {displayModelName,historyMinimum,historyWindow,userBreakdown,aggregate,devicesFor,quotaValue,niceScale,linePath,curveGeometry,curveY,COLORS,modelOptions,officialUsageColor,officialQuotaRemaining,refreshRemaining,dailyQuotaUsage,chartQuotaPercent,trendForMode} from '../src/data.js';
+import {displayModelName,cycleModels,cycleUnknown,historyMinimum,historyWindow,userBreakdown,aggregate,devicesFor,quotaValue,niceScale,linePath,curveGeometry,curveY,COLORS,modelOptions,officialUsageColor,officialQuotaRemaining,refreshRemaining,dailyQuotaUsage,chartQuotaPercent,trendForMode} from '../src/data.js';
 import {fixture} from './fixture.mjs';
 import {sharedFixture} from './shared-fixture.mjs';
 
@@ -301,4 +301,16 @@ test('model names are formatted only for display while IDs and unknown names rem
   assert.deepEqual(modelOptions(data).map(row=>row.value),['',...ids]);
   assert.deepEqual(modelOptions(data).map(row=>row.label),['全部模型',...labels]);
   assert.equal(displayModelName('private-model-r1'),'private-model-r1');
+});
+
+test('hidden internal models keep their tokens and appear only in cycle unknown totals',()=>{
+  const data=fixture(),device=data.settings.device_id,rows=data.view.analytics.windows.cycle.rows;
+  rows.push({...rows.find(r=>r.device===device),model:'codex-auto-review',tokens:72633});
+  const result=userBreakdown(data,device);
+  assert.equal(result.tokens,rows.filter(r=>r.device===device).reduce((sum,r)=>sum+r.tokens,0));
+  assert.ok(!result.models.some(r=>r.model==='codex-auto-review'));
+  const cycle={models:[{model:'gpt-6-astra',tokens:1000000},{model:'codex-auto-review',tokens:72633},{model:'unknown',tokens:7}],sampled_tokens:1072640};
+  assert.equal(cycleUnknown(cycle),72640);
+  assert.equal(cycleModels(cycle).length,4);
+  assert.ok(cycleModels(cycle)[0].usage_share<100);
 });

@@ -82,6 +82,9 @@ try{
   await page.getByTestId('device-row').first().click();await page.locator('.user-pool-summary').waitFor();
   assert.equal(await page.locator('.user-account-breakdown article').count(),2);
   assert.deepEqual((await page.locator('.user-model-card header strong').allTextContents()).slice(0,4),['GPT-6 Astra','GPT-5.6 Sol','GPT-5.6 Terra','GPT-5.6 Luna']);
+  await page.evaluate(()=>{const data=structuredClone(window.__fixture),rows=data.view.analytics.windows.cycle.rows;rows.push({...rows.find(r=>r.device==='person1'),model:'codex-auto-review',tokens:72633});window.__CQG_TEST__.applySnapshot(data);});
+  assert.ok(!(await page.locator('.user-model-list').innerText()).includes('codex-auto-review'));
+  await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
   await page.screenshot({path:path.join(artifacts,'billing-member.png')});
   await page.evaluate(()=>{
     const make=tokens=>({start:0,step:1,count:1,quota_ready:true,rows:[{device:'person1',account:'fixture-account',model:'gpt-6-astra',bucket:0,tokens,input_tokens:tokens-10,output_tokens:10,cache_tokens:tokens-20,event_count:1,detail_count:1,detail_missing:0}],quota_rows:[{device:'person1',account:'fixture-account',model:'gpt-6-astra',bucket:0,quota:5,cache_quota:1}]});
@@ -109,6 +112,10 @@ try{
 
   assert.deepEqual((await page.locator('.cycle-model-card>span').allTextContents()).slice(0,4),['GPT-6 Astra','GPT-5.6 Sol','GPT-5.6 Terra','GPT-5.6 Luna']);
   await page.locator('.pool-stats-head').getByRole('button',{name:'账号2',exact:true}).click();assert.equal(await page.getByTestId('cycle-record').count(),1);
+  await page.evaluate(()=>{const data=structuredClone(window.__fixture),cycle=data.view.analytics.cycles.find(c=>c.account_label==='账号2');cycle.models.push({model:'codex-auto-review',tokens:72633});cycle.sampled_tokens+=72633;window.__CQG_TEST__.applySnapshot(data);});
+  assert.ok(!(await page.locator('.cycle-models').innerText()).includes('codex-auto-review'));
+  assert.ok((await page.getByTestId('cycle-unknown').innerText()).includes('72.63k'));
+  const unknownBox=await page.getByTestId('cycle-unknown').boundingBox(),modelsBox=await page.locator('.cycle-models').boundingBox();assert.ok(unknownBox.y>modelsBox.y+modelsBox.height);assert.ok(Math.abs(unknownBox.x-modelsBox.x)<2);
   await page.screenshot({path:path.join(artifacts,'billing-stats.png')});
   await page.getByTestId('cycle-reset-tag').click();
   await page.getByRole('button',{name:'确认原因',exact:true}).click();

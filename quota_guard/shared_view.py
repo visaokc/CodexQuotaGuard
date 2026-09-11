@@ -235,7 +235,7 @@ def latest_active_model(database, people, devices, now):
                 continue
             account = people[device['id']].get('current_account')
             row = db.execute('''SELECT ts,id,model FROM events WHERE account=? AND device=? AND tokens>0
-                AND ts>=? AND ts<=? ORDER BY ts DESC,id DESC LIMIT 1''', (account,device['id'],now-180,now)).fetchone()
+                AND ts>=? AND ts<=? AND model NOT IN ('codex-auto-review','unknown') ORDER BY ts DESC,id DESC LIMIT 1''', (account,device['id'],now-180,now)).fetchone()
             if row and (latest is None or (row['ts'],row['id']) > (latest['ts'],latest['id'])):
                 latest = row
     return latest['model'] if latest else None

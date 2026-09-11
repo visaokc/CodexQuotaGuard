@@ -52,6 +52,20 @@ def validate(value, origin, at):
                 or not timestamp(row.get('started')) or row['started'] > value['effective']
                 or row.get('type') not in ('natural', 'card', 'official')):
             raise ValueError('重置确认无效')
+    costs = value.get('shared_costs', [])
+    if value.get('unknown_weight') not in (None, 'interval_average_v1'):
+        raise ValueError('未知模型分摊规则无效')
+    if not isinstance(costs, list) or len(costs) > 64:
+        raise ValueError('共同消费记录无效')
+    for index, row in enumerate(costs):
+        if (not isinstance(row, dict) or set(row) != {'account', 'person', 'since', 'through'}
+                or row.get('account') not in value['accounts'] or row.get('person') not in PERSONS
+                or not timestamp(row.get('since')) or not timestamp(row.get('through'))
+                or not row['since'] < row['through'] <= value['effective']):
+            raise ValueError('共同消费范围无效')
+        if any(old['account'] == row['account'] and old['person'] == row['person']
+               and max(old['since'], row['since']) < min(old['through'], row['through']) for old in costs[:index]):
+            raise ValueError('共同消费范围重复')
     clean = value.get('clean_start')
     if clean is not None:
         baseline = clean.get('baseline', {}) if isinstance(clean, dict) else {}
@@ -124,6 +138,7 @@ def load_rules(database, accounts, now):
                 or following['effective'] < policy['effective'] or following['rates'] != first['rates']
                 or following['accounts'][:len(policy['accounts'])] != policy['accounts']
                 or following['bindings'][:len(policy['bindings'])] != policy['bindings']
+                or following.get('shared_costs', [])[:len(policy.get('shared_costs', []))] != policy.get('shared_costs', [])
                 or (policy.get('clean_start') and following.get('clean_start') != policy['clean_start'])
                 or (policy.get('rules_locked') and not following.get('rules_locked'))):
             return dict(result, status='conflict', reason='共享组规则链不一致')

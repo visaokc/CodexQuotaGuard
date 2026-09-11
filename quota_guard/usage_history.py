@@ -40,7 +40,7 @@ def range_window(database, ranges, rules=None, attributed=None):
                 (span['account'], span['start'], span['end'], span.get('after', -1))).fetchall()
             for row in rows:
                 value = dict(row, account=span['account'])
-                result['rows'].extend(person_rows(database, value, rules, span['end']) if rules and rules.get('policy') else [value])
+                result['rows'].extend(person_rows(database, value, rules, span['end'], share_tokens=True) if rules and rules.get('policy') else [value])
     if attributed is None:
         return result
     result['quota_ready'] = bool(attributed['epochs'])
@@ -50,8 +50,10 @@ def range_window(database, ranges, rules=None, attributed=None):
                    and event['ts'] > r.get('after', -1) for r in ranges):
             continue
         key = event['account'], event['device'], event['model']
-        row = grouped.setdefault(key, dict(account=key[0], device=key[1], model=key[2], bucket=0, quota=0., cache_quota=0.))
+        row = grouped.setdefault(key, dict(account=key[0], device=key[1], model=key[2], bucket=0, quota=0., cache_quota=0., shared_quota=0.))
         row['quota'] += event['quota']
+        if event.get('shared_cost'):
+            row['shared_quota'] += event['quota']
         row['cache_quota'] = row['cache_quota']+event['cache_quota'] if row['cache_quota'] is not None and event['cache_quota'] is not None else None
     result['quota_rows'] = list(grouped.values())
     for row in result['rows']:
@@ -65,6 +67,7 @@ def range_window(database, ranges, rules=None, attributed=None):
 
 def donut_windows(database, analytics, rules, attributed, cutoff):
     result = {}
+    cutoff = -1 if cutoff is None else cutoff
     for name in ('cycle', 'today', 'pie_hour', 'pie_six_hours', 'pie_twelve_hours', 'week', 'month', 'total'):
         source = analytics['windows'][name]
         if name == 'cycle':

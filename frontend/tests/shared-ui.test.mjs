@@ -53,10 +53,9 @@ try{
   const layout=await page.evaluate(()=>{const overview=document.querySelector('.overview'),rows=[...document.querySelectorAll('.device-row')];return {height:innerHeight,scrollHeight:overview.scrollHeight,clientHeight:overview.clientHeight,lastRow:rows.at(-1).getBoundingClientRect().bottom,overflow:document.documentElement.scrollWidth>innerWidth};});
   assert.equal(layout.overflow,false);assert.ok(layout.lastRow<680,'all three members fit in the enlarged window');assert.ok(layout.scrollHeight<=layout.clientHeight+1,'overview needs no scrolling at 750x680');
   await page.screenshot({path:path.join(artifacts,'shared-overview-dark.png')});
-  await page.getByTestId('device-row').first().click();await page.locator('.user-cycle-periods').waitFor();
-  assert.equal(await page.locator('.user-cycle-periods>span').count(),2,'user summary explains both complete paired-cycle date ranges');
+  await page.getByTestId('device-row').first().click();await page.locator('.member-period-picker').waitFor();
+  assert.equal(await page.locator('.user-cycle-periods').count(),0);
   assert.doesNotMatch(await page.locator('.user-cycle-primary').innerText(),/估计/);
-  assert.match(await page.locator('.user-cycle-periods').innerText(),/账号 A/);assert.match(await page.locator('.user-cycle-periods').innerText(),/账号 B/);
   await page.waitForTimeout(250);
   await page.screenshot({path:path.join(artifacts,'shared-user-summary.png')});
   await page.getByRole('button',{name:'关闭对话框',exact:true}).click();await page.waitForTimeout(200);

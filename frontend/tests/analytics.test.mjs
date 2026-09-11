@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {displayModelName,cycleModels,cycleUnknown,historyMinimum,historyWindow,userBreakdown,aggregate,devicesFor,quotaValue,niceScale,linePath,curveGeometry,curveY,COLORS,modelOptions,officialUsageColor,officialQuotaRemaining,refreshRemaining,dailyQuotaUsage,chartQuotaPercent,trendForMode} from '../src/data.js';
 import {fixture} from './fixture.mjs';
 import {sharedFixture} from './shared-fixture.mjs';
+import {billingFixture} from './billing-fixture.mjs';
 
 test('shared preparation uses the group display scope and never bills old per-account caps',()=>{
   const data=sharedFixture(),group=data.view.display_account;
@@ -313,4 +314,16 @@ test('hidden internal models keep their tokens and appear only in cycle unknown 
   assert.equal(cycleUnknown(cycle),72640);
   assert.equal(cycleModels(cycle).length,4);
   assert.ok(cycleModels(cycle)[0].usage_share<100);
+});
+
+test('personal consumption and shared card use received quota capacity without changing Token totals',()=>{
+  const data=billingFixture(),person=data.view.summary.devices[2],window=data.view.analytics.windows.cycle;
+  person.available_cap=100/3;person.available=30;
+  window.rows=[{account:'fixture-account-b',device:person.id,model:'gpt-6-astra',bucket:0,tokens:1000,shared_tokens:600}];
+  window.quota_rows=[{account:'fixture-account-b',device:person.id,model:'gpt-6-astra',bucket:0,quota:100/3-30,shared_quota:1,cache_quota:0}];
+  const result=userBreakdown(data,person.id);
+  assert.equal(result.quota,'10.00%');assert.equal(result.sharedQuota,'3.00%');
+  assert.equal(result.shared_tokens,600);assert.equal(result.tokens,1000);
+  person.available_cap=200/3;
+  assert.equal(userBreakdown(data,person.id).quota,'5.00%');
 });

@@ -6,7 +6,7 @@ import pytest
 from test_shared_billing import A, B, add_event, close_samples, setup_group
 from quota_guard.journal import Journal
 from quota_guard.ledger import Ledger
-from quota_guard.shared_costs import uncovered
+from quota_guard.shared_costs import token_shares, uncovered
 from quota_guard.shared_policy import digest, load_rules, publish_change
 from quota_guard.shared_quota import attribution, accounting
 from quota_guard.shared_view import shared_usage
@@ -41,6 +41,7 @@ def test_shared_cost_scope_preserves_raw_usage_and_conserves_official_quota(tmp_
     assert len(shared) == 6 and all(e['source_device'] == 'one' for e in shared)
     assert sum(e['cache_quota'] for e in shared) == pytest.approx(6*22500/172500, abs=1e-8)
     view = shared_usage(db, 'group:test', {A:'a', B:'b'}, 400, rules=rules)
+    assert sum(r['shared_quota'] for r in view['windows']['cycle']['quota_rows']) == pytest.approx(6)
     assert sum(r['tokens'] for r in view['windows']['total']['rows']) == 5500
     assert sum(r['tokens'] for r in view['windows']['total']['rows'] if r['device']=='person3') == 0
     assert not any('shared_cost' in row['kind'] for row in book['entries'])
@@ -118,3 +119,74 @@ def test_shared_cost_does_not_invent_unknown_model_weight(tmp_path):
     data = attribution(db, rules, 400)
     assert not data['events']
     assert accounting(rules, data, 400)['status']=='syncing'
+
+
+def test_member_tokens_and_all_donut_ranges_share_without_changing_curves_or_events(tmp_path):
+    from quota_guard.usage_history import range_window
+    db, journals, _ = setup_group(tmp_path)
+    for account, device, at in ((B,'one',150), (B,'one',200), (B,'one',201), (B,'two',202), (A,'one',150)):
+        add_event(journals, account=account, device=device, at=at)
+    before = shared_usage(db, 'group:test', {A:'a', B:'b'}, 400, rules=load_rules(db, [A,B], 400))
+    with db.connect() as connection:
+        stored = [tuple(r) for r in connection.execute('SELECT * FROM events ORDER BY id')]
+    declare(db, journals)
+    rules = load_rules(db, [A,B], 400)
+    after = shared_usage(db, 'group:test', {A:'a', B:'b'}, 400, rules=rules)
+    for name in ('hour', 'hour_curve', 'six_hours', 'twelve_hours', 'day', 'week', 'month'):
+        assert after['windows'][name]['rows'] == before['windows'][name]['rows']
+    def totals(rows):
+        return [sum(r['tokens'] for r in rows if r['device']==p) for p in ('person1','person2','person3')]
+    assert totals(after['windows']['cycle']['rows']) == [2934,1834,732]
+    assert sum(r.get('shared_tokens',0) for r in after['windows']['cycle']['rows']) == 2200
+    for window in after['donut_windows'].values():
+        assert totals(window['rows']) == [2934,1834,732]
+        assert sum(r['cache_tokens'] for r in window['rows']) == 4500
+    selected = range_window(db, [dict(account=B, start=100, after=100, end=400)], rules)
+    assert totals(selected['rows']) == [1834,1834,732]
+    from quota_guard.web_controller import _view
+    safe = _view(dict(analytics=dict(windows=dict(cycle=selected))))['analytics']['windows']['cycle']
+    assert sum(r.get('shared_tokens',0) for r in safe['rows']) == 2200
+    with db.connect() as connection:
+        assert [tuple(r) for r in connection.execute('SELECT * FROM events ORDER BY id')] == stored
+
+
+def test_daily_donut_only_shares_new_ledger_rows_and_keeps_archive_separate(tmp_path):
+    from test_clean_start import setup_clean
+    from quota_guard.usage_history import range_window
+    db, journals, _ = setup_clean(tmp_path)
+    for at in (150,200,201,250):
+        add_event(journals, account=B, at=at)
+    journals['one'].append(A, 'quota', dict(account=A, used=100, reset_at=800, at=200), 200)
+    declare(db, journals, through=220, now=300)
+    rules = load_rules(db, [A,B], 400)
+    view = shared_usage(db, 'group:test', {A:'a',B:'b'}, 400, rules=rules)
+    assert view['donut_archive_at'] == 200
+    daily = view['donut_windows']['today']['rows']
+    assert [sum(r['tokens'] for r in daily if r['device']==p) for p in ('person1','person2','person3')] == [1467,367,366]
+    archived = range_window(db, [dict(account=B,start=100,end=200)], rules)['rows']
+    assert sum(r['tokens'] for r in archived) == 2200
+    assert sum(r['tokens'] for r in daily) == 2200
+    assert sum(r['tokens'] for r in view['windows']['hour_curve']['rows']) == 4400
+
+
+def test_token_split_conserves_details_and_missing_values_with_integer_rounding():
+    import random
+    rng = random.Random(633)
+    policy = dict(shared_costs=[dict(account=B,person='person1',since=100,through=200)])
+    for _ in range(100):
+        inputs, outputs = rng.randrange(10000), rng.randrange(10000)
+        event = dict(account=B,ts=150,tokens=inputs+outputs,weight=123,
+                     input_tokens=inputs,output_tokens=outputs,cached_input_tokens=rng.randrange(inputs+1),
+                     reasoning_output_tokens=rng.randrange(outputs+1))
+        parts = [part for _,part in token_shares(event,'person1',policy)]
+        for key in ('tokens','input_tokens','output_tokens','cached_input_tokens','reasoning_output_tokens'):
+            assert sum(p[key] for p in parts) == event[key]
+        assert max(p['tokens'] for p in parts)-min(p['tokens'] for p in parts) <= 1
+        for part in parts:
+            assert part['tokens'] == part['input_tokens']+part['output_tokens']
+            assert 0 <= part['cached_input_tokens'] <= part['input_tokens']
+            assert 0 <= part['reasoning_output_tokens'] <= part['output_tokens']
+    missing = dict(event,input_tokens=None,output_tokens=None,cached_input_tokens=None,reasoning_output_tokens=None)
+    parts = [part for _,part in token_shares(missing,'person1',policy)]
+    assert sum(p['tokens'] for p in parts) == missing['tokens']
+    assert all(p['input_tokens'] is None and p['cached_input_tokens'] is None for p in parts)

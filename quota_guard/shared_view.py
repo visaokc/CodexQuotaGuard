@@ -4,11 +4,14 @@ from .cycle_statistics import cycle_statistics
 from .cycle_pair import choose_cycles
 
 
-def person_rows(database, row, rules, now):
+def person_rows(database, row, rules, now, share_tokens=False):
     from .shared_policy import person_for
     bindings = [b for b in rules['bindings'] if b['device'] == row['device']
                 and row.get('first_at', now) < b['since'] <= row.get('last_at', now)]
-    if not bindings:
+    costs = rules['policy'].get('shared_costs', []) if share_tokens else []
+    shared = any(c['account'] == row['account'] and c['since'] < row.get('last_at', now)
+                 and c['through'] >= row.get('first_at', now) for c in costs)
+    if not bindings and not shared:
         return [dict(row, source_device=row['device'], device=person_for(rules, row['device'], row.get('first_at', now)) or row['device'])]
     groups = {}
     with database.connect() as db:
@@ -17,7 +20,12 @@ def person_rows(database, row, rules, now):
             (row['account'], row['device'], row['model'], row['first_at'], row['last_at'])))
     for event in events:
         person = person_for(rules, event['device'], event['ts']) or event['device']
-        groups.setdefault(person, []).append(event)
+        if shared:
+            from .shared_costs import token_shares
+            for recipient, part in token_shares(event, person, rules['policy']):
+                groups.setdefault(recipient, []).append(part)
+        else:
+            groups.setdefault(person, []).append(event)
     output = []
     for person, events in groups.items():
         value = dict(row, device=person, source_device=row['device'], first_at=events[0]['ts'], last_at=events[-1]['ts'])
@@ -31,6 +39,7 @@ def person_rows(database, row, rules, now):
                      unknown=sum(e['tokens'] for e in events if not e['known']),
                      reasoning_count=sum(e['reasoning_output_tokens'] is not None for e in events),
                      reasoning_missing=sum(e['output_tokens'] or 0 for e in events if e['reasoning_output_tokens'] is None))
+        value['shared_tokens'] = sum(e['tokens'] for e in events if isinstance(e, dict) and e.get('shared_cost'))
         output.append(value)
     return output
 
@@ -110,7 +119,7 @@ def shared_usage(database, scope, accounts, now=None, rules=None, **options):
             result['billing']['last_confirmed'] = last_confirmed(database, rules, attributed, now)
         result['official_events'] = attributed['events']
         for name, window in result['windows'].items():
-            window['rows'] = [mapped for row in window['rows'] for mapped in person_rows(database, row, rules, now)]
+            window['rows'] = [mapped for row in window['rows'] for mapped in person_rows(database, row, rules, now, share_tokens=name == 'cycle')]
             quotas = {}
             for event in attributed['events']:
                 if name == 'cycle':
@@ -125,8 +134,10 @@ def shared_usage(database, scope, accounts, now=None, rules=None, **options):
                     continue
                 bucket = min(window['count']-1, int((event['ts']-window['start'])/window['step']))
                 key = event['account'], event['device'], event['model'], bucket
-                row = quotas.setdefault(key, dict(account=key[0], device=key[1], model=key[2], bucket=bucket, quota=0., cache_quota=0.))
+                row = quotas.setdefault(key, dict(account=key[0], device=key[1], model=key[2], bucket=bucket, quota=0., cache_quota=0., shared_quota=0.))
                 row['quota'] += event['quota']
+                if event.get('shared_cost'):
+                    row['shared_quota'] += event['quota']
                 row['cache_quota'] = (row['cache_quota']+event['cache_quota']
                                       if row['cache_quota'] is not None and event['cache_quota'] is not None else None)
             window['quota_rows'] = list(quotas.values())
@@ -143,7 +154,7 @@ def shared_usage(database, scope, accounts, now=None, rules=None, **options):
     if not options:
         from .usage_history import archive_boundary, donut_windows
         result['donut_archive_at'] = archive_boundary(database, rules, now)
-        if result['donut_archive_at'] is not None:
+        if result['donut_archive_at'] is not None or ((rules or {}).get('policy') or {}).get('shared_costs'):
             result['donut_windows'] = donut_windows(database, result, rules, attributed, result['donut_archive_at'])
     return result
 

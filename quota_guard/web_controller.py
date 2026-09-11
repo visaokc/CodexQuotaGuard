@@ -116,8 +116,8 @@ def _view(value):
                 window['quota_gaps'] = [_pick(r, ('start','end')) for r in source['quota_gaps']]
             window['quota_pending_rows'] = [_pick(r, ('account', 'device', 'model', 'bucket')) for r in source.get('quota_pending_rows', [])]
             window['quota_estimate_rows'] = [_pick(r, ('device', 'model', 'bucket', 'quota', 'cache_quota')) for r in source.get('quota_estimate_rows', [])]
-            window['quota_rows'] = [_pick(r, ('account', 'device', 'model', 'bucket', 'quota', 'cache_quota')) for r in source.get('quota_rows', [])]
-            window['rows'] = [_pick(r, ('account', 'device', 'model', 'bucket', 'tokens', 'weight', 'unknown', 'cache_tokens', 'detail_missing', 'input_tokens', 'output_tokens', 'reasoning_tokens', 'reasoning_count', 'reasoning_missing', 'event_count', 'detail_count', 'first_at', 'last_at')) for r in source.get('rows', [])]
+            window['quota_rows'] = [_pick(r, ('account', 'device', 'model', 'bucket', 'quota', 'cache_quota', 'shared_quota')) for r in source.get('quota_rows', [])]
+            window['rows'] = [_pick(r, ('account', 'device', 'model', 'bucket', 'tokens', 'weight', 'unknown', 'cache_tokens', 'detail_missing', 'input_tokens', 'output_tokens', 'reasoning_tokens', 'reasoning_count', 'reasoning_missing', 'event_count', 'detail_count', 'first_at', 'last_at', 'shared_tokens')) for r in source.get('rows', [])]
             result['analytics']['windows'][key] = window
     result['recovery'] = _pick(value.get('recovery'), ('scanning', 'recovered_events', 'recovered_tokens',
         'inferred_tokens', 'runtime_tokens', 'unresolved_events', 'unresolved_tokens'))

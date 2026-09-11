@@ -78,7 +78,7 @@ export function aggregate(snapshot, window, model='', device='', accountFilter='
   const points=Array(Math.max(1,source.count||1)).fill(0), totals={},quotaPoints=points.slice(),quotaTotals={},quotaPendingPoints=points.map(()=>false),quotaEstimatedPoints=points.map(()=>false),quotaStates={};
   const series=active.filter(d=>!device||device===d.id).map(d=>({id:d.id,label:d.label,color:d.color,points:points.slice(),quotaPoints:points.slice(),quotaPendingPoints:points.map(()=>false)}));
   const byDevice=new Map(series.map(item=>[item.id,item]));
-  const cacheQuotaPoints=points.slice(),cacheQuotaTotals={},cacheMissingPoints=points.map(()=>false),cacheMissingTotals={};
+  const cacheQuotaPoints=points.slice(),cacheQuotaTotals={},sharedQuotaTotals={},cacheMissingPoints=points.map(()=>false),cacheMissingTotals={};
   for(const item of series){item.cachePoints=points.slice();item.cacheQuotaPoints=points.slice();item.cacheMissingPoints=points.map(()=>false);}
   for(const row of source.rows||[]) {
     if(!valid.has(row.device)||(model&&row.model!==model)||(device&&row.device!==device)||(accountFilter&&row.account!==accountFilter)) continue;
@@ -99,12 +99,13 @@ export function aggregate(snapshot, window, model='', device='', accountFilter='
   for(const row of (quotaUnavailable?[]:source.quota_rows||[])) {
     const item=byDevice.get(row.device);
     if(!item||(accountFilter&&row.account!==accountFilter)||(model&&row.model!==model)||!Number.isInteger(row.bucket)||row.bucket<0||row.bucket>=points.length)continue;
-    const d=active.find(d=>d.id===row.device),cap=d.fair_base_cap??d.cap;
+    const d=active.find(d=>d.id===row.device),cap=snapshot.view?.shared_group?.stage==='billing'?(d.available_cap??d.fair_base_cap??d.cap):(d.fair_base_cap??d.cap);
     const personal=['personal','fair'].includes(snapshot.settings?.quota_display||'personal');
     const multiplier=personal&&cap>0?100/cap:(snapshot.view?.shared_group?.stage==='billing'?.5:1);
     const value=Number(row.quota)*multiplier;
     item.quotaPoints[row.bucket]+=value;quotaPoints[row.bucket]+=value;
     quotaTotals[row.device]=(quotaTotals[row.device]||0)+value;
+    sharedQuotaTotals[row.device]=(sharedQuotaTotals[row.device]||0)+(Number(row.shared_quota)||0)*multiplier;
     if(typeof row.cache_quota==='number'&&Number.isFinite(row.cache_quota)){
       const cached=row.cache_quota*multiplier;
       item.cacheQuotaPoints[row.bucket]+=cached;cacheQuotaPoints[row.bucket]+=cached;
@@ -126,7 +127,7 @@ export function aggregate(snapshot, window, model='', device='', accountFilter='
     points[0]=Object.values(totals).reduce((a,b)=>a+b,0);
   }
   const cacheTotals=Object.fromEntries(series.map(item=>[item.id,item.cachePoints.includes(null)?null:item.cachePoints.reduce((a,b)=>a+b,0)]));
-  return {quotaUnavailable,cacheTotals,cacheQuotaPoints,cacheQuotaTotals,cacheMissingPoints,cacheMissingTotals,quotaPendingPoints,quotaEstimatedPoints,quotaStates,quotaPoints,quotaTotals,quotaReady:!quotaUnavailable&&source.quota_ready===true,points,series,totals,total:Object.values(totals).reduce((a,b)=>a+b,0),start:source.start||0,step:source.step||1};
+  return {quotaUnavailable,cacheTotals,cacheQuotaPoints,cacheQuotaTotals,sharedQuotaTotals,cacheMissingPoints,cacheMissingTotals,quotaPendingPoints,quotaEstimatedPoints,quotaStates,quotaPoints,quotaTotals,quotaReady:!quotaUnavailable&&source.quota_ready===true,points,series,totals,total:Object.values(totals).reduce((a,b)=>a+b,0),start:source.start||0,step:source.step||1};
 }
 export function historyWindow(source,end,duration=3600){
   const count=duration/source.step,start=Math.floor(end/source.step)*source.step-(count-1)*source.step;
@@ -148,7 +149,7 @@ export function userBreakdown(snapshot,device,window='cycle'){
   const rows=source?.account===account?(source.windows?.[window]?.rows||[]).filter(row=>row.device===device):[];
   const sum=items=>{
     const value={};
-    for(const key of ['tokens','cache_tokens','input_tokens','output_tokens','reasoning_tokens','reasoning_count','reasoning_missing','event_count','detail_count'])value[key]=items.reduce((n,row)=>n+(Number(row[key])||0),0);
+    for(const key of ['tokens','shared_tokens','cache_tokens','input_tokens','output_tokens','reasoning_tokens','reasoning_count','reasoning_missing','event_count','detail_count'])value[key]=items.reduce((n,row)=>n+(Number(row[key])||0),0);
     value.detail_missing=items.reduce((n,row)=>n+(row.detail_missing??row.tokens),0);
     value.miss_tokens=value.input_tokens-value.cache_tokens;
     value.non_reasoning_tokens=value.output_tokens-value.reasoning_tokens;
@@ -163,7 +164,7 @@ export function userBreakdown(snapshot,device,window='cycle'){
   const models=[...fixed,...extra].filter(model=>!hiddenModel(model)).map(model=>({model,...sum(rows.filter(row=>row.model===model))}));
   for(const model of models)model.usage_share=totals.tokens>0?model.tokens/totals.tokens*100:0;
   const quota=aggregate(snapshot,window,'',device);
-  return {...totals,models,quota:quota.quotaUnavailable||chartQuotaPercent(quota.quotaTotals[device],quota.quotaReady,quota.quotaStates[device]==='pending',quota.quotaStates[device]==='estimated'),cacheQuota:quota.quotaUnavailable||chartQuotaPercent(quota.cacheQuotaTotals[device],quota.quotaReady&&!quota.cacheMissingTotals[device],quota.quotaStates[device]==='pending',quota.quotaStates[device]==='estimated')};
+  return {...totals,models,sharedQuota:quota.quotaUnavailable||chartQuotaPercent(quota.sharedQuotaTotals[device],quota.quotaReady,quota.quotaStates[device]==='pending'),quota:quota.quotaUnavailable||chartQuotaPercent(quota.quotaTotals[device],quota.quotaReady,quota.quotaStates[device]==='pending',quota.quotaStates[device]==='estimated'),cacheQuota:quota.quotaUnavailable||chartQuotaPercent(quota.cacheQuotaTotals[device],quota.quotaReady&&!quota.cacheMissingTotals[device],quota.quotaStates[device]==='pending',quota.quotaStates[device]==='estimated')};
 }
 export function chartQuotaPercent(value,ready,pending=false,estimated=false,digits=2){
   if(!ready)return '—';

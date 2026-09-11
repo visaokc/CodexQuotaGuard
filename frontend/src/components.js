@@ -4,12 +4,14 @@ import {chartQuotaPercent,compact,niceScale,linePath,timeLabel,curveGeometry,cur
 export const SelectBox={
   props:{modelValue:{default:''},options:{default:()=>[]},label:String},emits:['update:modelValue'],
   setup(props,{emit}) {
-    const open=ref(false),anchor=ref(null),menu=ref(null),position=ref({}),active=ref(0);
-    const items=computed(()=>props.options.map(o=>typeof o==='string'?{value:o,label:o}:o));
-    const current=computed(()=>items.value.find(o=>o.value===props.modelValue)?.label||props.label||'请选择');
+    const open=ref(false),anchor=ref(null),menu=ref(null),position=ref({}),active=ref(0),expanded=ref('');
+    const options=computed(()=>props.options.map(o=>typeof o==='string'?{value:o,label:o}:o));
+    const items=computed(()=>options.value.flatMap(o=>[o,...(o.children&&expanded.value===o.value?o.children.map(child=>({...child,child:true})):[])]));
+    const current=computed(()=>options.value.find(o=>o.value===props.modelValue||o.children?.some(c=>c.value===props.modelValue))?.label||props.label||'请选择');
     async function toggle() {
       open.value=!open.value;
       if(!open.value)return;
+      expanded.value='';
       active.value=Math.max(0,items.value.findIndex(o=>o.value===props.modelValue));
       const r=anchor.value.getBoundingClientRect(), below=innerHeight-r.bottom-10;
       position.value={left:Math.max(8,Math.min(r.left,innerWidth-Math.max(r.width,160)-8))+'px',
@@ -17,7 +19,7 @@ export const SelectBox={
         ...(below<150?{bottom:innerHeight-r.top+5+'px'}:{top:r.bottom+5+'px'})};
       await nextTick();menu.value?.focus();
     }
-    function choose(item){emit('update:modelValue',item.value);open.value=false;anchor.value?.focus();}
+    function choose(item){if(item.children){expanded.value=expanded.value===item.value?'':item.value;return;}emit('update:modelValue',item.value);open.value=false;anchor.value?.focus();}
     function outside(e){if(open.value&&!anchor.value?.contains(e.target)&&!menu.value?.contains(e.target))open.value=false;}
     function key(e){
       if(e.key==='Escape'){open.value=false;anchor.value?.focus();}
@@ -27,9 +29,9 @@ export const SelectBox={
     }
     onMounted(()=>document.addEventListener('pointerdown',outside));
     onBeforeUnmount(()=>document.removeEventListener('pointerdown',outside));
-    return {open,anchor,menu,position,active,items,current,toggle,choose,key};
+    return {open,anchor,menu,position,active,expanded,items,current,toggle,choose,key};
   },
-  template:`<div class="select"><button ref="anchor" type="button" class="select-trigger" :class="{expanded:open}" @click="toggle" :aria-label="label||current" :title="current" aria-haspopup="listbox" :aria-expanded="open"><slot><span>{{current}}</span></slot><svg viewBox="0 0 12 12" width="12" height="12"><path d="m3 4.5 3 3 3-3"/></svg></button><Teleport to="body"><Transition name="menu"><div v-if="open" ref="menu" class="select-menu" :style="position" role="listbox" tabindex="-1" @keydown="key"><button v-for="(item,index) in items" :key="item.value" class="select-option" :class="{chosen:item.value===modelValue,focused:index===active}" @pointerenter="active=index" @click="choose(item)" role="option" :aria-selected="item.value===modelValue"><span>{{item.label}}</span><span v-if="item.value===modelValue" class="check">✓</span></button></div></Transition></Teleport></div>`
+  template:`<div class="select"><button ref="anchor" type="button" class="select-trigger" :class="{expanded:open}" @click="toggle" :aria-label="label||current" :title="current" aria-haspopup="listbox" :aria-expanded="open"><slot><span>{{current}}</span></slot><svg viewBox="0 0 12 12" width="12" height="12"><path d="m3 4.5 3 3 3-3"/></svg></button><Teleport to="body"><Transition name="menu"><div v-if="open" ref="menu" class="select-menu" :style="position" role="listbox" tabindex="-1" @keydown="key"><button v-for="(item,index) in items" :key="item.value" class="select-option" :class="{chosen:item.value===modelValue,focused:index===active,child:item.child}" @pointerenter="active=index" @click="choose(item)" role="option" :aria-selected="item.value===modelValue"><span>{{item.label}}<small v-if="item.period">{{item.period}}</small></span><span v-if="item.children" class="check">{{expanded===item.value?'−':'+'}}</span><span v-else-if="item.value===modelValue" class="check">✓</span></button></div></Transition></Teleport></div>`
 };
 
 export const TrendChart={

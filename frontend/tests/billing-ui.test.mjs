@@ -14,7 +14,7 @@ try{
   const page=await browser.newPage({viewport:{width:750,height:680},deviceScaleFactor:1,colorScheme:'dark'}),errors=[];
   page.on('pageerror',error=>errors.push(error.message));
   page.on('console',message=>{if(message.type()==='error')errors.push(message.text());});
-  await page.addInitScript(data=>{window.__fixture=data;window.__commands=[];window.__CQG_TEST_BRIDGE__={snapshot:async()=>{if(!window.__hasSnapshot){window.__hasSnapshot=true;await new Promise(resolve=>setTimeout(resolve,150));}return structuredClone(window.__fixture);},command:async(action,payload)=>{window.__commands.push({action,payload});if(action==='member_history'){await new Promise(r=>setTimeout(r,payload.cycle==='archive'?120:15));const data=structuredClone(window.__fixture.view.analytics);data.windows.cycle=structuredClone(window.__memberWindows[payload.cycle]);return{ok:true,data};}if(action==='chart_history')return{ok:true,data:structuredClone(window.__history||window.__fixture.view.analytics)};return {ok:true,data:{}};},window_action:async()=>({ok:true})};},billingFixture());
+  await page.addInitScript(data=>{window.__fixture=data;window.__commands=[];window.__CQG_TEST_BRIDGE__={snapshot:async()=>{if(!window.__hasSnapshot){window.__hasSnapshot=true;await new Promise(resolve=>setTimeout(resolve,150));}return structuredClone(window.__fixture);},command:async(action,payload)=>{window.__commands.push({action,payload});if(action==='member_history'){await new Promise(r=>setTimeout(r,payload.cycle==='archive'?120:15));const data=structuredClone(window.__fixture.view.analytics);data.windows.cycle=structuredClone(window.__memberWindows?.[payload.cycle]||data.windows.cycle);return{ok:true,data};}if(action==='chart_history')return{ok:true,data:structuredClone(window.__history||window.__fixture.view.analytics)};return {ok:true,data:{}};},window_action:async()=>({ok:true})};},billingFixture());
   await page.goto(`http://127.0.0.1:${server.address().port}/?test=1`);
   await page.locator('.app-shell.ready').waitFor();await page.evaluate(()=>window.__CQG_TEST__.pausePolling());await page.waitForTimeout(400);
   assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).piePeriod,'today');
@@ -80,7 +80,7 @@ try{
   assert.equal(filtered.pie.quotaTotals.person1,undefined);assert.equal(filtered.pie.quotaTotals.person3,billingFixture().view.analytics.windows.today.quota_rows.filter(r=>r.device==='person3').reduce((n,r)=>n+r.quota*1.5,0));
   await page.getByRole('button',{name:'筛选账号',exact:true}).click();await page.getByRole('option',{name:'两账号合计',exact:true}).click();
   await page.getByTestId('device-row').first().click();await page.locator('.user-pool-summary').waitFor();
-  assert.equal(await page.locator('.user-account-breakdown article').count(),2);
+  assert.equal(await page.locator('.user-account-breakdown article').count(),0);assert.equal(await page.locator('.user-pool-summary>div').count(),3);assert.match(await page.getByTestId('shared-consumption-card').innerText(),/均摊消耗/);assert.ok(!(await page.getByTestId('shared-consumption-card').innerText()).includes('软件开发'));
   assert.deepEqual((await page.locator('.user-model-card header strong').allTextContents()).slice(0,4),['GPT-6 Astra','GPT-5.6 Sol','GPT-5.6 Terra','GPT-5.6 Luna']);
   await page.evaluate(()=>{const data=structuredClone(window.__fixture),rows=data.view.analytics.windows.cycle.rows;rows.push({...rows.find(r=>r.device==='person1'),model:'codex-auto-review',tokens:72633});window.__CQG_TEST__.applySnapshot(data);});
   assert.ok(!(await page.locator('.user-model-list').innerText()).includes('codex-auto-review'));
@@ -88,19 +88,31 @@ try{
   await page.screenshot({path:path.join(artifacts,'billing-member.png')});
   await page.evaluate(()=>{
     const make=tokens=>({start:0,step:1,count:1,quota_ready:true,rows:[{device:'person1',account:'fixture-account',model:'gpt-6-astra',bucket:0,tokens,input_tokens:tokens-10,output_tokens:10,cache_tokens:tokens-20,event_count:1,detail_count:1,detail_missing:0}],quota_rows:[{device:'person1',account:'fixture-account',model:'gpt-6-astra',bucket:0,quota:5,cache_quota:1}]});
-    window.__memberWindows={archive:make(1234),second:make(5678),first:make(9999)};
+    window.__memberWindows={earlier:make(1234),second:make(5678),first:make(9999)};
+    const cycle=window.__fixture.view.analytics.cycles[0];
+    window.__fixture.view.analytics.cycles.push({...cycle,id:'earlier',started:cycle.started-604800,ended:cycle.started});
     window.__fixture.view.analytics.donut_archive_at=window.__fixture.view.analytics.at-100;
     window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture));
   });
-  await page.getByRole('button',{name:'个人明细周期',exact:true}).click();await page.getByRole('option',{name:/封存记录/}).click();
-  await page.locator('.user-cycle-primary').waitFor();
+  async function pickCycle(account,number){
+    await page.getByRole('button',{name:'个人明细周期',exact:true}).click();
+    assert.equal(await page.getByRole('option',{name:'当前配对周期',exact:true}).count(),0);
+    await page.getByRole('option',{name:new RegExp('^'+account)}).click();
+    await page.getByRole('option',{name:new RegExp('^第'+number+'周期')}).click();
+    await page.locator('.user-cycle-primary').waitFor();
+  }
+  await pickCycle('账号1',1);
   assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).userCycle.tokens,1234);
-  assert.equal(await page.locator('.user-pool-summary').count(),0,'historical use does not show present quota as old quota');
-  assert.ok(!(await page.locator('.user-account-breakdown').innerText()).includes('该账号可用'));
-  await page.getByRole('button',{name:'个人明细周期',exact:true}).click();await page.getByRole('option',{name:/账号1 ·/}).click();
-  await page.locator('.user-cycle-primary').waitFor();assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).userCycle.tokens,5678);
+  assert.equal(await page.locator('.user-pool-summary>div').count(),1,'historical view shows its shared cost without presenting a current balance as historical');
+  assert.equal((await page.getByRole('button',{name:'个人明细周期',exact:true}).innerText()).trim(),'账号1');
+  await pickCycle('账号2',1);
+  assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).userCycle.tokens,9999);
+  assert.equal((await page.getByRole('button',{name:'个人明细周期',exact:true}).innerText()).trim(),'账号2');
   await page.screenshot({path:path.join(artifacts,'billing-member-history.png')});
-  await page.getByRole('button',{name:'个人明细周期',exact:true}).click();await page.getByRole('option',{name:'当前配对周期',exact:true}).click();await page.locator('.user-pool-summary').waitFor();
+  await pickCycle('账号1',2);
+  assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).userCycle.tokens,5678);
+  assert.equal(await page.locator('.user-pool-summary>div').count(),3);
+  await page.evaluate(()=>{window.__fixture.view.analytics.cycles=window.__fixture.view.analytics.cycles.filter(c=>c.id!=='earlier');window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture));});
 
   await page.getByRole('button',{name:'关闭对话框',exact:true}).click();
   await page.getByTestId('nav-stats').click();await page.locator('.pool-journal').waitFor();
@@ -164,7 +176,7 @@ try{
   assert.equal(await page.locator('.device-row .avatar img').first().getAttribute('src'),'avatars/person2.jpg');
   assert.equal(await page.locator('.legend-name').first().innerText(),'A');
   assert.equal(await page.locator('.device-usage').first().innerText(),'—');
-  await page.getByRole('button',{name:'设备占比时间范围',exact:true}).click();await page.getByRole('option',{name:'本周期',exact:true}).click();
+  await page.getByRole('button',{name:'设备占比时间范围',exact:true}).click();await page.getByRole('option',{name:'新账周期',exact:true}).click();
   assert.equal(await page.locator('.donut-main-share').first().innerText(),'34.5%');await page.waitForTimeout(200);
   assert.equal(await page.locator('.device-quota-cell small').count(),0,'unavailable balance is explained once, not repeated as unknown under every member');
   assert.ok((await page.locator('.billing-status').innerText()).includes('已确认消费继续显示'));

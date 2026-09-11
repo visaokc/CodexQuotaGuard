@@ -38,6 +38,7 @@ class Engine:
         self.shared_mode = config.get('shared_group_enabled', False) is True
         self.shared = SharedSync(self.group_db, self.journal, config['device_id'], config['name'], self.tracked) if self.shared_mode else None
         self.shared_analytics_cache = {}
+        self.shared_rules_cache = None
         self.scanner = Scanner(database, config['codex_home'], config['device_id'], config['started_at'], self.tracked)
         self.recovery = HistoryRecovery(database, self.group_db, config['codex_home'], config['device_id'])
         self.stop_event, self.wakeup = threading.Event(), threading.Event()
@@ -75,6 +76,16 @@ class Engine:
         self.quota_error_since = None
         self.quota_error_notified = False
         self.last_recovery = self.db.get('manual_restore_at', 0)
+        if self.shared_mode:
+            scope = 'group:'+group
+            analytics = shared_usage(self.group_db, scope, {}, time.time())
+            initial = shared_overview(self.group_db, scope, {}, {}, config['device_id'],
+                                      analytics['at'], analytics)
+            self.view.update(initial, display_account=scope, shared_group_enabled=True,
+                             analytics=analytics, history=None, pair_scope=True,
+                             shared_group=dict(enabled=True, id=group, members=[], state='waiting',
+                                 stage='billing' if config.get('shared_billing_v1') else 'preparing',
+                                 reason='正在加载共享账本'))
 
     def start(self):
         self.thread = threading.Thread(target=self.run, daemon=True)
@@ -264,7 +275,7 @@ class Engine:
             peer, message = self.inbox.get_nowait()
             self.shared.receive(peer, message, self.mesh, now)
 
-    def _update_shared_view(self, now, presence=None):
+    def _update_shared_view(self, now, presence=None, observed=None):
         if not self.shared:
             return
         self.shared.tick(self.mesh, now, presence=presence)
@@ -277,11 +288,12 @@ class Engine:
             rules = self._billing_rules(labels, now)
             if rules.get('policy'):
                 labels = {a: '账号'+str(i+1) for i, a in enumerate(rules['accounts'])}
-        if (not self.shared_analytics_cache or now-self.shared_analytics_cache['at'] >= 10
-                or self.shared_analytics_cache.get('account_ids') != sorted(labels)):
-            self.shared_analytics_cache = shared_usage(self.group_db, scope, labels, now, rules=rules)
+        analytics = self.shared_analytics_cache
+        if (not analytics or now-analytics['at'] >= 10
+                or analytics.get('account_ids') != sorted(labels) or self.shared_rules_cache != rules):
+            analytics = shared_usage(self.group_db, scope, labels, now, rules=rules)
         overview = shared_overview(self.group_db, scope, labels, state.get('members', {}),
-                                   self.config['device_id'], now, self.shared_analytics_cache,
+                                   self.config['device_id'], now, analytics,
                                    removed=self.mesh.removed_devices() if self.mesh and hasattr(self.mesh, 'removed_devices') else ())
         members = overview.pop('members', [])
         billing = overview.get('billing', {})
@@ -294,22 +306,34 @@ class Engine:
             group_view.update(stage='billing', state=billing.get('status', rules['status']),
                 reason=billing.get('reason', rules['reason']), revision=policy.get('revision'),
                 admin=policy.get('admin'), can_manage=policy.get('admin') == self.config['device_id'],
+                rules_locked=True,
                 pending_rule=bool(self.group_db.get('shared:pending_rule')),
                 available_accounts=[dict(account=a, label=label) for a,label in state.get('account_labels', {}).items()],
                 bindings=(rules or {}).get('bindings', []),
                 devices=[dict(id=d, name=p.get('name', d), version=state.get('peer_versions', {}).get(d,'')) for d,p in state.get('members', {}).items()],
-                billing_start_note='两账号各100点、每人基础份额66.67点。原两人指定周期不新增欠款；补偿默认关闭。')
-        with self.view_lock:
-            self.view.update(overview)
-            self.view.update(display_account=scope, shared_group_enabled=True,
-                shared_group=group_view,
-                analytics=self.shared_analytics_cache, blocked=False, auto_block=False,
+                billing_start_note='两账号各100点、每人基础份额66.67点。跨周期补偿与补偿显示固定开启；账号实际刷新后才发放新份额。')
+        # The bridge may poll during disk/network work. Publish one complete
+        # shared projection, never an intermediate legacy-account snapshot.
+        activity = presence or {}
+        published = dict(observed or {})
+        published.update(overview)
+        published.update(display_account=scope, shared_group_enabled=True,
+                shared_group=group_view, identity=self.last_identity or {},
+                error=(observed or {}).get('error', ''), history=None,
+                active=activity.get('active', 0), uncertain=activity.get('uncertain', 0),
+                unbound_active=activity.get('unbound_active', 0),
+                unbound_uncertain=activity.get('unbound_uncertain', 0),
+                analytics=analytics, blocked=False, auto_block=False,
                 status=('共享额度 · '+(group_view.get('reason') or '官方增量分摊')) if self.config.get('shared_billing_v1') else '共享组入组过渡版 · Token 合并统计，统一额度计费待启用',
                 pair_scope=True, peers=self.mesh.peer_states() if self.mesh else {},
                 connection=self.mesh.connection_state() if self.mesh and hasattr(self.mesh, 'connection_state') else {},
                 mesh=self.mesh.status if self.mesh else '请生成或输入匹配码以加入共享组',
                 sync_receipts=state.get('sync_receipts', {}), sync_progress=state.get('sync_progress', {}),
                 sync_errors=state.get('sync_errors', {}))
+        with self.view_lock:
+            self.shared_analytics_cache = analytics
+            self.shared_rules_cache = copy.deepcopy(rules)
+            self.view.update(published)
 
     def _billing_rules(self, labels, now):
         from .shared_policy import load_rules, genesis, profile, person_for, publish_change
@@ -325,6 +349,22 @@ class Engine:
             publish_change(self.journal, rules, self.config['device_id'], self.config['name'], self.config['quota'],
                            dict(accounts=rules['accounts']), now)
             rules = load_rules(self.group_db, labels, now)
+        policy = rules.get('policy') or {}
+        if policy.get('admin') == self.config['device_id']:
+            changes = {}
+            if not policy.get('rules_locked'):
+                changes.update(compensation=True, rules_locked=True)
+            clean = self.config.get('shared_clean_start')
+            if clean and not policy.get('clean_start'):
+                changes['clean_start'] = clean
+                baseline = clean['baseline']
+                overrides = [r for r in policy.get('reset_types', [])
+                             if (r['account'],r['started']) != (baseline['account'],baseline['started'])]
+                changes['reset_types'] = overrides+[dict(account=baseline['account'], started=baseline['started'], type='natural')]
+            if changes:
+                publish_change(self.journal, rules, self.config['device_id'], self.config['name'], self.config['quota'], changes, now)
+                self.group_db.put('shared:pending_rule', None)
+                rules = load_rules(self.group_db, labels, now)
         current = self.last_identity or {}
         if rules.get('policy') and self.is_tracked(current) and not person_for(rules, self.config['device_id'], now):
             occupied = {b['person'] for b in rules.get('bindings', [])}
@@ -363,9 +403,7 @@ class Engine:
             raise ValueError('共同规则已变化，请重新提交')
         changes = {}
         if payload.get('kind') == 'compensation':
-            if type(payload.get('enabled')) is not bool:
-                raise ValueError('补偿开关无效')
-            changes['compensation'] = payload['enabled']
+            raise ValueError('跨周期补偿已固定开启，不能关闭')
         elif payload.get('kind') == 'bind':
             if payload.get('person') not in ('person1','person2','person3'):
                 raise ValueError('成员身份无效')
@@ -421,7 +459,10 @@ class Engine:
             self.mesh = None
         self.ledger.logout(self.config['device_id'])
         with self.view_lock:
-            self.view.update(summary=None, blocked=False, status='登录配置已变化，等待重新确认账号', peers={}, mesh='未连接')
+            if self.shared_mode:
+                self.view.update(blocked=False, status='登录配置已变化，正在确认；共享账本保留')
+            else:
+                self.view.update(summary=None, blocked=False, status='登录配置已变化，等待重新确认账号', peers={}, mesh='未连接')
         return True
 
     def publish_events(self, account, now):
@@ -498,10 +539,11 @@ class Engine:
             self._account(ident, now)
         self.last_identity = ident
         self.db.put('scope_observed_at', now)
-        with self.view_lock:
-            self.view['identity'] = ident
-            self.view['blocked'] = self.blocked
-            self.view['error'] = ''
+        if not self.shared_mode:
+            with self.view_lock:
+                self.view['identity'] = ident
+                self.view['blocked'] = self.blocked
+                self.view['error'] = ''
         while not self.commands.empty():
             kind, payload = self.commands.get_nowait()
             if kind == 'restore':
@@ -542,13 +584,15 @@ class Engine:
             if self.tracked:
                 self.recovery.scan(min(p['added_at'] for p in self.tracked.values()))
                 self.recover_inactive(None, now)
-            with self.view_lock:
-                self.view.update(summary=None, status=('当前账号未添加：不统计、不查询额度、不连接设备组'
-                                 if ident['mode'] == 'account' else 'API / 未登录模式：不统计当前用量，仅核对已绑定旧请求'),
-                                 active=0, uncertain=0, peers={}, mesh='未连接', history=None, analytics=None,
-                                 pair_scope=False, connection={}, sync_receipts={}, sync_progress={},
-                                 sync_vectors={}, local_vector={}, sync_errors={}, tracked_since=None)
-            self._update_shared_view(now)
+            if self.shared_mode:
+                self._update_shared_view(now, observed=dict(tracked_since=None))
+            else:
+                with self.view_lock:
+                    self.view.update(summary=None, status=('当前账号未添加：不统计、不查询额度、不连接设备组'
+                                     if ident['mode'] == 'account' else 'API / 未登录模式：不统计当前用量，仅核对已绑定旧请求'),
+                                     active=0, uncertain=0, peers={}, mesh='未连接', history=None, analytics=None,
+                                     pair_scope=False, connection={}, sync_receipts={}, sync_progress={},
+                                     sync_vectors={}, local_vector={}, sync_errors={}, tracked_since=None)
             return
         account = ident['account']
         self._begin_sync_round(account, now)
@@ -737,22 +781,26 @@ class Engine:
             self.analytics_cache = usage(self.group_db, account, now)
             self.analytics_cache['cycles'] = cycle_statistics(self.group_db, account, now)['rows']
         sync_errors = {p: error for p, error in self.sync_errors.items() if p not in removed}
-        with self.view_lock:
-            self.view.update(summary=summary, analytics=self.analytics_cache, history=self.ledger.history(account, self.config['device_id'], now),
-                recovery=recovered,
+        if self.shared_mode:
+            self._update_shared_view(now, presence, observed=dict(recovery=recovered,
                 tracked_since=self.tracked[account]['added_at'],
-                status='监测中 · Token 按日志统计，额度随官方更新校准' if self.mesh else '本机监测中 · 尚未配置异地匹配服务',
-                active=active, uncertain=uncertain, unbound_active=unbound_active,
-                unbound_uncertain=unbound_uncertain, blocked=self.blocked,
-                error=' | '.join(value for value in (self.quota_error, recovery_error,
-                    '同步记录被拒绝：'+', '.join(sorted(set(sync_errors.values()))) if sync_errors else '') if value),
-                mesh=self.mesh.status if self.mesh else '点击“生成匹配码”即可自动连接，无需填写参数',
-                pair_scope=True, sync_receipts=dict(self.sync_receipts),
-                sync_progress=progress(local_vector, peers, self.sync_vectors, self.sync_receipts, sync_errors, now),
-                local_vector=local_vector, sync_vectors=copy.deepcopy(self.sync_vectors), sync_errors=sync_errors,
-                connection=self.mesh.connection_state() if self.mesh and hasattr(self.mesh, 'connection_state') else {},
-                peers=peers)
-        self._update_shared_view(now, presence)
+                error=' | '.join(value for value in (self.quota_error, recovery_error) if value)))
+        else:
+            with self.view_lock:
+                self.view.update(summary=summary, analytics=self.analytics_cache, history=self.ledger.history(account, self.config['device_id'], now),
+                    recovery=recovered,
+                    tracked_since=self.tracked[account]['added_at'],
+                    status='监测中 · Token 按日志统计，额度随官方更新校准' if self.mesh else '本机监测中 · 尚未配置异地匹配服务',
+                    active=active, uncertain=uncertain, unbound_active=unbound_active,
+                    unbound_uncertain=unbound_uncertain, blocked=self.blocked,
+                    error=' | '.join(value for value in (self.quota_error, recovery_error,
+                        '同步记录被拒绝：'+', '.join(sorted(set(sync_errors.values()))) if sync_errors else '') if value),
+                    mesh=self.mesh.status if self.mesh else '点击“生成匹配码”即可自动连接，无需填写参数',
+                    pair_scope=True, sync_receipts=dict(self.sync_receipts),
+                    sync_progress=progress(local_vector, peers, self.sync_vectors, self.sync_receipts, sync_errors, now),
+                    local_vector=local_vector, sync_vectors=copy.deepcopy(self.sync_vectors), sync_errors=sync_errors,
+                    connection=self.mesh.connection_state() if self.mesh and hasattr(self.mesh, 'connection_state') else {},
+                    peers=peers)
 
     def enforce(self, summary, now):
         if self.shared_mode:

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {historyMinimum,historyWindow,userBreakdown,aggregate,devicesFor,quotaValue,niceScale,linePath,curveGeometry,curveY,COLORS,modelOptions,officialUsageColor,officialQuotaRemaining,refreshRemaining,dailyQuotaUsage,chartQuotaPercent,trendForMode} from '../src/data.js';
+import {displayModelName,historyMinimum,historyWindow,userBreakdown,aggregate,devicesFor,quotaValue,niceScale,linePath,curveGeometry,curveY,COLORS,modelOptions,officialUsageColor,officialQuotaRemaining,refreshRemaining,dailyQuotaUsage,chartQuotaPercent,trendForMode} from '../src/data.js';
 import {fixture} from './fixture.mjs';
 import {sharedFixture} from './shared-fixture.mjs';
 
@@ -63,8 +63,8 @@ test('all-user chart series preserve each bucket, device color and stacked total
   assert.equal(result.total,470);
   const basic=items=>items.map(({cachePoints,cacheQuotaPoints,cacheMissingPoints,...item})=>item);
   assert.deepEqual(basic(result.series),[
-    {id:'fixture-peer',label:'Peer',color:COLORS[0],points:[50,200,0],quotaPoints:[0,0,0],quotaPendingPoints:[false,false,false]},
     {id:'fixture-local',label:'Local',color:COLORS[1],points:[150,0,70],quotaPoints:[0,0,0],quotaPendingPoints:[false,false,false]},
+    {id:'fixture-peer',label:'Peer',color:COLORS[0],points:[50,200,0],quotaPoints:[0,0,0],quotaPendingPoints:[false,false,false]},
   ]);
   for(let i=0;i<result.points.length;i++)assert.equal(result.series.reduce((sum,item)=>sum+item.points[i],0),result.points[i]);
   for(const item of result.series)assert.equal(item.points.reduce((sum,value)=>sum+value,0),result.totals[item.id]);
@@ -121,13 +121,13 @@ test('model options use numeric version order and hiding auto-review never remov
   data.view.analytics.models=['gpt-5.6-luna','gpt-5.6-terra','gpt-6-astra','gpt-5.6-sol'];
   assert.deepEqual(modelOptions(data).map(o=>o.value),['','gpt-6-astra','gpt-5.6-sol','gpt-5.6-terra','gpt-5.6-luna']);
 });
-test('saved device order is local to its account, colors remain stable and new devices append',()=>{
+test('local member stays first while saved peer order, colors and new devices remain stable',()=>{
   const data=fixture(),before=Object.fromEntries(devicesFor(data).map(d=>[d.id,d.color]));
   data.settings.device_order={'fixture-account':['fixture-peer','fixture-local']};
-  assert.deepEqual(devicesFor(data).map(d=>d.id),['fixture-peer','fixture-local']);
+  assert.deepEqual(devicesFor(data).map(d=>d.id),['fixture-local','fixture-peer']);
   assert.deepEqual(Object.fromEntries(devicesFor(data).map(d=>[d.id,d.color])),before);
   data.view.summary.devices.push({id:'z-new-device',name:'New device',tokens:0});
-  assert.deepEqual(devicesFor(data).map(d=>d.id),['fixture-peer','fixture-local','z-new-device']);
+  assert.deepEqual(devicesFor(data).map(d=>d.id),['fixture-local','fixture-peer','z-new-device']);
   data.settings.device_order={'another-account':['fixture-peer','fixture-local']};
   assert.deepEqual(devicesFor(data).map(d=>d.id),['fixture-local','fixture-peer','z-new-device']);
 });
@@ -272,4 +272,33 @@ test('day history uses hourly buckets and stops at the selected recorded history
   const calibrated={...source,quota_available:true,quota_ready:false,quota_gaps:[{start:source.start,end:source.start+3600}]};
   assert.equal(historyWindow(calibrated,latest,86400).quota_ready,true,'gaps outside the visible window do not hide its calibrated percentages');
   assert.equal(historyWindow(calibrated,source.start+23*3600,86400).quota_ready,false);
+});
+
+
+test('six and twelve hour histories use five minute steps and stop at matching recorded accounts',()=>{
+  const data=sharedFixture(),at=data.view.analytics.at,step=300;
+  for(const duration of [21600,43200]){
+    const count=(86400+duration)/step,start=Math.floor(at/step)*step-(count-1)*step;
+    const source={start,step,count,quota_available:true,quota_gaps:[],rows:[
+      {account:'fixture-account',device:'fixture-local',model:'gpt-5.5',bucket:0,tokens:11},
+      {account:'fixture-account-b',device:'fixture-peer',model:'gpt-5.5',bucket:100,tokens:29}],
+      quota_rows:[{account:'fixture-account',device:'fixture-local',model:'gpt-5.5',bucket:0,quota:.1,cache_quota:.05}]};
+    const earliest=historyMinimum(data,source,duration,86400,'','fixture-local','fixture-account');
+    assert.equal(earliest,start+duration-step);
+    const window=historyWindow(source,earliest,duration);
+    assert.equal(window.step,300);assert.equal(window.count,duration/300);assert.equal(window.rows[0].tokens,11);
+    assert.equal(window.quota_rows[0].quota,.1);assert.equal(window.quota_rows[0].cache_quota,.05);
+    assert.equal(historyMinimum(data,source,duration,86400,'','fixture-local','fixture-account-b'),Math.floor(at/step)*step,'empty account selections cannot pan into unrecorded history');
+  }
+});
+
+
+test('model names are formatted only for display while IDs and unknown names remain unchanged',()=>{
+  const data=fixture(),ids=['gpt-6-astra','gpt-5.6-sol','gpt-5.6-terra','gpt-5.6-luna'];
+  const labels=['GPT-6 Astra','GPT-5.6 Sol','GPT-5.6 Terra','GPT-5.6 Luna'];
+  data.view.analytics.models=[...ids];
+  assert.deepEqual(ids.map(displayModelName),labels);
+  assert.deepEqual(modelOptions(data).map(row=>row.value),['',...ids]);
+  assert.deepEqual(modelOptions(data).map(row=>row.label),['全部模型',...labels]);
+  assert.equal(displayModelName('private-model-r1'),'private-model-r1');
 });

@@ -34,6 +34,7 @@ class Pool:
         self.accounts = list(accounts)
         self.enabled = compensation
         self.stock = {a: {p: 0 for p in PERSONS} for a in accounts}
+        self.entitlements = {a: {p: 0 for p in PERSONS} for a in accounts}
         self.remaining = {a: 0 for a in accounts}
         self.pending = {a: {p: 0 for p in PERSONS} for a in accounts}
         self.confirmed = {p: 0 for p in PERSONS}
@@ -48,6 +49,7 @@ class Pool:
         self.cycles[account] = cycle
         self.remaining[account] = amount
         self.stock[account] = split(amount, {p: 1 for p in PERSONS})
+        self.entitlements[account] = dict(self.stock[account])
         self.record('initial' if initial else 'grant', at, account, amount=points(amount))
         if self.enabled and not initial:
             payments = {p: min(self.stock[account][p], max(0, self.confirmed[p])) for p in PERSONS}
@@ -130,6 +132,8 @@ class Pool:
 
     def summary(self):
         return {p: dict(available=points(sum(self.stock[a][p] for a in self.accounts)),
+                       available_cap=points(sum(self.entitlements[a][p] for a in self.accounts)),
+                       fair_usage=points(sum(self.entitlements[a][p]-self.stock[a][p] for a in self.accounts)+self.debt(p)),
                        by_account={a: points(self.stock[a][p]) for a in self.accounts},
                        pending=points(sum(self.pending[a][p] for a in self.accounts)),
                        confirmed=points(self.confirmed[p]), debt=points(self.debt(p))) for p in PERSONS}

@@ -4,6 +4,7 @@ import statistics
 import threading
 import time
 from datetime import datetime
+from contextlib import nullcontext
 from .token_budget import estimate_budget
 from .sample_pool import sample_checkpoints
 from .fair_allocation import allocation
@@ -91,11 +92,11 @@ class Ledger:
             self.fairness_cache.pop(account, None)
             db.execute('UPDATE devices SET cap=? WHERE account=? AND id=?', (cap, account, device))
 
-    def observe(self, snap):
+    def observe(self, snap, connection=None):
         account, used, reset, at = snap['account'], float(snap['used']), float(snap['reset_at']), float(snap['at'])
         if not all(math.isfinite(x) for x in (used, reset, at)) or not 0 <= used <= 100:
             raise ValueError('额度快照无效')
-        with self.lock, self.db.connect() as db:
+        with self.lock, (nullcontext(connection) if connection is not None else self.db.connect()) as db:
             self.fairness_cache.pop(account, None)
             row = db.execute('SELECT * FROM epochs WHERE account=? ORDER BY id DESC LIMIT 1', (account,)).fetchone()
             reason = None

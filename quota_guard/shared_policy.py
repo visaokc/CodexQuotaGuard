@@ -52,6 +52,25 @@ def validate(value, origin, at):
                 or not timestamp(row.get('started')) or row['started'] > value['effective']
                 or row.get('type') not in ('natural', 'card', 'official')):
             raise ValueError('重置确认无效')
+    clean = value.get('clean_start')
+    if clean is not None:
+        baseline = clean.get('baseline', {}) if isinstance(clean, dict) else {}
+        if (not isinstance(clean, dict) or clean.get('account') not in value['accounts']
+                or not timestamp(clean.get('started')) or not timestamp(clean.get('reset_at'))
+                or clean['started'] >= clean['reset_at'] or clean['started'] > value['effective']
+                or baseline.get('account') not in value['accounts'] or baseline['account'] == clean['account']
+                or baseline.get('person') not in PERSONS or not timestamp(baseline.get('started'))
+                or not timestamp(baseline.get('reset_at')) or not timestamp(baseline.get('at'))
+                or not baseline['started'] <= baseline['at'] <= value['effective']
+                or baseline['reset_at'] <= baseline['started']
+                or not timestamp(baseline.get('used')) or baseline['used'] > 100):
+            raise ValueError('共同起点无效')
+        if clean.get('trigger', 'exhaustion') not in ('exhaustion', 'immediate'):
+            raise ValueError('共同起点触发方式无效')
+        if clean.get('trigger') == 'immediate' and (not timestamp(clean.get('at')) or not clean['started'] <= clean['at'] <= value['effective']):
+            raise ValueError('共同起点时间无效')
+    if value.get('rules_locked') and value['compensation'] is not True:
+        raise ValueError('共同补偿规则已锁定开启')
     return value
 
 
@@ -104,7 +123,9 @@ def load_rules(database, accounts, now):
         if (following['admin'] != first['admin'] or following['revision'] != policy['revision']+1
                 or following['effective'] < policy['effective'] or following['rates'] != first['rates']
                 or following['accounts'][:len(policy['accounts'])] != policy['accounts']
-                or following['bindings'][:len(policy['bindings'])] != policy['bindings']):
+                or following['bindings'][:len(policy['bindings'])] != policy['bindings']
+                or (policy.get('clean_start') and following.get('clean_start') != policy['clean_start'])
+                or (policy.get('rules_locked') and not following.get('rules_locked'))):
             return dict(result, status='conflict', reason='共享组规则链不一致')
         chain.append(following)
         key, policy = next_key, following
@@ -141,7 +162,12 @@ def load_rules(database, accounts, now):
             bindings.append(dict(device=device, person=person, since=0))
             first_bound[person] = min(c['at'] for c in matching if c['device'] == device)
     ready = len(selected) == 2 and len(first_bound) == 3
-    return dict(result, status='ready' if ready else 'waiting', reason='' if ready else '等待第三位成员和账号2',
+    missing = []
+    if len(selected) < 2:
+        missing.append('账号2')
+    if len(first_bound) < 3:
+        missing.append('第三位成员' if len(first_bound) == 2 else '成员加入')
+    return dict(result, status='ready' if ready else 'waiting', reason='' if ready else '等待'+'和'.join(missing),
                 policy=policy, policies=chain, accounts=selected, bindings=bindings, genesis=root_hash,
                 eligible_at=max(first_bound.values()) if len(first_bound) == 3 else None)
 

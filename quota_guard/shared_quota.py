@@ -66,7 +66,7 @@ def attribution(database, rules, now):
                         parts = split(shares[row['id']], dict(enumerate(weights[row['id']])))
                         event = dict(account=account, device=people[row['id']], source_device=row['device'],
                                      model=row['model'], ts=row['ts'], id=row['id'], quota=points(shares[row['id']]),
-                                     cache_quota=points(parts[1]), units=shares[row['id']])
+                                     cache_quota=points(parts[1]), units=shares[row['id']], confirmed_at=segment['end'])
                         events.append(event)
                         entry['events'].append(event)
                 else:
@@ -86,19 +86,34 @@ def attribution(database, rules, now):
                             break
     for row in policy.get('reset_types', []):
         overrides[row['account'], row['started']] = row['type']
-    return dict(streams=streams, events=events, gaps=gaps, epochs=epochs, anchors=anchors, exempt=exempt, overrides=overrides)
+    result = dict(streams=streams, events=events, gaps=gaps, epochs=epochs, anchors=anchors, exempt=exempt, overrides=overrides)
+    from .clean_start import prepare
+    prepare(database, rules, result, now)
+    return result
 
 
 def accounting(rules, attributed, now):
+    policy = rules.get('policy') or {}
+    clean = attributed.get('clean_start') or {}
     result = dict(status='waiting', reason=rules.get('reason') or '等待两个账号的官方起点',
-                  people={}, entries=[], anchors={}, compensation_enabled=False, active_since=None)
-    if rules.get('status') != 'ready' or len(attributed['anchors']) != 2:
+                  people={}, entries=[], anchors={}, compensation_enabled=policy.get('compensation', False),
+                  active_since=None, clean_start=clean)
+    if clean.get('state') == 'armed':
+        result.update(status='armed', reason='账号1用尽后结清旧阶段；账号2现有用量保留，旧阶段不产生欠款')
+        return result
+    if clean and clean.get('state') != 'active':
+        result.update(status='syncing', reason='共同起点的账号周期记录正在补齐，保留已确认用量')
+        return result
+    if (rules.get('status') != 'ready' and clean.get('state') != 'active') or len(attributed['anchors']) != 2:
         return result
     anchors = attributed['anchors']
     pool = Pool(rules['accounts'])
     actions, issues = [], []
-    for policy in rules['policies']:
-        actions.append((policy['effective'], 0, 'policy', policy))
+    if clean:
+        actions.append((0, 0, 'policy', dict(compensation=True)))
+    else:
+        for revision in rules['policies']:
+            actions.append((revision['effective'], 0, 'policy', revision))
     for account, anchor in anchors.items():
         actions.append((anchor['at'], 1, account, dict(kind='initial', **anchor)))
         previous = anchor['cycle']
@@ -109,6 +124,8 @@ def accounting(rules, attributed, now):
             previous = cycle
     for stream in attributed['streams']:
         anchor = anchors[stream['account']]
+        if clean and stream['account'] == clean['account'] and stream['cycle_start'] == anchor['cycle']['started']:
+            continue
         if stream['end'] <= anchor['at']:
             continue
         # First new official increment can start before an unchanged migration
@@ -121,6 +138,9 @@ def accounting(rules, attributed, now):
         for row in rows:
             at_boundary = any(cycle['ended'] == row['ts'] and cycle['started'] == stream['cycle_start'] for cycle in attributed['epochs'][stream['account']])
             actions.append((row['ts'], .5 if at_boundary else 2, stream['account'], dict(kind='consume', event=row)))
+    for row in attributed.get('events', []):
+        if row.get('baseline') and row['ts'] >= anchors[row['account']]['at']:
+            actions.append((row['ts'], 2, row['account'], dict(kind='consume', event=row)))
     # Stable account order and event id resolve same-time observations on every peer.
     actions.sort(key=lambda item: (item[0], item[1], item[2], item[3].get('event', {}).get('id', '')))
     for at, order, account, action in actions:
@@ -149,7 +169,13 @@ def accounting(rules, attributed, now):
                   people=pool.summary(), entries=pool.entries[-1000:], compensation_enabled=pool.enabled,
                   anchors={a: dict(at=row['at'], remaining=100-row['used']) for a, row in anchors.items()},
                   active_since=min(row['at'] for row in anchors.values()))
+    if clean:
+        result['active_since'] = clean['at']
+        result['entries'].insert(0, dict(kind='clean_start', at=clean['at'], account=clean['account'],
+            amount=100. if clean.get('trigger') != 'immediate' else None,
+            balances=dict(person1=50., person2=50., person3=0.) if clean.get('trigger') != 'immediate' else {},
+            reason='账号1旧周期仅归档、不计新账；账号2当前周期起算' if clean.get('trigger') == 'immediate' else '旧阶段两人等分结清，不留欠款'))
     if issues:
         for person in result['people'].values():
-            person.update(available=None, by_account={a: None for a in pool.accounts}, pending=None, confirmed=None, debt=None)
+            person.update(available=None, by_account={a: None for a in pool.accounts}, pending=None, confirmed=None, debt=None, fair_usage=None)
     return result

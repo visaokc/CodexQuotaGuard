@@ -9,7 +9,7 @@ def _selected(row, now):
     return dict(row, matched_until=min(now, row['ended']) if row['ended'] is not None else now)
 
 
-def choose_cycles(database, accounts, now):
+def choose_cycles(database, accounts, now, not_before=None):
     """Return a current-anchored pair; planned overlap never extends consumption."""
     accounts = sorted(set(accounts))
     result = dict(status='waiting', complete=False, reason='missing_account_cycle',
@@ -21,7 +21,8 @@ def choose_cycles(database, accounts, now):
         for account in accounts:
             rows = [dict(row) for row in db.execute(
                 'SELECT * FROM epochs WHERE account=? AND started<=? ORDER BY started,id', (account, now))]
-            histories[account] = [row for row in rows if _end(row) > row['started']]
+            histories[account] = [row for row in rows if _end(row) > row['started']
+                                  and row['started'] >= (not_before or {}).get(account, 0)]
     if len(accounts) < 2 or any(not histories[account] for account in accounts):
         result['cycles'] = [_selected(histories[account][-1], now)
                             for account in accounts if histories[account]]

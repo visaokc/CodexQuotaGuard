@@ -55,6 +55,9 @@ def main():
     if not config.get('shared_billing_v1'):
         config.update(shared_billing_v1=True, auto_block=False)
         save_config(cfgpath, config)
+    if not config.get('shared_defaults_061'):
+        config.update(shared_defaults_061=True, autostart=True, quota_display='fair')
+        save_config(cfgpath, config)
     from quota_guard.web_host import run
     run(args, config, Database(args.data_dir/'local.sqlite'))
 

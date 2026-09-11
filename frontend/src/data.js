@@ -1,6 +1,8 @@
 export const COLORS = ['#669cff','#f6b763','#55d6be','#cd8af0','#ed8299','#c6db76','#f39777','#62cde2'];
 export const COLOR_NAMES = ['蓝色','琥珀','薄荷','薰衣草','玫瑰','青柠','珊瑚','晴青'];
 const STANDARD_MODELS=['gpt-6-astra','gpt-5.6-sol','gpt-5.6-terra','gpt-5.6-luna'];
+const MODEL_NAMES={'gpt-6-astra':'GPT-6 Astra','gpt-5.6-sol':'GPT-5.6 Sol','gpt-5.6-terra':'GPT-5.6 Terra','gpt-5.6-luna':'GPT-5.6 Luna'};
+export function displayModelName(model){return MODEL_NAMES[model]||model;}
 export function cycleModels(cycle){
   const rows=cycle.models||[],total=cycle.sampled_tokens??rows.reduce((n,m)=>n+m.tokens,0);
   return [...new Set([...STANDARD_MODELS,...rows.map(m=>m.model)])].map(model=>{
@@ -50,7 +52,7 @@ export function devicesFor(snapshot) {
     ...d,label:notes[d.id]||d.device_ids?.map(id=>notes[id]).find(Boolean)||d.name||d.id.slice(0,10),
     color:COLORS.includes(colors[d.id])?colors[d.id]:d.avatar?({'person1':'#cd8af0','person2':'#669cff','person3':'#55d6be'}[d.id]||COLORS[0]):COLORS[ids.indexOf(d.id)%COLORS.length],
     local:d.local===true||d.id===settings.device_id
-  })).sort((a,b)=>order.indexOf(a.id)-order.indexOf(b.id));
+  })).sort((a,b)=>Number(b.local)-Number(a.local)||order.indexOf(a.id)-order.indexOf(b.id));
 }
 export function modelVersionOrder(a,b){
   const version=model=>(model.match(/\d+(?:\.\d+)*/)?.[0]||'').split('.').filter(Boolean).map(Number);
@@ -64,7 +66,7 @@ export function modelOptions(snapshot){
   return [{value:'',label:'全部模型'},...(data.account===account?data.models||[]:[])
     .filter(model=>model!=='codex-auto-review')
     .sort(modelVersionOrder)
-    .map(value=>({value,label:value}))];
+    .map(value=>({value,label:displayModelName(value)}))];
 }
 export function aggregate(snapshot, window, model='', device='', accountFilter='') {
   const data=snapshot.view?.analytics||{}, account=snapshot.view?.display_account||snapshot.view?.identity?.account;
@@ -97,7 +99,7 @@ export function aggregate(snapshot, window, model='', device='', accountFilter='
     if(!item||(accountFilter&&row.account!==accountFilter)||(model&&row.model!==model)||!Number.isInteger(row.bucket)||row.bucket<0||row.bucket>=points.length)continue;
     const d=active.find(d=>d.id===row.device),cap=d.fair_base_cap??d.cap;
     const personal=['personal','fair'].includes(snapshot.settings?.quota_display||'personal');
-    const multiplier=personal&&cap>0?100/cap:snapshot.view?.shared_group?.stage==='billing'?.5:1;
+    const multiplier=personal&&cap>0?100/cap:(snapshot.view?.shared_group?.stage==='billing'?.5:1);
     const value=Number(row.quota)*multiplier;
     item.quotaPoints[row.bucket]+=value;quotaPoints[row.bucket]+=value;
     quotaTotals[row.device]=(quotaTotals[row.device]||0)+value;
@@ -131,10 +133,10 @@ export function historyWindow(source,end,duration=3600){
   for(const key of ['rows','quota_rows','quota_pending_rows','quota_estimate_rows'])result[key]=(source[key]||[]).filter(row=>row.bucket>=offset&&row.bucket<offset+count).map(row=>({...row,bucket:row.bucket-offset}));
   return result;
 }
-export function historyMinimum(snapshot,source,duration,lookback,model='',device=''){
-  const step=duration===86400?3600:60,latest=Math.floor((snapshot.view?.analytics?.at||0)/step)*step;
+export function historyMinimum(snapshot,source,duration,lookback,model='',device='',account=''){
+  const step=duration===86400?3600:duration===3600?60:300,latest=Math.floor((snapshot.view?.analytics?.at||0)/step)*step;
   const ids=new Set(devicesFor(snapshot).map(d=>d.id));
-  const rows=(source?.rows||[]).filter(r=>ids.has(r.device)&&(!device||r.device===device)&&(!model||r.model===model)&&r.tokens>0);
+  const rows=(source?.rows||[]).filter(r=>ids.has(r.device)&&(!device||r.device===device)&&(!model||r.model===model)&&(!account||r.account===account)&&r.tokens>0);
   if(!rows.length)return latest;
   const first=Math.min(...rows.map(r=>source.start+r.bucket*source.step));
   return Math.min(latest,Math.max(latest-lookback,first+duration-source.step));

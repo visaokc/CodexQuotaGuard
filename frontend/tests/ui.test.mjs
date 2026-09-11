@@ -387,7 +387,7 @@ try{
     window.__CQG_TEST__.applySnapshot(data);
   });
   assert.equal(await page.locator('.user-model-card').count(),4);
-  const luna=page.locator('.user-model-card').filter({hasText:'gpt-5.6-luna'});
+  const luna=page.locator('.user-model-card').filter({hasText:'GPT-5.6 Luna'});
   assert.equal(await luna.locator('.user-model-token').innerText(),'0 Token');
   assert.equal(await luna.locator('.model-usage-share b').innerText(),'0.0%');
   assert.ok(!(await luna.innerText()).includes('本周期未使用'));
@@ -462,10 +462,10 @@ try{
   await page.mouse.move(firstRow.x+80,firstRow.y+25);await page.mouse.down();
   await page.mouse.move(secondRow.x+80,secondRow.y+30,{steps:10});await page.mouse.up();await page.waitForTimeout(220);
   assert.equal(await page.locator('.modal-backdrop').count(),0,'dragging does not open user settings');
-  assert.deepEqual(await page.getByTestId('device-row').evaluateAll(rows=>rows.map(row=>row.dataset.deviceId)),['fixture-peer','fixture-local']);
-  assert.equal(await page.locator('.legend-name').first().innerText(),'DESKTOP-N41609F');
+  assert.deepEqual(await page.getByTestId('device-row').evaluateAll(rows=>rows.map(row=>row.dataset.deviceId)),['fixture-local','fixture-peer'],'local member remains pinned first');
+  assert.equal(await page.locator('.legend-name').first().innerText(),'测试工作站');
   await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
-  assert.equal(await page.getByTestId('device-row').first().getAttribute('data-device-id'),'fixture-peer');
+  assert.equal(await page.getByTestId('device-row').first().getAttribute('data-device-id'),'fixture-local');
   for(const target of ['stats','accounts','sync','settings','help','overview']){await page.getByTestId('nav-'+target).click();await page.waitForTimeout(340);await page.screenshot({path:path.join(artifacts,target+'.png')});}
   await page.getByTestId('nav-sync').click();await page.waitForTimeout(330);
   await page.getByRole('button',{name:'高级连接设置',exact:true}).click();
@@ -478,7 +478,7 @@ try{
   const connection=await page.evaluate(()=>window.__commands.filter(c=>c.action==='connection_save').at(-1));
   assert.deepEqual(connection.payload,{force_relay:false});
   await page.getByTestId('nav-settings').click();await page.waitForTimeout(330);
-  await page.getByTestId('settings-user').last().click();
+  await page.getByTestId('settings-user').filter({hasText:'测试工作站'}).click();
   assert.equal(await page.locator('.modal h2').innerText(),'用户设置');
   assert.equal(await page.locator('.user-note-label input').inputValue(),'测试工作站');
   await page.getByRole('button',{name:'关闭对话框',exact:true}).click();

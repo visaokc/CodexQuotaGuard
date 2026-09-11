@@ -71,7 +71,8 @@ try{
     const state=await page.evaluate(()=>window.__CQG_TEST__.getState());
     assert.ok((await page.getByTestId('trend-chart').locator('h2').innerText()).startsWith(label));
     assert.equal(state.trend.points.length,count);assert.equal(state.trend.total,sharedFixture().view.analytics.windows[key].rows.reduce((sum,row)=>sum+row.tokens,0));
-    assert.equal(await page.getByRole('slider').count(),0,'new time windows do not pretend to have preloaded history');
+    assert.equal(await page.getByRole('slider').count(),1,'six and twelve hour windows provide the historical slider');
+    assert.equal(await page.getByRole('slider').getAttribute('step'),'300');
   }
   await page.getByRole('button',{name:'设备占比时间范围',exact:true}).click();await page.getByRole('option',{name:'每12小时',exact:true}).click();
   assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).pie.total,sharedFixture().view.analytics.windows.pie_twelve_hours.rows.reduce((sum,row)=>sum+row.tokens,0));

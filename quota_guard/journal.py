@@ -3,6 +3,7 @@ import hashlib
 import json
 import math
 import time
+from contextlib import nullcontext
 
 
 def canonical(value):
@@ -141,7 +142,9 @@ class Journal:
         changes = []
         for r in records:
             self._validate(account, r)
-        with self.db.connect() as db:
+        with self.ledger.lock, self.db.connect() as db:
+            if records:
+                db.execute('BEGIN IMMEDIATE')
             for r in records:
                 digest = hashlib.sha256(canonical(r).encode()).hexdigest()
                 old = db.execute('SELECT digest FROM facts WHERE account=? AND origin=? AND seq=?',
@@ -154,16 +157,17 @@ class Journal:
                            (account, r['origin'], r['seq'], r['ts'], r['kind'], canonical(r['payload']), digest))
                 changes.append(r)
                 quota_changed |= r['kind'] == 'quota'
-        if changes:
-            # Rebuild projections transactionally on every relevant change. Journals are the
-            # durable source of truth; events and devices are idempotent derived views.
-            self.project(account, quota_changed, changes)
+            if changes:
+                # Facts and every derived row become visible in the same commit.
+                self.project(account, quota_changed, changes, connection=db)
         return len(changes)
 
-    def project(self, account, quotas=True, changes=None):
+    def project(self, account, quotas=True, changes=None, connection=None):
         with self.ledger.lock:
             self.ledger.fairness_cache.pop(account, None)
-            with self.db.connect() as db:
+            with (nullcontext(connection) if connection is not None else self.db.connect()) as db:
+                if not db.in_transaction:
+                    db.execute('BEGIN IMMEDIATE')
                 if changes is None:
                     events = list(db.execute("SELECT * FROM facts WHERE account=? AND kind='events' ORDER BY ts,origin,seq", (account,)))
                 else:
@@ -206,18 +210,16 @@ class Journal:
                     db.execute('DELETE FROM segments WHERE epoch IN (SELECT id FROM epochs WHERE account=?)', (account,))
                     db.execute('DELETE FROM epochs WHERE account=?', (account,))
                     db.execute('DELETE FROM meta WHERE key IN (?,?)', ('reset_candidate:'+account, 'reset_credits:'+account))
-            if quotas:
-                with self.db.connect() as db:
                     snapshots = [json.loads(r[0]) for r in db.execute("SELECT payload FROM facts WHERE account=? AND kind='quota' ORDER BY ts,origin,seq", (account,))]
-                reduced = []
-                for snap in snapshots:
-                    key = (snap['used'], snap['reset_at'], snap.get('reset_credits'))
-                    if len(reduced) >= 2 and key == (reduced[-1]['used'], reduced[-1]['reset_at'], reduced[-1].get('reset_credits')) == (reduced[-2]['used'], reduced[-2]['reset_at'], reduced[-2].get('reset_credits')):
-                        reduced[-1] = snap
-                    else:
-                        reduced.append(snap)
-                for snap in reduced:
-                    self.ledger.observe(snap)
+                    reduced = []
+                    for snap in snapshots:
+                        key = (snap['used'], snap['reset_at'], snap.get('reset_credits'))
+                        if len(reduced) >= 2 and key == (reduced[-1]['used'], reduced[-1]['reset_at'], reduced[-1].get('reset_credits')) == (reduced[-2]['used'], reduced[-2]['reset_at'], reduced[-2].get('reset_credits')):
+                            reduced[-1] = snap
+                        else:
+                            reduced.append(snap)
+                    for snap in reduced:
+                        self.ledger.observe(snap, connection=db)
 
     def presence(self, account, peer, value, now=None):
         now = time.time() if now is None else now

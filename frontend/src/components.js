@@ -40,7 +40,7 @@ export const TrendChart={
     function leave(){lastPointer=null;hover.value=-1;}
     watch([()=>props.kind,()=>props.data.mode,()=>props.data.step],leave);
     watch(()=>[props.data.start,props.viewEnd,props.data.points.length],()=>{if(lastPointer)move(lastPointer);},{flush:'post'});
-    const sliderMax=computed(()=>Math.floor(props.latestEnd/props.sliderStep)*props.sliderStep),sliderMin=computed(()=>Math.min(sliderMax.value,props.earliestEnd??sliderMax.value));
+    const sliderMax=computed(()=>Math.floor((Number.isFinite(props.latestEnd)?props.latestEnd:props.data.start+props.data.step*Math.max(1,props.data.points.length))/props.sliderStep)*props.sliderStep),sliderMin=computed(()=>Math.min(sliderMax.value,props.earliestEnd??sliderMax.value));
     function seek(e){const end=Number(e.target.value);emit('pan',end>=sliderMax.value?props.latestEnd:end);}
     const bounds=ref({left:0,top:0,width:430,svgTop:0,svgHeight:140});
     let frame=0,lastTarget='',lastStart=null;
@@ -75,7 +75,7 @@ export const TrendChart={
     watch(()=>[props.kind,props.data.mode,props.pannable,props.liveRevision,series.value.map(item=>item.id).join('|')].join(':'),()=>resizeScale(requestedMaximum.value));
     onBeforeUnmount(()=>cancelAnimationFrame(scaleFrame));
     const span=computed(()=>props.data.step*Math.max(1,props.data.points.length));
-    const visibleStart=computed(()=>props.pannable?props.viewEnd-span.value:props.data.start);
+    const visibleStart=computed(()=>props.pannable&&Number.isFinite(props.viewEnd)?props.viewEnd-span.value:props.data.start);
     const panOffset=computed(()=>props.pannable?(props.data.start-visibleStart.value)/span.value*width:0);
     const curves=computed(()=>animated.value.map(item=>({...item,path:linePath(item.points,props.pannable?width-step.value:width,height,maximum.value),geometry:curveGeometry(item.points,props.pannable?width-step.value:width,height,maximum.value)})));
     function area(path){return `${path}L${shown.value.length>1?width:width/2},${height}L${shown.value.length>1?0:width/2},${height}Z`;}

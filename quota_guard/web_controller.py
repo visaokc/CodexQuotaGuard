@@ -44,7 +44,7 @@ def _summary(value):
     result['epoch'] = _pick(value.get('epoch'), ('id', 'account', 'started', 'ended', 'baseline', 'used',
         'reset_at', 'observed_at', 'reason', 'cycle')) or None
     result['devices'] = [_pick(d, ('id', 'name', 'cap', 'seen', 'scan_at', 'active', 'uncertain', 'logged_in',
-        'unbound_active', 'unbound_uncertain', 'estimated', 'settled', 'carry', 'fair_cap', 'fair_base_cap', 'tokens', 'weight', 'unknown_tokens', 'online', 'removed', 'quota_pending', 'avatar', 'device_ids', 'local', 'joined', 'available', 'debt', 'pending_debt', 'confirmed_debt', 'by_account', 'fair_usage'))
+        'unbound_active', 'unbound_uncertain', 'estimated', 'settled', 'carry', 'fair_cap', 'fair_base_cap', 'tokens', 'weight', 'unknown_tokens', 'online', 'removed', 'quota_pending', 'avatar', 'device_ids', 'local', 'joined', 'available', 'available_cap', 'debt', 'pending_debt', 'confirmed_debt', 'by_account', 'fair_usage', 'active_model'))
         for d in value.get('devices', [])]
     result['attribution_gaps'] = [_pick(d, ('start', 'end', 'delta', 'reason', 'devices', 'unknown_models'))
                                   for d in value.get('attribution_gaps', [])]
@@ -60,7 +60,7 @@ def _view(value):
     result['summary'] = _summary(value.get('summary'))
     shared = value.get('shared_group') or {}
     if shared:
-        result['shared_group'] = _pick(shared, ('enabled', 'id', 'stage', 'billing_start_note', 'state', 'reason', 'revision', 'admin', 'can_manage', 'pending_rule'))
+        result['shared_group'] = _pick(shared, ('enabled', 'id', 'stage', 'billing_start_note', 'state', 'reason', 'revision', 'admin', 'can_manage', 'pending_rule', 'rules_locked'))
         result['shared_group']['bindings'] = [_pick(row, ('device','person','since')) for row in shared.get('bindings', [])]
         result['shared_group']['devices'] = [_pick(row, ('id','name','version')) for row in shared.get('devices', [])]
         result['shared_group']['available_accounts'] = [_pick(row, ('account','label')) for row in shared.get('available_accounts', [])]
@@ -102,8 +102,10 @@ def _view(value):
         safe['models'] = [_pick(m, ('model', 'tokens')) for m in row.get('models', [])]
         result['analytics']['cycles'].append(safe)
     result['analytics']['windows'] = {}
+    if value.get('daily_usage'):
+        result['daily_usage'] = _pick(value['daily_usage'], ('total','people','unassigned','basis'))
     if value.get('billing'):
-        result['billing'] = _pick(value['billing'], ('status','reason','people','anchors','active_since','compensation_enabled','entries'))
+        result['billing'] = _pick(value['billing'], ('status','reason','people','anchors','active_since','compensation_enabled','entries','clean_start'))
     for key in ('cycle', 'total', 'today', 'pie_hour', 'pie_six_hours', 'pie_twelve_hours', 'hour', 'hour_curve', 'six_hours', 'twelve_hours', 'day', 'week', 'month'):
         source = analytics.get('windows', {}).get(key)
         if source:
@@ -312,28 +314,6 @@ class WebController:
         account = self._read_account(payload)
         if not self._engine:
             raise ValueError('账本尚未就绪')
-        return dict(summary=_summary(self._engine.ledger.summary(account)),
-                    history=self._engine.ledger.history(account, self._config['device_id']))
-
-    def _cap_save(self, payload):
-        if self._config.get('shared_group_enabled'):
-            raise ValueError('共享组固定三人均分，两账号共200点，每人基础份额66.67点')
-        account = self._tracked(payload)
-        if not self._engine:
-            raise ValueError('监测尚未就绪')
-        self._engine.set_cap(payload['cap'], expected_account=account)
-
-    def _chart_history(self, payload):
-        from .analytics import usage
-        account = self._display_scope(payload)
-        end = payload.get('end')
-        period = payload.get('period', 'hour')
-        if period not in ('hour', 'day'):
-            raise ValueError('图表时间范围无效')
-        if type(end) not in (int,float) or not math.isfinite(end) or end < 0 or end > time.time()+60:
-            raise ValueError('图表时间无效')
-        if not self._engine:
-            raise ValueError('账本尚未就绪')
         if self._config.get('shared_billing_v1'):
             view = self._engine.snapshot()
             card = next((row for row in view.get('account_summaries', []) if row['account'] == account), {})
@@ -352,7 +332,31 @@ class WebController:
                     for date, tokens in saved[unit].items():
                         history[unit][date] = history[unit].get(date, 0)+tokens
             return dict(summary=dict(epoch=card.get('epoch'), devices=devices), history=history, shared=True)
+        return dict(summary=_summary(self._engine.ledger.summary(account)),
+                    history=self._engine.ledger.history(account, self._config['device_id']))
+
+    def _cap_save(self, payload):
+        if self._config.get('shared_group_enabled'):
+            raise ValueError('共享组固定三人均分，两账号共200点，每人基础份额66.67点')
+        account = self._tracked(payload)
+        if not self._engine:
+            raise ValueError('监测尚未就绪')
+        self._engine.set_cap(payload['cap'], expected_account=account)
+
+    def _chart_history(self, payload):
+        from .analytics import usage
+        account = self._display_scope(payload)
+        end = payload.get('end')
+        period = payload.get('period', 'hour')
+        if period not in ('hour', 'six_hours', 'twelve_hours', 'day'):
+            raise ValueError('图表时间范围无效')
+        if type(end) not in (int,float) or not math.isfinite(end) or end < 0 or end > time.time()+60:
+            raise ValueError('图表时间无效')
+        if not self._engine:
+            raise ValueError('账本尚未就绪')
         options = dict(day_end=end,day_buffer=True) if period == 'day' else dict(hour_end=end,hour_buffer=True)
+        if period in ('six_hours', 'twelve_hours'):
+            options = dict(rolling_period=period, rolling_end=end, rolling_buffer=True)
         if account.startswith('group:'):
             from .shared_view import shared_usage
             from .shared_policy import load_rules
@@ -361,7 +365,7 @@ class WebController:
             analytics = shared_usage(self._engine.group_db, account, labels, rules=rules, **options)
         else:
             analytics = usage(self._engine.group_db,account,**options)
-        windows = ('day',) if period == 'day' else ('hour','hour_curve')
+        windows = ('hour','hour_curve') if period == 'hour' else (period,)
         analytics['windows'] = {k:v for k,v in analytics['windows'].items() if k in windows}
         return _view({'analytics':analytics})['analytics']
 
@@ -389,8 +393,8 @@ class WebController:
         kind = payload.get('kind')
         if kind not in ('compensation','bind','accounts','reset'):
             raise ValueError('未知共享规则操作')
-        if kind == 'compensation' and type(payload.get('enabled')) is not bool:
-            raise ValueError('补偿开关无效')
+        if kind == 'compensation':
+            raise ValueError('跨周期补偿已固定开启，不能关闭')
         if kind == 'bind' and (payload.get('person') not in ('person1','person2','person3') or not any(d['id'] == payload.get('device') for d in group.get('devices', []))):
             raise ValueError('请选择已入组设备和成员')
         if kind == 'accounts' and (not isinstance(payload.get('accounts'), list) or len(payload['accounts']) != 2 or len(set(payload['accounts'])) != 2):
@@ -490,6 +494,10 @@ class WebController:
         if not isinstance(changes, dict) or set(changes)-_EDITABLE:
             raise ValueError('包含不支持的设置')
         candidate = dict(self._config, **changes)
+        if self._config.get('shared_billing_v1'):
+            if 'quota_display' in changes and changes['quota_display'] != 'fair':
+                raise ValueError('共享计费固定使用补偿模式')
+            candidate['quota_display'] = 'fair'
         if self._config.get('shared_group_enabled') and candidate.get('auto_block'):
             raise ValueError('共享组模式不能分别限制同一进程内的两个账号，自动限制未启用')
         cap, multiplier, interval = float(candidate['quota']), float(candidate['multiplier']), int(candidate['interval'])

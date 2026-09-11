@@ -60,7 +60,8 @@ def add_quota(grouped, key, quota, cached):
     grouped[key] = (old+quota, None if cached is None or old_cached is None else old_cached+cached)
 
 
-def usage(database, account, now=None, hour_end=None, hour_buffer=False, day_end=None, day_buffer=False):
+def usage(database, account, now=None, hour_end=None, hour_buffer=False, day_end=None, day_buffer=False,
+          rolling_period=None, rolling_end=None, rolling_buffer=False):
     now = time.time() if now is None else now
     result = {'account': account, 'at': now, 'windows': {}, 'models': []}
     models = set()
@@ -78,9 +79,14 @@ def usage(database, account, now=None, hour_end=None, hour_buffer=False, day_end
             if day_buffer and name == 'day':
                 duration *= 32
                 count *= 32
+            if rolling_buffer and name == rolling_period and name in ('six_hours', 'twelve_hours'):
+                duration += 86400
+                count += 288
             until = min(now,hour_end) if hour_end is not None and name in ('hour','hour_curve') else now
             if day_end is not None and name == 'day':
                 until = min(now,day_end)
+            if rolling_end is not None and name == rolling_period and name in ('six_hours', 'twelve_hours'):
+                until = min(now,rolling_end)
             if name == 'cycle':
                 # Match the ledger's cycle boundary, including accepted clock-skew events.
                 rows = db.execute('''SELECT device, model, 0 AS bucket, SUM(tokens) AS tokens,
@@ -130,6 +136,8 @@ def usage(database, account, now=None, hour_end=None, hour_buffer=False, day_end
             until = min(now,hour_end) if hour_end is not None and name in ('hour','hour_curve') else now
             if day_end is not None and name == 'day':
                 until = min(now,day_end)
+            if rolling_end is not None and name == rolling_period and name in ('six_hours', 'twelve_hours'):
+                until = min(now,rolling_end)
             start, step = max(baseline, window['start']), window['step']
             grouped = {}
             for row in allocated:
@@ -154,7 +162,8 @@ def usage(database, account, now=None, hour_end=None, hour_buffer=False, day_end
             window['quota_pending_rows'] = [dict(device=d, model=m, bucket=b) for d, m, b in sorted(waiting_keys)]
             window['quota_rows'] = [dict(device=d, model=m, bucket=b, quota=q, cache_quota=c) for (d, m, b), (q,c) in grouped.items()]
             window['quota_ready'] = observed and not pending and not any(end > start and begin < until for begin, end in gaps)
-            if (hour_buffer and name in ('hour','hour_curve')) or (day_buffer and name == 'day'):
+            if ((hour_buffer and name in ('hour','hour_curve')) or (day_buffer and name == 'day')
+                    or (rolling_buffer and name == rolling_period and name in ('six_hours', 'twelve_hours'))):
                 window['quota_available'] = observed and not pending
                 window['quota_gaps'] = [dict(start=begin,end=end) for begin,end in gaps if end > start and begin < until]
     result['models'] = sorted(models)

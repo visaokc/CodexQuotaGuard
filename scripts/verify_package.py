@@ -14,7 +14,7 @@ client = CArchiveReader(str(root/'dist'/__version__/'Codex配额管家.exe'))
 entry = marshal.loads(client.extract('main'))
 assert entry == compile((root/'main.py').read_bytes(), entry.co_filename, 'exec')
 pyz = client.open_embedded_archive('PYZ.pyz')
-assert all('quota_guard.'+name in pyz.toc for name in ('analytics', 'web_host', 'web_controller', 'app_icon', 'shared_sync', 'shared_view', 'cycle_pair', 'shared_policy', 'shared_quota', 'pool_accounting'))
+assert all('quota_guard.'+name in pyz.toc for name in ('analytics', 'web_host', 'web_controller', 'app_icon', 'shared_sync', 'shared_view', 'cycle_pair', 'shared_policy', 'shared_quota', 'pool_accounting', 'clean_start'))
 assert client.extract('assets\\app.ico') == (root/'assets'/'app.ico').read_bytes()
 for path in (root/'quota_guard').glob('*.py'):
     module = 'quota_guard' if path.stem == '__init__' else 'quota_guard.'+path.stem

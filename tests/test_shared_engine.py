@@ -131,7 +131,8 @@ def test_full_billing_auto_enrolls_third_identity_and_replicates_account_order(t
         assert view['shared_group']['stage']=='billing'
         assert [d['avatar'] for d in view['summary']['devices']]==['person1.jpg','person2.jpg','person3.jpg']
         assert view['summary']['devices'][index]['local']
-        assert not view['summary']['compensation_enabled']
+        assert view['summary']['compensation_enabled']
+        assert view['shared_group']['rules_locked']
     books = [view['billing'] for view in views]
     assert all(book['status']=='active' for book in books)
     assert books[0]['people']==books[1]['people']==books[2]['people']

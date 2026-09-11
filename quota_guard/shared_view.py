@@ -41,7 +41,13 @@ def shared_usage(database, scope, accounts, now=None, rules=None, **options):
     sources = [(account, usage(database, account, now, **options)) for account in sorted(accounts)]
     if not sources:
         sources = [('', usage(database, '', now, **options))]
-    pair = choose_cycles(database, accounts, now)
+    attributed = None
+    if rules and rules.get('policy'):
+        from .shared_quota import attribution, accounting
+        attributed = attribution(database, rules, now)
+    clean = (attributed or {}).get('clean_start', {})
+    not_before = {clean['account']: clean['at']} if clean.get('state') == 'active' else None
+    pair = choose_cycles(database, accounts, now, not_before=not_before)
     for cycle in pair['cycles']:
         cycle.update(label=accounts[cycle['account']], usage_until=cycle['matched_until'])
     starts = [cycle['started'] for cycle in pair['cycles']]
@@ -92,24 +98,25 @@ def shared_usage(database, scope, accounts, now=None, rules=None, **options):
                                              account=account, account_label=accounts[account]))
         result['cycles'].sort(key=lambda row: (row['started'], row['account']), reverse=True)
     if rules and rules.get('policy'):
-        from .shared_quota import attribution, accounting
         from .shared_policy import person_for
-        attributed = attribution(database, rules, now)
         for cycle in result['cycles']:
             cause = attributed['overrides'].get((cycle['account'], cycle['started']))
             if cause:
                 cycle['reset_type'] = {'natural':'自然重置','card':'重置卡','official':'官方临时重置'}.get(cause, cause)
         result['quota_unavailable'] = ''
         result['billing'] = accounting(rules, attributed, now)
+        result['official_events'] = attributed['events']
         for name, window in result['windows'].items():
             window['rows'] = [mapped for row in window['rows'] for mapped in person_rows(database, row, rules, now)]
             quotas = {}
             for event in attributed['events']:
                 if name == 'cycle':
                     selected = next((c for c in pair['cycles'] if c['account'] == event['account']), None)
-                    include = selected and selected['started'] < event['ts'] <= selected['matched_until']
+                    include = selected and (selected['started'] <= event['ts'] if event.get('baseline') else selected['started'] < event['ts']) and event['ts'] <= selected['matched_until']
                 else:
                     end = min(now, options.get('hour_end', now)) if name in ('hour','hour_curve') else min(now, options.get('day_end', now)) if name == 'day' else now
+                    if name == options.get('rolling_period') and name in ('six_hours', 'twelve_hours'):
+                        end = min(now, options.get('rolling_end', now))
                     include = window['start'] <= event['ts'] < end
                 if not include:
                     continue
@@ -117,9 +124,11 @@ def shared_usage(database, scope, accounts, now=None, rules=None, **options):
                 key = event['account'], event['device'], event['model'], bucket
                 row = quotas.setdefault(key, dict(account=key[0], device=key[1], model=key[2], bucket=bucket, quota=0., cache_quota=0.))
                 row['quota'] += event['quota']
-                row['cache_quota'] += event['cache_quota']
+                row['cache_quota'] = (row['cache_quota']+event['cache_quota']
+                                      if row['cache_quota'] is not None and event['cache_quota'] is not None else None)
             window['quota_rows'] = list(quotas.values())
-            last = {a: max((s['end'] for s in attributed['streams'] if s['account'] == a and s['ready']), default=0) for a in rules['accounts']}
+            last = {a: max([s['end'] for s in attributed['streams'] if s['account'] == a and s['ready']]
+                          + [e['ts'] for e in attributed['events'] if e['account'] == a and e.get('baseline')], default=0) for a in rules['accounts']}
             for row in window['rows']:
                 pending = row.get('last_at', 0) > last.get(row['account'], 0) or any(
                     gap['account'] == row['account'] and gap['end'] >= row.get('first_at', now)
@@ -186,12 +195,14 @@ def shared_overview(database, scope, accounts, members, local, now, analytics, r
             debt, available = value.get('debt'), value.get('available')
             pending = any(row['device'] == person for row in analytics['windows']['cycle']['quota_pending_rows'])
             name = next((people[d]['name'] for d in attached if people[d].get('name')), '待加入成员' if index == 2 else '成员'+str(index+1))
+            active_model = latest_active_model(database, people, device_rows, now)
             people_rows.append(dict(id=person, name=name, avatar=person+'.jpg', device_ids=attached,
+                active_model=active_model,
                 local=local in attached, online=bool(live), joined=bool(attached), cap=200/3, fair_base_cap=200/3,
                 fair_cap=200/3, estimated=quota, settled=quota, quota_pending=pending,
-                carry=200/3-available+debt-quota if debt is not None and available is not None else 0,
-                fair_usage=200/3-available+debt if debt is not None and available is not None else None,
-                tokens=totals.get(person, 0), available=available, debt=debt, pending_debt=value.get('pending'),
+                carry=value['fair_usage']-quota if value.get('fair_usage') is not None else 0,
+                fair_usage=value.get('fair_usage'),
+                tokens=totals.get(person, 0), available=available, available_cap=value.get('available_cap'), debt=debt, pending_debt=value.get('pending'),
                 confirmed_debt=value.get('confirmed'), by_account=value.get('by_account', {}), removed=False,
                 active=sum(d.get('active', 0) for d in device_rows), uncertain=sum(d.get('uncertain', 0) for d in device_rows),
                 unbound_active=sum(d.get('unbound_active', 0) for d in device_rows), unbound_uncertain=sum(d.get('unbound_uncertain', 0) for d in device_rows),
@@ -200,5 +211,52 @@ def shared_overview(database, scope, accounts, members, local, now, analytics, r
                        allocation='shared_official_v1', billing_status=billing['status'], billing_reason=billing['reason'])
         summary['token_budget']['sampled_tokens'] = sum(row['tokens'] for row in people_rows)
         summary['token_budget']['source'] = '两账号完整配对周期 · Token 实记'
-        return dict(summary=summary, account_summaries=cards, members=people_rows, billing=billing)
+        return dict(summary=summary, account_summaries=cards, members=people_rows, billing=billing,
+                    daily_usage=daily_usage(database, cards, people_rows, analytics, now))
     return dict(summary=summary, account_summaries=cards, members=list(people.values()))
+
+
+def latest_active_model(database, people, devices, now):
+    latest = None
+    with database.connect() as db:
+        for device in devices:
+            if not device['online'] or not (device.get('active', 0) or device.get('unbound_active', 0)):
+                continue
+            account = people[device['id']].get('current_account')
+            row = db.execute('''SELECT ts,id,model FROM events WHERE account=? AND device=? AND tokens>0
+                AND ts>=? AND ts<=? ORDER BY ts DESC,id DESC LIMIT 1''', (account,device['id'],now-180,now)).fetchone()
+            if row and (latest is None or (row['ts'],row['id']) > (latest['ts'],latest['id'])):
+                latest = row
+    return latest['model'] if latest else None
+
+
+def daily_usage(database, cards, people, analytics, now):
+    """Percent of the combined 200-point pool, per elapsed official week day."""
+    totals = {person['id']: 0. for person in people}
+    total, unassigned = 0., 0.
+    for card in cards:
+        cycle = card.get('epoch')
+        if not cycle:
+            continue
+        clean = analytics.get('billing', {}).get('clean_start', {})
+        if (clean.get('state') == 'active' and clean['account'] == card['account']
+                and abs(cycle['reset_at']-clean['reset_at']) <= 120):
+            continue
+        # Weekly windows are offset. Never divide both accounts by one clock.
+        cause = next((row['reset_type'] for row in analytics.get('cycles', [])
+                      if row['account'] == card['account'] and row['started'] == cycle['started']), cycle['reason'])
+        beginning = cycle['reset_at']-7*86400 if cause == '自然重置' else cycle['started']
+        days = max(1/86400, (min(now, cycle['ended'] or now)-beginning)/86400)
+        official = cycle['used']/days/2
+        allocated = 0.
+        for row in analytics.get('official_events', []):
+            if row['account'] == card['account'] and cycle['started'] <= row['ts'] <= now:
+                rate = row['quota']/days/2
+                if row['device'] in totals:
+                    totals[row['device']] += rate
+                    allocated += rate
+        total += official
+        unassigned += max(0., official-allocated)
+    return dict(total=total, unassigned=0. if unassigned < 1e-9 else unassigned,
+                people=[dict(id=p, quota=value) for p,value in totals.items()],
+                basis='以两账号合计为100%；新账各账号官方已用分别除以本周期已过去天数，再合计。已豁免的旧周期不纳入均值；自然周按官方刷新时间倒推7天，其他周期从首次记录计时。成员只计已确认归属，差额列为未分配。')

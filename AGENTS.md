@@ -1,3 +1,7 @@
+# Current maintenance instruction (2026-09-12)
+
+The user has enabled the Settings maintenance switch. Unless the user explicitly requests another manual allocation, do not run `scripts/share_release_costs.py` or add a closed release-sharing interval. Keep the owner-controlled switch unchanged; its authenticated intervals already allocate maintenance usage. This supersedes the manual pre-upload sharing instructions below.
+
 # Release workflow
 
 Before each GitHub upload after fixing this application, including pushing commits or uploading release assets, share the local maintainer's consumption for this repair among all three members equally. This is an explicit user instruction.

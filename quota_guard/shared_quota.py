@@ -115,6 +115,31 @@ def attribution(database, rules, now):
     return result
 
 
+def _pending_expired(stream, rules, attributed):
+    """Old attribution cannot affect stock after an idle pair of official resets.
+
+    Be conservative about cross-account exchanges: both accounts must reset,
+    with no official consumption between those resets and no saved inventory.
+    This only releases the current balance; historical streams stay pending.
+    """
+    expiry = (rules.get('policy') or {}).get('unused_expiry_from')
+    if expiry is None or expiry > stream['start']:
+        return False
+    resets = []
+    for account in rules['accounts']:
+        cycle = next((c for c in attributed['epochs'][account]
+                      if c['started'] > stream['end']), None)
+        if not cycle:
+            return False
+        cause = attributed['overrides'].get((account, cycle['started']), cycle['reason'])
+        if cause not in ('official', '官方临时重置'):
+            return False
+        resets.append(cycle['started'])
+    first, last = min(resets), max(resets)
+    return not any(s['units'] and s['end'] > first and s['start'] < last
+                   for s in attributed['streams'])
+
+
 def accounting(rules, attributed, now):
     policy = rules.get('policy') or {}
     clean = attributed.get('clean_start') or {}
@@ -158,7 +183,7 @@ def accounting(rules, attributed, now):
         rows = [row for row in stream['events'] if row['ts'] > anchor['at']]
         if stream['start'] < anchor['at'] and len(rows) != len(stream['events']):
             issues.append('迁移边界的官方增量待核对')
-        if not stream['ready']:
+        if not stream['ready'] and not _pending_expired(stream, rules, attributed):
             issues.append(stream['reason'])
         for row in rows:
             at_boundary = any(cycle['ended'] == row['ts'] and cycle['started'] == stream['cycle_start'] for cycle in attributed['epochs'][stream['account']])

@@ -1,3 +1,13 @@
+## 0.6.7 — 2026-09-12
+
+- Reproduced on a read-only live database copy: both official cycles reset, but a pending old account2 segment forced the personal display back to pre-reset balances.
+- User-confirmed account1 reset cause appended as one profile fact after backup; all 16,574 existing facts preserved. Account2 already identified an official reset.
+- Current balance unblocks only after both official resets, no intervening official consumption, and expired unused inventory. Historical pending attribution remains unchanged.
+- Full backend suite: 550 passed (292.11 s). Final focused reset suite: 7 passed, including late attribution convergence, new consumption, override, one-account/natural/unknown/rollover and intervening-spend guards.
+- Live-copy replay yields 66.6666667 quota points per person after the resets (200% at the fixed personal basis), before new consumption.
+- Frozen code/frontend/native/updater/license matching and isolated frozen GUI startup/clean exit passed. Unchanged native helper reused; no Go runtime was available in this shell.
+- Maintenance switch remained enabled. No manual repair cost interval was added.
+
 ## 0.6.6 验证记录（2026-09-12）
 
 - 最终滑块优化：新增50项定向验证通过；四档真实账本历史窗口逐字段与原实现相等。历史首次加载每小时2.589→1.713秒、6小时1.877→1.003秒、12小时1.924→1.086秒、每天1.975→0.921秒。缓存命中不等后台刷新；切换内容保留位置，回实时端点无需等待历史请求。

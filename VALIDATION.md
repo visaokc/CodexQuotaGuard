@@ -1,3 +1,12 @@
+## 0.6.8 — 2026-09-12
+
+- Offline checkpoint regression reproduced: first official sample existed but absent peer checkpoints disabled all estimates. Complete current-cycle samples remain preferred; otherwise received same-cycle usage provisionally calibrates the display. Late peer facts refit without adding duplicate confirmed charges.
+- New-cycle fallback uses only the immediately preceding same-account cycle with complete samples. Current-cycle data takes precedence; an unconfirmed reset still blocks projections across its boundary.
+- Billing, maintenance, estimates, reset and shared-reporting regressions: 131 passed (67.69 s). Final estimation-specific suite: 11 passed, including maintenance splitting without fact mutation.
+- Account switching, restart, runtime provenance, shared sync and scanner regressions: 65 passed (32.82 s). Read-only replicated evidence: A switched to account2, and three new Token events totaling 99,802 appeared in both hour and hour_curve views; source publication delay was 0.20–1.51 seconds. No remote log access or remote visual verification is claimed.
+- Live-copy estimates became available for all three members without the offline peer; raw records and confirmed borrowing were preserved.
+- No manual maintenance allocation; the owner-controlled maintenance switch remains enabled.
+
 ## 0.6.7 — 2026-09-12
 
 - Reproduced on a read-only live database copy: both official cycles reset, but a pending old account2 segment forced the personal display back to pre-reset balances.

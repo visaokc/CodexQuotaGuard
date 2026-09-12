@@ -30,6 +30,7 @@ def reports(database, rules, attributed, billing, now):
         return (clean.get('state') == 'active' and row['account'] == clean['account']
                 and row['ts'] <= next((e['started'] for e in attributed['epochs'][row['account']]
                     if e['started'] > clean['started'] and abs(e['reset_at']-clean['reset_at']) > 120), now))
+    calibration_rows = raw
     raw = [row for row in raw if not excluded(row)]
     for account in rules['accounts']:
         epochs = attributed['epochs'].get(account, [])
@@ -39,15 +40,33 @@ def reports(database, rules, attributed, billing, now):
         current = [r for r in raw if r['account'] == account and r['ts'] > epoch['started']]
         streams = [s for s in attributed['streams'] if s['account'] == account
                    and s['cycle_start'] == epoch['started']]
-        samples = []
+        samples, provisional_samples = [], []
         for stream in streams:
-            if not stream['ready']:
+            if not stream['ready'] and stream['reason'] != '等待成员采集确认':
                 continue
             sample_rows = [r for r in current if stream['start'] < r['ts'] <= stream['end']]
             sample_weights = segment_weights(sample_rows, policy)
             if sample_weights and all(v is not None for v in sample_weights.values()):
-                samples.append((points(stream['units']), sum(sum(v) for v in sample_weights.values())))
-        calibration = fit_rate(samples) if account not in reset_pending else None
+                target = samples if stream['ready'] else provisional_samples
+                target.append((points(stream['units']), sum(sum(v) for v in sample_weights.values())))
+        # Missing peer checkpoints must not freeze the live display. Until a
+        # complete sample arrives, fit the official increment against received
+        # usage only. Late facts refit this display-only estimate automatically;
+        # confirmed attribution, borrowing and raw events remain unchanged.
+        calibration = fit_rate(samples or provisional_samples) if account not in reset_pending else None
+        if calibration is None and account not in reset_pending and len(epochs) > 1:
+            # A reset starts new inventory, not an uncalibrated meter. Use only
+            # the immediately preceding cycle's complete samples as a warm start;
+            # any usable current-cycle sample takes precedence on the next read.
+            prior = []
+            for stream in attributed['streams']:
+                if stream['account'] != account or stream['cycle_start'] != epochs[-2]['started'] or not stream['ready']:
+                    continue
+                rows = [r for r in calibration_rows if r['account'] == account and stream['start'] < r['ts'] <= stream['end']]
+                weighted = segment_weights(rows, policy)
+                if weighted and all(v is not None for v in weighted.values()):
+                    prior.append((points(stream['units']), sum(sum(v) for v in weighted.values())))
+            calibration = fit_rate(prior)
 
         cutoff = max([s['end'] for s in streams if s['ready'] and s['end'] <= base_at]
             + [e['ts'] for e in attributed['events']

@@ -1,9 +1,9 @@
-"""Shared display-only quota estimation and current-cycle calibration."""
+"""Shared display-only quota estimation and quota/weight calibration."""
 import math
 
 
 def fit_rate(samples):
-    """Fit one cumulative quota/weight rate from confirmed current-cycle samples."""
+    """Fit one cumulative quota/weight rate from the supplied sample set."""
     valid = [(float(quota), float(weight)) for quota, weight in samples
              if quota is not None and weight is not None
              and math.isfinite(float(quota)) and math.isfinite(float(weight))

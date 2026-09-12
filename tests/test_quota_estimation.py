@@ -14,6 +14,45 @@ def calibrated_group(tmp_path):
     return db, journals
 
 
+def test_first_sample_estimates_without_all_member_checkpoints(tmp_path):
+    db, journals, _ = setup_group(tmp_path)
+    add_event(journals, account=B, at=150)
+    journals['one'].append(B, 'quota', dict(account=B, used=3, reset_at=850, at=210), 210)
+    add_event(journals, account=B, at=450)
+    before = view(db)
+    assert before['billing']['status'] == 'syncing'
+    assert before['account_estimates'][B]['remaining_estimate'] == pytest.approx(94)
+    assert before['live_reporting']['balances']['person1']['available_estimate'] == pytest.approx(200/3-6)
+    assert before['live_reporting']['balances']['person1']['balance_estimated']
+    # A previously offline member supplies usage from the sampled interval.
+    # Refit the estimate instead of appending another charge or requiring
+    # simultaneous online presence. Checkpoints are replicated facts.
+    add_event(journals, account=B, device='two', at=160)
+    close_samples(journals, at=650)
+    after = view(db, 650)
+    assert after['billing']['status'] == 'active'
+    assert after['account_estimates'][B]['remaining_estimate'] == pytest.approx(95.5)
+    balances = after['live_reporting']['balances']
+    assert balances['person1']['available_estimate'] == pytest.approx(200/3-3)
+    assert balances['person2']['available_estimate'] == pytest.approx(200/3-1.5)
+    assert len(after['live_reporting']['events']) == 1
+
+
+def test_offline_sample_maintenance_is_shared_once_without_confirming_debt(tmp_path):
+    db, journals, _ = setup_group(tmp_path)
+    toggle(db, journals, 'one', True, 120)
+    add_event(journals, account=B, at=150)
+    journals['one'].append(B, 'quota', dict(account=B, used=3, reset_at=850, at=210), 210)
+    add_event(journals, account=B, at=450)
+    with db.connect() as con:
+        facts = [tuple(row) for row in con.execute('SELECT * FROM facts ORDER BY account,origin,seq')]
+    result = view(db)
+    assert result['billing']['status'] == 'syncing'
+    assert [p['estimate_pending'] for p in result['live_reporting']['balances'].values()] == pytest.approx([2, 2, 2])
+    with db.connect() as con:
+        assert facts == [tuple(row) for row in con.execute('SELECT * FROM facts ORDER BY account,origin,seq')]
+
+
 def test_official_and_personal_use_identical_cache_weight_calibration(tmp_path):
     db, journals = calibrated_group(tmp_path)
     before = copy.deepcopy(view(db)['billing'])
@@ -85,14 +124,17 @@ def test_estimated_maintenance_and_official_total_conserve_quota(tmp_path):
     assert sum(parts) == pytest.approx(result['account_estimates'][B]['estimate_pending'])
 
 
-def test_confirmed_new_cycle_does_not_learn_old_cycle_rate(tmp_path):
+def test_new_cycle_warm_starts_then_replaces_previous_cycle_calibration(tmp_path):
     db, journals = calibrated_group(tmp_path)
     journals['one'].append(B, 'quota', dict(account=B, used=0, reset_at=1700, at=900), 900)
     add_event(journals, account=B, at=920)
     result = view(db, 950)
-    assert result['account_estimates'][B]['estimate_samples'] == 0
-    assert result['account_estimates'][B]['remaining_estimate'] is None
-    assert result['live_reporting']['balances']['person1']['available_estimate'] is None
+    assert result['account_estimates'][B]['estimate_samples'] == 1
+    assert result['account_estimates'][B]['remaining_estimate'] == pytest.approx(97)
+    journals['one'].append(B, 'quota', dict(account=B, used=2, reset_at=1700, at=960), 960)
+    add_event(journals, account=B, at=970)
+    current = view(db, 1000)
+    assert current['account_estimates'][B]['remaining_estimate'] == pytest.approx(96)
 
 
 def test_later_confirmed_stream_is_not_duplicated_in_charts_when_earlier_gap_waits(tmp_path):

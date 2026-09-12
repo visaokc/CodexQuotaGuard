@@ -41,3 +41,5 @@ For pairing, `pair_generate` starts the embedded Tailscale node if needed. On pe
 Window actions: `minimize,close,quit,drag,resize,maximize,shown,browse_program,export_diagnostics`. Close hides to tray. Host confirms restoring active protection before quit, then calls `_close()`, which stops the Engine and restores its paused processes. Update installation invokes host `quit` only after the verified existing updater launches successfully. Automatic updates follow the saved user preference and retry deferred installation every 30 seconds while limit protection is active.
 
 Theme is system (default), light or dark. Saving theme is display-only and never restarts the Engine.
+
+- `maintenance_toggle`: `{enabled: bool}`; available to any bound member in shared billing, targets only the caller. Queue preserves command timestamp and writes an authenticated profile fact. The Settings switch reflects `shared_group.maintenance_enabled`.

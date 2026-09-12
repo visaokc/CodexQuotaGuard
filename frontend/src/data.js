@@ -99,7 +99,7 @@ export function aggregate(snapshot, window, model='', device='', accountFilter='
   for(const row of (quotaUnavailable?[]:source.quota_rows||[])) {
     const item=byDevice.get(row.device);
     if(!item||(accountFilter&&row.account!==accountFilter)||(model&&row.model!==model)||!Number.isInteger(row.bucket)||row.bucket<0||row.bucket>=points.length)continue;
-    const d=active.find(d=>d.id===row.device),cap=snapshot.view?.shared_group?.stage==='billing'?(d.available_cap??d.fair_base_cap??d.cap):(d.fair_base_cap??d.cap);
+    const d=active.find(d=>d.id===row.device),cap=snapshot.view?.shared_group?.stage==='billing'?100/3:(d.fair_base_cap??d.cap);
     const personal=['personal','fair'].includes(snapshot.settings?.quota_display||'personal');
     const multiplier=personal&&cap>0?100/cap:(snapshot.view?.shared_group?.stage==='billing'?.5:1);
     const value=Number(row.quota)*multiplier;
@@ -172,6 +172,10 @@ export function chartQuotaPercent(value,ready,pending=false,estimated=false,digi
   return (value||0).toFixed(digits)+'%';
 }
 export function trendForMode(data,mode){
+  if(mode==='maintenance'){
+    const item={id:'maintenance',label:'软件维护',color:'#9299a6',points:data.points,cachePoints:data.points.map((_,i)=>data.series.some(s=>s.cachePoints[i]===null)?null:data.series.reduce((n,s)=>n+(s.cachePoints[i]||0),0)),quotaPoints:data.quotaPoints,cacheQuotaPoints:data.cacheQuotaPoints,quotaPendingPoints:data.quotaPendingPoints,quotaEstimatedPoints:data.quotaEstimatedPoints,cacheMissingPoints:data.cacheMissingPoints};
+    return {...data,mode,series:[item],totals:{maintenance:data.total},quotaTotals:{maintenance:Object.values(data.quotaTotals).reduce((n,v)=>n+v,0)},quotaStates:{maintenance:Object.values(data.quotaStates).includes('pending')?'pending':'confirmed'}};
+  }
   if(mode!=='cache')return {...data,mode};
   const series=data.series.map(item=>({...item,points:item.cachePoints.slice(),quotaPoints:item.cacheQuotaPoints}));
   const points=data.points.map((_,i)=>series.some(item=>item.points[i]===null)?null:series.reduce((sum,item)=>sum+item.points[i],0));

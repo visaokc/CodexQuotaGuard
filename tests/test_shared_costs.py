@@ -133,7 +133,10 @@ def test_member_tokens_and_all_donut_ranges_share_without_changing_curves_or_eve
     rules = load_rules(db, [A,B], 400)
     after = shared_usage(db, 'group:test', {A:'a', B:'b'}, 400, rules=rules)
     for name in ('hour', 'hour_curve', 'six_hours', 'twelve_hours', 'day', 'week', 'month'):
-        assert after['windows'][name]['rows'] == before['windows'][name]['rows']
+        for person in ('person1','person2','person3'):
+            for field in ('tokens','cache_tokens','input_tokens','output_tokens'):
+                assert sum(r[field] or 0 for r in after['windows'][name]['rows'] if r['device']==person) == sum(r[field] or 0 for r in before['windows'][name]['rows'] if r['device']==person)
+        assert sum(r['tokens'] for r in after['windows'][name]['rows'] if r.get('maintenance')) == 2200
     def totals(rows):
         return [sum(r['tokens'] for r in rows if r['device']==p) for p in ('person1','person2','person3')]
     assert totals(after['windows']['cycle']['rows']) == [2934,1834,732]

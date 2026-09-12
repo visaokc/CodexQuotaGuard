@@ -95,7 +95,7 @@ def main():
             report['confirmed_shared_quota'] = sum(row['quota'] for row in attributed['events']
                 if row.get('shared_cost') and row['account'] == account
                 and any(cost['since'] < row['ts'] <= cost['through'] for cost in additions))
-            report['available_percent'] = {key: round(value['available']/value['available_cap']*100, 3)
+            report['available_percent'] = {key: round(value['available']*3, 3)
                 if value['available'] is not None and value['available_cap'] else None
                 for key, value in projected['people'].items()}
             if args.apply:

@@ -8,7 +8,9 @@ def person_rows(database, row, rules, now, share_tokens=False):
     from .shared_policy import person_for
     bindings = [b for b in rules['bindings'] if b['device'] == row['device']
                 and row.get('first_at', now) < b['since'] <= row.get('last_at', now)]
-    costs = rules['policy'].get('shared_costs', []) if share_tokens else []
+    from .maintenance import cost_policy
+    policy = cost_policy(rules)
+    costs = policy.get('shared_costs', [])
     shared = any(c['account'] == row['account'] and c['since'] < row.get('last_at', now)
                  and c['through'] >= row.get('first_at', now) for c in costs)
     if not bindings and not shared:
@@ -20,15 +22,19 @@ def person_rows(database, row, rules, now, share_tokens=False):
             (row['account'], row['device'], row['model'], row['first_at'], row['last_at'])))
     for event in events:
         person = person_for(rules, event['device'], event['ts']) or event['device']
-        if shared:
+        if shared and share_tokens:
             from .shared_costs import token_shares
-            for recipient, part in token_shares(event, person, rules['policy']):
-                groups.setdefault(recipient, []).append(part)
+            for recipient, part in token_shares(event, person, policy):
+                groups.setdefault((recipient, False), []).append(part)
         else:
-            groups.setdefault(person, []).append(event)
+            maintenance = any(c['account'] == event['account'] and c['person'] == person
+                              and c['since'] < event['ts'] <= c['through'] for c in costs)
+            groups.setdefault((person, maintenance), []).append(event)
     output = []
-    for person, events in groups.items():
+    for (person, maintenance), events in groups.items():
         value = dict(row, device=person, source_device=row['device'], first_at=events[0]['ts'], last_at=events[-1]['ts'])
+        if maintenance:
+            value['maintenance'] = True
         for key in ('tokens', 'weight'):
             value[key] = sum(e[key] for e in events)
         for field, key in (('input_tokens','input_tokens'),('output_tokens','output_tokens'),('cache_tokens','cached_input_tokens'),('reasoning_tokens','reasoning_output_tokens')):
@@ -118,6 +124,9 @@ def shared_usage(database, scope, accounts, now=None, rules=None, **options):
             from .shared_quota import last_confirmed
             result['billing']['last_confirmed'] = last_confirmed(database, rules, attributed, now)
         result['official_events'] = attributed['events']
+        if not options:
+            from .live_reporting import reports
+            result['live_reporting'] = reports(database, rules, attributed, result['billing'], now)
         for name, window in result['windows'].items():
             window['rows'] = [mapped for row in window['rows'] for mapped in person_rows(database, row, rules, now, share_tokens=name == 'cycle')]
             quotas = {}
@@ -133,8 +142,12 @@ def shared_usage(database, scope, accounts, now=None, rules=None, **options):
                 if not include:
                     continue
                 bucket = min(window['count']-1, int((event['ts']-window['start'])/window['step']))
-                key = event['account'], event['device'], event['model'], bucket
+                maintenance = bool(event.get('shared_cost')) and name != 'cycle'
+                owner = person_for(rules, event.get('source_device', ''), event['ts']) if maintenance else event['device']
+                key = event['account'], owner or event['device'], event['model'], bucket, maintenance
                 row = quotas.setdefault(key, dict(account=key[0], device=key[1], model=key[2], bucket=bucket, quota=0., cache_quota=0., shared_quota=0.))
+                if maintenance:
+                    row['maintenance'] = True
                 row['quota'] += event['quota']
                 if event.get('shared_cost'):
                     row['shared_quota'] += event['quota']
@@ -148,13 +161,13 @@ def shared_usage(database, scope, accounts, now=None, rules=None, **options):
                     gap['account'] == row['account'] and gap['end'] >= row.get('first_at', now)
                     and gap['start'] < row.get('last_at', now) for gap in attributed['gaps'])
                 if pending:
-                    window['quota_pending_rows'].append({k: row[k] for k in ('account','device','model','bucket')})
+                    window['quota_pending_rows'].append({k: row[k] for k in ('account','device','model','bucket','maintenance') if k in row})
             window['quota_ready'] = window['quota_available'] = bool(attributed['epochs'])
         result['rules'] = rules
     if not options:
         from .usage_history import archive_boundary, donut_windows
         result['donut_archive_at'] = archive_boundary(database, rules, now)
-        if result['donut_archive_at'] is not None or ((rules or {}).get('policy') or {}).get('shared_costs'):
+        if result['donut_archive_at'] is not None or ((rules or {}).get('policy') or {}).get('shared_costs') or (rules or {}).get('maintenance_costs'):
             result['donut_windows'] = donut_windows(database, result, rules, attributed, result['donut_archive_at'])
     return result
 
@@ -219,16 +232,17 @@ def shared_overview(database, scope, accounts, members, local, now, analytics, r
             active_model = latest_active_model(database, people, device_rows, now)
             people_rows.append(dict(id=person, name=name, avatar=person+'.jpg', device_ids=attached,
                 active_model=active_model,
-                local=local in attached, online=bool(live), joined=bool(attached), cap=200/3, fair_base_cap=200/3,
-                fair_cap=200/3, estimated=quota, settled=quota, quota_pending=pending,
+                local=local in attached, online=bool(live), joined=bool(attached), cap=100/3, fair_base_cap=100/3,
+                fair_cap=100/3, estimated=quota, settled=quota, quota_pending=pending,
                 carry=value['fair_usage']-quota if value.get('fair_usage') is not None else 0,
                 fair_usage=value.get('fair_usage'),
-                tokens=totals.get(person, 0), available=available, rollover=value.get('rollover'), available_cap=value.get('available_cap'), debt=debt, pending_debt=value.get('pending'),
-                confirmed_available=confirmed.get('available'), confirmed_available_cap=confirmed.get('available_cap'),
+                tokens=totals.get(person, 0), available=available, rollover=value.get('rollover'), available_cap=100/3, debt=debt, pending_debt=value.get('pending'),
+                confirmed_available=confirmed.get('available'), confirmed_available_cap=100/3,
                 confirmed_debt=value.get('confirmed'), by_account=value.get('by_account', {}), removed=False,
                 active=sum(d.get('active', 0) for d in device_rows), uncertain=sum(d.get('uncertain', 0) for d in device_rows),
                 unbound_active=sum(d.get('unbound_active', 0) for d in device_rows), unbound_uncertain=sum(d.get('unbound_uncertain', 0) for d in device_rows),
                 seen=max((d.get('seen', 0) for d in device_rows), default=0), logged_in=bool(live)))
+            people_rows[-1].update(analytics.get('live_reporting', {}).get('balances', {}).get(person, {}))
         summary.update(devices=people_rows, compensation_enabled=billing['compensation_enabled'],
                        allocation='shared_official_v1', billing_status=billing['status'], billing_reason=billing['reason'])
         summary['token_budget']['sampled_tokens'] = sum(row['tokens'] for row in people_rows)
@@ -253,10 +267,13 @@ def latest_active_model(database, people, devices, now):
 
 
 def daily_usage(database, cards, people, analytics, now):
-    """Percent of the combined 200-point pool, per elapsed official week day."""
+    """Use a single available cycle unless both accounts have official stock."""
     totals = {person['id']: 0. for person in people}
     total, unassigned = 0., 0.
-    for card in cards:
+    usable = [c for c in cards if c.get('epoch') and c['epoch']['used'] < 100]
+    selected = usable if usable else [max((c for c in cards if c.get('epoch')), key=lambda c:c['epoch']['started'])] if any(c.get('epoch') for c in cards) else []
+    divisor = max(1, len(selected))
+    for card in selected:
         cycle = card.get('epoch')
         if not cycle:
             continue
@@ -269,16 +286,17 @@ def daily_usage(database, cards, people, analytics, now):
                       if row['account'] == card['account'] and row['started'] == cycle['started']), cycle['reason'])
         beginning = cycle['reset_at']-7*86400 if cause == '自然重置' else cycle['started']
         days = max(1/86400, (min(now, cycle['ended'] or now)-beginning)/86400)
-        official = cycle['used']/days/2
+        days = days if divisor == 2 else 1.
+        official = cycle['used']/days/divisor
         allocated = 0.
         for row in analytics.get('official_events', []):
             if row['account'] == card['account'] and cycle['started'] <= row['ts'] <= now:
-                rate = row['quota']/days/2
+                rate = row['quota']/days/divisor
                 if row['device'] in totals:
                     totals[row['device']] += rate
                     allocated += rate
         total += official
         unassigned += max(0., official-allocated)
-    return dict(total=total, unassigned=0. if unassigned < 1e-9 else unassigned,
+    return dict(total=total, account_count=divisor, unassigned=0. if unassigned < 1e-9 else unassigned,
                 people=[dict(id=p, quota=value) for p,value in totals.items()],
-                basis='以两账号合计为100%；新账各账号官方已用分别除以本周期已过去天数，再合计。已豁免的旧周期不纳入均值；自然周按官方刷新时间倒推7天，其他周期从首次记录计时。成员只计已确认归属，差额列为未分配。')
+                basis=('双周期合计为100%；' if divisor == 2 else '当前可用单周期为100%；')+('官方已用除以各自周期过去天数。' if divisor == 2 else '统计该账号本周期已确认的消耗。')+'成员只计已确认归属，差额列为未分配。')

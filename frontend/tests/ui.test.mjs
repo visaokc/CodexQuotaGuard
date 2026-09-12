@@ -300,7 +300,9 @@ try{
   const offsetBefore=await page.locator('.trend-pan-content').getAttribute('transform');
   await page.mouse.move(panBox.x+panBox.width*.25,panBox.y+30);await page.mouse.down();
   await page.mouse.move(panBox.x+panBox.width*.75,panBox.y+30,{steps:10});await page.mouse.up();
-  assert.equal(await page.locator('.trend-pan-content').getAttribute('transform'),offsetBefore,'dragging the plot never changes the time window');
+  assert.equal((await page.evaluate(()=>window.__CQG_TEST__.getState())).chartEnd,null,'dragging does not seek away from live time');
+  const offsetAfter=await page.locator('.trend-pan-content').getAttribute('transform');
+  assert.ok(Math.abs(parseFloat(offsetAfter.slice(10))-parseFloat(offsetBefore.slice(10)))<1,'only continuous live scrolling occurs during a drag');
   const slider=page.getByRole('slider',{name:'最近24小时时间滑块'});
   assert.equal(await slider.evaluate(n=>Number(n.max)-Number(n.min)),24*3600,'left slider end selects the hour ending 24 hours ago');
   const sliderBounds=await page.locator('.hour-slider').boundingBox(),hourLegendBounds=await page.locator('.trend-legend').boundingBox();
@@ -368,11 +370,11 @@ try{
   await page.screenshot({path:path.join(artifacts,'overview.png')});
   const mutations=await page.evaluate(async()=>{
     let count=0;const observer=new MutationObserver(list=>count+=list.length);
-    document.querySelectorAll('.trend-svg,.donut-svg').forEach(node=>observer.observe(node,{subtree:true,attributes:true,childList:true}));
+    document.querySelectorAll('.trend-line,.donut-svg').forEach(node=>observer.observe(node,{subtree:true,attributes:true,childList:true}));
     for(let i=0;i<20;i++)window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture));
     await new Promise(r=>setTimeout(r,400));observer.disconnect();return count;
   });
-  assert.equal(mutations,0,'identical polling performs zero SVG mutation or animation');
+  assert.equal(mutations,0,'identical polling does not redraw unchanged curve paths or donut geometry');
   await page.getByTestId('device-row').first().click();
   assert.equal(await page.locator('.user-summary-modal').count(),1);
   assert.equal(await page.locator('.user-token-grid>div').count(),6);

@@ -18,6 +18,7 @@ from .recovery import HistoryRecovery
 from .storage import Database
 from .sync_diagnostics import progress, rejection_reason
 from .shared_sync import SharedSync
+from .shared_policy import person_for
 from .shared_view import shared_usage, shared_overview
 
 
@@ -308,11 +309,12 @@ class Engine:
                 reason=billing.get('reason', rules['reason']), revision=policy.get('revision'),
                 admin=policy.get('admin'), can_manage=policy.get('admin') == self.config['device_id'],
                 rules_locked=True,
+                maintenance_enabled=rules.get('maintenance', {}).get(person_for(rules, self.config['device_id'], now), {}).get('enabled', False),
                 pending_rule=bool(self.group_db.get('shared:pending_rule')),
                 available_accounts=[dict(account=a, label=label) for a,label in state.get('account_labels', {}).items()],
                 bindings=(rules or {}).get('bindings', []),
                 devices=[dict(id=d, name=p.get('name', d), version=state.get('peer_versions', {}).get(d,'')) for d,p in state.get('members', {}).items()],
-                billing_start_note='两账号各100点、每人基础份额66.67点。跨周期补偿与补偿显示固定开启；账号实际刷新后才发放新份额。')
+                billing_start_note='个人百分比固定以100/3额度点为100%；两个账号独立刷新，新份额只在官方实际刷新后发放，未用份额随对应账号到期。')
         # The bridge may poll during disk/network work. Publish one complete
         # shared projection, never an intermediate legacy-account snapshot.
         activity = presence or {}
@@ -562,6 +564,12 @@ class Engine:
                                    cap=self.tracked[target].get('cap', self.config['quota']),
                                    compensation_enabled=payload['enabled'])
                     self.journal.append(target, 'profile', profile, now)
+            elif kind == 'maintenance' and self.shared and self.config.get('shared_billing_v1'):
+                from .shared_policy import load_rules
+                from .maintenance import publish
+                rules = load_rules(self.group_db, self.shared.snapshot(self.mesh, now)['account_labels'], now)
+                publish(self.journal, rules, self.config, payload['enabled'], payload['at'])
+                self.shared_analytics_cache = None
             elif kind == 'group_rule' and self.shared and self.config.get('shared_billing_v1'):
                 from .shared_policy import load_rules
                 rules = load_rules(self.group_db, self.shared.snapshot(self.mesh, now)['account_labels'], now)

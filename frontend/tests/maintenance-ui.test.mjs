@@ -1,0 +1,68 @@
+// Isolated headless browser: no user desktop input or live credentials.
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import {readFile,mkdir} from 'node:fs/promises';
+import path from 'node:path';
+import {createRequire} from 'node:module';
+import {billingFixture} from './billing-fixture.mjs';
+const require=createRequire(import.meta.url),{chromium}=require('playwright');
+const root=path.resolve('dist'),artifacts=path.resolve('test-artifacts');await mkdir(artifacts,{recursive:true});
+const server=http.createServer(async(req,res)=>{try{if(req.url==='/favicon.ico'){res.writeHead(204).end();return;}const file=path.join(root,new URL(req.url,'http://localhost').pathname.replace(/^\/$/,'/index.html'));if(!file.startsWith(root+path.sep))throw Error('scope');res.setHeader('Content-Type',file.endsWith('.js')?'application/javascript':file.endsWith('.css')?'text/css':file.endsWith('.jpg')?'image/jpeg':'text/html');res.end(await readFile(file));}catch{res.writeHead(404).end();}});
+await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+const browser=await chromium.launch({channel:'msedge',headless:true});
+try{
+  const page=await browser.newPage({viewport:{width:750,height:662},deviceScaleFactor:1,colorScheme:'dark'}),errors=[];
+  page.on('pageerror',error=>errors.push(error.message));
+  page.on('console',message=>{if(message.type()==='error')errors.push(message.text());});
+  await page.addInitScript(data=>{window.__fixture=data;window.__commands=[];window.__CQG_TEST_BRIDGE__={snapshot:async()=>{if(!window.__hasSnapshot){window.__hasSnapshot=true;await new Promise(resolve=>setTimeout(resolve,150));}return structuredClone(window.__fixture);},command:async(action,payload)=>{window.__commands.push({action,payload});if(action==='member_history'){await new Promise(r=>setTimeout(r,payload.cycle==='archive'?120:15));const data=structuredClone(window.__fixture.view.analytics);data.windows.cycle=structuredClone(window.__memberWindows?.[payload.cycle]||data.windows.cycle);return{ok:true,data};}if(action==='chart_history')return{ok:true,data:structuredClone(window.__history||window.__fixture.view.analytics)};return {ok:true,data:{}};},window_action:async()=>({ok:true})};},billingFixture());
+  await page.goto(`http://127.0.0.1:${server.address().port}/?test=1`);
+  await page.locator('.app-shell.ready').waitFor();await page.evaluate(()=>window.__CQG_TEST__.pausePolling());await page.waitForTimeout(400);
+
+  assert.ok((await page.locator('.device-row').last().boundingBox()).y+(await page.locator('.device-row').last().boundingBox()).height<=630);
+  const footer=await page.locator('.billing-status').boundingBox();
+  assert.ok(footer.y+footer.height<=662 && 662-footer.y-footer.height<18,'default window has no large bottom blank strip');
+  const track=await page.locator('.hour-slider').boundingBox(),legend=await page.locator('.trend-legend').boundingBox();
+  assert.ok(track.x+track.width<legend.x,'slider and legend do not overlap');
+  await page.evaluate(()=>{
+    const d=window.__fixture;d.view.account_summaries[0].epoch.used=100;
+    d.view.daily_usage={account_count:1,total:23,unassigned:0,people:[],basis:'当前可用单周期'};
+    d.view.analytics.personal_daily=[{date:'2026-09-12',person:'person1',tokens:3000,quota:1,estimated_quota:.5,pending:false}];
+    Object.assign(d.view.summary.devices[0],{available_estimate:30,balance_estimated:true});
+    window.__CQG_TEST__.applySnapshot(structuredClone(d));
+  });
+  assert.equal(await page.getByTestId('pool-remaining').innerText(),'77.0%');
+  assert.ok((await page.getByTestId('pool-quota-card').innerText()).includes('单周期剩余'));
+  assert.ok((await page.getByTestId('pool-quota-card').innerText()).includes('单周期消耗'));
+  assert.equal(await page.locator('.device-usage').first().innerText(),'≈90.0%');
+  assert.ok(await page.locator('.device-usage .number-changing').count()>0);
+  await page.getByTestId('personal-daily-button').click();
+  assert.ok((await page.locator('.personal-daily-row').innerText()).includes('4.50%'));
+  await page.getByRole('button',{name:'关闭对话框',exact:true}).click();
+  await page.getByTestId('nav-settings').click();
+  const maintenance=page.getByRole('switch',{name:'软件维护模式',exact:true});
+  assert.equal(await maintenance.getAttribute('aria-checked'),'false');
+  await maintenance.click();
+  assert.ok((await page.evaluate(()=>window.__commands)).some(c=>c.action==='maintenance_toggle'&&c.payload.enabled===true));
+  await page.evaluate(()=>{window.__fixture.view.shared_group.maintenance_enabled=true;window.__fixture.view.shared_group.can_manage=false;window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture));});
+  assert.equal(await maintenance.getAttribute('aria-checked'),'true');assert.equal(await maintenance.isEnabled(),true);
+  await maintenance.click();
+  assert.ok((await page.evaluate(()=>window.__commands)).some(c=>c.action==='maintenance_toggle'&&c.payload.enabled===false));
+  await page.screenshot({path:path.join(artifacts,'maintenance-settings.png')});
+  await page.getByTestId('nav-overview').click();
+  const initial=await page.evaluate(()=>window.__CQG_TEST__.getState());
+  const token=await page.evaluate(()=>{let removed=0;for(const key of ['hour','hour_curve']){const w=window.__fixture.view.analytics.windows[key];w.rows[0].maintenance=true;if(key==='hour_curve')removed=w.rows[0].tokens;}window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture));return removed;});
+  const normal=await page.evaluate(()=>window.__CQG_TEST__.getState());
+  assert.equal(normal.trend.total,initial.trend.total-token);assert.equal(normal.pie.total,initial.pie.total);
+  await page.getByRole('button',{name:'曲线内容模式',exact:true}).click();
+  await page.getByRole('option',{name:'维护曲线',exact:true}).click();
+  const mode=await page.evaluate(()=>window.__CQG_TEST__.getState());
+  assert.equal(mode.trend.total,token);assert.equal(mode.trend.series.length,1);assert.equal(mode.trend.series[0].color,'#9299a6');
+  assert.equal(mode.pie.total,initial.pie.total);assert.equal(await page.locator('.legend-name').filter({hasText:'维护'}).count(),0);
+  await page.waitForTimeout(500);
+  const offset=()=>page.locator('.trend-pan-content').getAttribute('transform');
+  const lineBefore=await offset();await page.waitForTimeout(800);assert.notEqual(await offset(),lineBefore,'line scrolls between sample updates');
+  await page.getByRole('button',{name:'柱状',exact:true}).click();
+  const barBefore=await offset();await page.waitForTimeout(800);assert.notEqual(await offset(),barBefore,'bars scroll between sample updates');
+  await page.screenshot({path:path.join(artifacts,'maintenance-overview-compact.png')});
+  assert.deepEqual(errors,[]);console.log('MAINTENANCE_SWITCH_FIXED_BASIS_DAILY_ESTIMATE_SMOOTH_CHART_COMPACT_UI_OK');
+}finally{await browser.close();await new Promise(resolve=>server.close(resolve));}

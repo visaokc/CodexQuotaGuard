@@ -223,7 +223,7 @@ def run(args, config, database):
     controller = WebController(args.data_dir, config, database, demo=args.demo,
         startup_enabled=not args.demo and not args.smoke_seconds and not args.no_autostart)
     window = webview.create_window('Codex 配额管家 · '+__version__, str(html), js_api=controller,
-        width=750, height=680, min_size=(730, 650), hidden=True, frameless=True, easy_drag=False,
+        width=750, height=662, min_size=(730, 650), hidden=True, frameless=True, easy_drag=False,
         shadow=True, focus=not bool(args.smoke_seconds), background_color='#0c0d0f')
     host = DesktopHost(window, controller, args)
     controller._window_handler = host.dispatch

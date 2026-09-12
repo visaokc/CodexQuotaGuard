@@ -109,7 +109,7 @@ def contiguous(db, account):
 
 
 def load_rules(database, accounts, now):
-    policies, claims = {}, []
+    policies, claims, maintenance = {}, [], []
     with database.connect() as db:
         for account in accounts:
             vector = contiguous(db, account)
@@ -120,6 +120,8 @@ def load_rules(database, accounts, now):
                 if 'group_policy' in payload:
                     policy = validate(payload['group_policy'], row['origin'], row['ts'])
                     policies[digest(policy)] = policy
+                if 'maintenance' in payload:
+                    maintenance.append(dict(account=account, origin=row['origin'], seq=row['seq'], ts=row['ts'], value=payload['maintenance']))
                 if 'member_claim' in payload:
                     claim = payload['member_claim']
                     if (isinstance(claim, dict) and claim.get('device') == row['origin']
@@ -189,9 +191,12 @@ def load_rules(database, accounts, now):
         missing.append('账号2')
     if len(first_bound) < 3:
         missing.append('第三位成员' if len(first_bound) == 2 else '成员加入')
-    return dict(result, status='ready' if ready else 'waiting', reason='' if ready else '等待'+'和'.join(missing),
+    result = dict(result, status='ready' if ready else 'waiting', reason='' if ready else '等待'+'和'.join(missing),
                 policy=policy, policies=chain, accounts=selected, bindings=bindings, genesis=root_hash,
                 eligible_at=max(first_bound.values()) if len(first_bound) == 3 else None)
+    from .maintenance import resolve
+    result.update(resolve(maintenance, result))
+    return result
 
 
 def person_for(rules, device, at):

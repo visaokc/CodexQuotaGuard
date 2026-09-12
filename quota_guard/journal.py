@@ -67,6 +67,9 @@ class Journal:
         if r['kind'] == 'profile' and 'group_policy' in p:
             from .shared_policy import validate
             validate(p['group_policy'], r['origin'], r['ts'])
+        if r['kind'] == 'profile' and 'maintenance' in p:
+            from .maintenance import validate
+            validate(p['maintenance'])
         if r['kind'] == 'profile' and 'member_claim' in p:
             value = p['member_claim']
             if (not isinstance(value, dict) or value.get('device') != r['origin']

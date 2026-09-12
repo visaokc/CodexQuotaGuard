@@ -44,7 +44,7 @@ def _summary(value):
     result['epoch'] = _pick(value.get('epoch'), ('id', 'account', 'started', 'ended', 'baseline', 'used',
         'reset_at', 'observed_at', 'reason', 'cycle')) or None
     result['devices'] = [_pick(d, ('id', 'name', 'cap', 'seen', 'scan_at', 'active', 'uncertain', 'logged_in',
-        'unbound_active', 'unbound_uncertain', 'estimated', 'settled', 'carry', 'fair_cap', 'fair_base_cap', 'tokens', 'weight', 'unknown_tokens', 'online', 'removed', 'quota_pending', 'avatar', 'device_ids', 'local', 'joined', 'available', 'rollover', 'available_cap', 'debt', 'pending_debt', 'confirmed_debt', 'by_account', 'fair_usage', 'active_model', 'confirmed_available', 'confirmed_available_cap'))
+        'unbound_active', 'unbound_uncertain', 'estimated', 'settled', 'carry', 'fair_cap', 'fair_base_cap', 'tokens', 'weight', 'unknown_tokens', 'online', 'removed', 'quota_pending', 'avatar', 'device_ids', 'local', 'joined', 'available', 'rollover', 'available_cap', 'debt', 'pending_debt', 'confirmed_debt', 'by_account', 'fair_usage', 'active_model', 'confirmed_available', 'confirmed_available_cap', 'available_estimate', 'balance_estimated', 'estimate_missing', 'estimate_pending', 'estimate_at'))
         for d in value.get('devices', [])]
     result['attribution_gaps'] = [_pick(d, ('start', 'end', 'delta', 'reason', 'devices', 'unknown_models'))
                                   for d in value.get('attribution_gaps', [])]
@@ -60,7 +60,7 @@ def _view(value):
     result['summary'] = _summary(value.get('summary'))
     shared = value.get('shared_group') or {}
     if shared:
-        result['shared_group'] = _pick(shared, ('enabled', 'id', 'stage', 'billing_start_note', 'state', 'reason', 'revision', 'admin', 'can_manage', 'pending_rule', 'rules_locked'))
+        result['shared_group'] = _pick(shared, ('enabled', 'id', 'stage', 'billing_start_note', 'state', 'reason', 'revision', 'admin', 'can_manage', 'pending_rule', 'rules_locked', 'maintenance_enabled'))
         result['shared_group']['bindings'] = [_pick(row, ('device','person','since')) for row in shared.get('bindings', [])]
         result['shared_group']['devices'] = [_pick(row, ('id','name','version')) for row in shared.get('devices', [])]
         result['shared_group']['available_accounts'] = [_pick(row, ('account','label')) for row in shared.get('available_accounts', [])]
@@ -89,6 +89,8 @@ def _view(value):
         if states and all(s == 'caught_up' for s in states) and all(receipts.get(p) for p in result['sync_progress']) else None)
     analytics = value.get('analytics') or {}
     result['analytics'] = _pick(analytics, ('account', 'at', 'models', 'cycle_start', 'statistics_start', 'quota_unavailable', 'donut_archive_at'))
+    if analytics.get('live_reporting'):
+        result['analytics']['personal_daily'] = analytics['live_reporting']['daily']
     if analytics.get('donut_windows'):
         result['analytics']['donut_windows'] = _view({'analytics': {'windows': analytics['donut_windows']}})['analytics']['windows']
     if analytics.get('cycle_pair'):
@@ -105,7 +107,7 @@ def _view(value):
         result['analytics']['cycles'].append(safe)
     result['analytics']['windows'] = {}
     if value.get('daily_usage'):
-        result['daily_usage'] = _pick(value['daily_usage'], ('total','people','unassigned','basis'))
+        result['daily_usage'] = _pick(value['daily_usage'], ('total','people','unassigned','basis','account_count'))
     if value.get('billing'):
         result['billing'] = _pick(value['billing'], ('status','reason','people','anchors','active_since','compensation_enabled','entries','clean_start','last_confirmed'))
     for key in ('cycle', 'total', 'today', 'pie_hour', 'pie_six_hours', 'pie_twelve_hours', 'hour', 'hour_curve', 'six_hours', 'twelve_hours', 'day', 'week', 'month'):
@@ -114,10 +116,10 @@ def _view(value):
             window = _pick(source, ('start', 'step', 'count', 'quota_ready', 'quota_available'))
             if 'quota_gaps' in source:
                 window['quota_gaps'] = [_pick(r, ('start','end')) for r in source['quota_gaps']]
-            window['quota_pending_rows'] = [_pick(r, ('account', 'device', 'model', 'bucket')) for r in source.get('quota_pending_rows', [])]
+            window['quota_pending_rows'] = [_pick(r, ('account', 'device', 'model', 'bucket', 'maintenance')) for r in source.get('quota_pending_rows', [])]
             window['quota_estimate_rows'] = [_pick(r, ('device', 'model', 'bucket', 'quota', 'cache_quota')) for r in source.get('quota_estimate_rows', [])]
-            window['quota_rows'] = [_pick(r, ('account', 'device', 'model', 'bucket', 'quota', 'cache_quota', 'shared_quota')) for r in source.get('quota_rows', [])]
-            window['rows'] = [_pick(r, ('account', 'device', 'model', 'bucket', 'tokens', 'weight', 'unknown', 'cache_tokens', 'detail_missing', 'input_tokens', 'output_tokens', 'reasoning_tokens', 'reasoning_count', 'reasoning_missing', 'event_count', 'detail_count', 'first_at', 'last_at', 'shared_tokens')) for r in source.get('rows', [])]
+            window['quota_rows'] = [_pick(r, ('account', 'device', 'model', 'bucket', 'quota', 'cache_quota', 'shared_quota', 'maintenance')) for r in source.get('quota_rows', [])]
+            window['rows'] = [_pick(r, ('account', 'device', 'model', 'bucket', 'tokens', 'weight', 'unknown', 'cache_tokens', 'detail_missing', 'input_tokens', 'output_tokens', 'reasoning_tokens', 'reasoning_count', 'reasoning_missing', 'event_count', 'detail_count', 'first_at', 'last_at', 'shared_tokens', 'maintenance')) for r in source.get('rows', [])]
             result['analytics']['windows'][key] = window
     result['recovery'] = _pick(value.get('recovery'), ('scanning', 'recovered_events', 'recovered_tokens',
         'inferred_tokens', 'runtime_tokens', 'unresolved_events', 'unresolved_tokens'))
@@ -239,7 +241,7 @@ class WebController:
         if not isinstance(payload, dict):
             return {'ok': False, 'error': '操作参数须为对象'}
         actions = {'refresh', 'account_scan', 'account_add', 'account_remove', 'account_history', 'member_history', 'chart_history', 'cap_save',
-                   'limit_toggle', 'compensation_toggle', 'restore', 'note_save', 'color_save', 'device_order_save', 'device_remove', 'settings_save',
+                   'limit_toggle', 'compensation_toggle', 'maintenance_toggle', 'restore', 'note_save', 'color_save', 'device_order_save', 'device_remove', 'settings_save',
                    'programs_discover', 'pair_generate', 'pair_join', 'tailscale_login', 'tailscale_switch',
                    'connection_save', 'update_check', 'update_install', 'diagnostics', 'group_rule'}
         if action not in actions:
@@ -423,6 +425,14 @@ class WebController:
         windows = ('hour','hour_curve') if period == 'hour' else (period,)
         analytics['windows'] = {k:v for k,v in analytics['windows'].items() if k in windows}
         return _view({'analytics':analytics})['analytics']
+
+    def _maintenance_toggle(self, payload):
+        if not self._engine or not self._config.get('shared_billing_v1'):
+            raise ValueError('共享计费尚未就绪')
+        if type(payload.get('enabled')) is not bool:
+            raise ValueError('软件维护开关须为布尔值')
+        self._engine.commands.put(('maintenance', dict(enabled=payload['enabled'], at=time.time())))
+        self._engine.wakeup.set()
 
     def _compensation_toggle(self, payload):
         if self._config.get('shared_billing_v1'):

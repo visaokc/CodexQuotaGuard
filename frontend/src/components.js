@@ -1,6 +1,21 @@
 import {ref, computed, watch, onMounted, onBeforeUnmount, nextTick} from 'vue';
 import {chartQuotaPercent,compact,niceScale,linePath,timeLabel,curveGeometry,curveY} from './data.js';
 
+export const RollingValue={
+  props:{value:[String,Number]},
+  setup(props){
+    const node=ref(null),previous=ref(''),changing=ref(false),direction=ref(1);let timer=0;
+    function roll(value,old=''){
+      previous.value=old??'';direction.value=parseFloat(String(value).replace(/[^\d.-]/g,''))<parseFloat(String(old).replace(/[^\d.-]/g,''))?-1:1;
+      changing.value=false;clearTimeout(timer);
+      nextTick(()=>{if(!node.value)return;changing.value=true;node.value.animate([{transform:`translateY(${direction.value*110}%)`,opacity:0},{transform:'translateY(0)',opacity:1}],{duration:420,easing:'cubic-bezier(.2,.7,.2,1)'});timer=setTimeout(()=>changing.value=false,420);});
+    }
+    watch(()=>props.value,roll);onMounted(()=>roll(props.value));onBeforeUnmount(()=>clearTimeout(timer));
+    return {node,previous,changing,direction};
+  },
+  template:`<span class="rolling-value" :class="{'number-changing':changing}" :data-previous="previous" :style="{'--roll-direction':direction}"><span ref="node">{{value}}</span></span>`
+};
+
 export const SelectBox={
   props:{modelValue:{default:''},options:{default:()=>[]},label:String},emits:['update:modelValue'],
   setup(props,{emit}) {
@@ -35,7 +50,7 @@ export const SelectBox={
 };
 
 export const TrendChart={
-  props:{data:{required:true},kind:String,color:{default:'#669cff'},pannable:Boolean,earliestEnd:Number,sliderLabel:String,sliderStep:{default:60},viewEnd:Number,sliderEnd:Number,latestEnd:Number,liveRevision:Number},emits:['pan'],
+  props:{data:{required:true},kind:String,color:{default:'#669cff'},pannable:Boolean,earliestEnd:Number,sliderLabel:String,sliderStep:{default:60},viewEnd:Number,sliderEnd:Number,latestEnd:Number,liveRevision:Number,live:Boolean},emits:['pan'],
   setup(props,{emit}){
     const animated=ref([]),hover=ref(-1),mouseX=ref(0),plot=ref(null);
     let lastPointer=null;
@@ -50,13 +65,14 @@ export const TrendChart={
     const focused=ref('');
     const series=computed(()=>props.data.series||[{id:'total',label:'Token',color:props.color,points:props.data.points}]);
     watch(series,values=>{
-      const signature=JSON.stringify(values);
+      const signature=JSON.stringify([props.data.start,values]);
       if(signature===lastTarget)return;
       lastTarget=signature;
       cancelAnimationFrame(frame);
       const target=values.map(item=>({...item,points:item.points.slice()})),before=new Map(animated.value.map(item=>[item.id,item.points])),start=performance.now();
-      const shifted=lastStart!==null&&lastStart!==props.data.start;lastStart=props.data.start;
-      if(shifted){animated.value=target;return;}
+      const shift=lastStart===null?0:Math.round((props.data.start-lastStart)/props.data.step);lastStart=props.data.start;
+      if(shift)for(const [id,values] of before)before.set(id,values.map((_,i)=>values[i+shift]??0));
+      if(shift)animated.value=target.map(item=>({...item,points:item.points.map((v,i)=>v===null?null:before.get(item.id)?.[i]??0)}));
       const tick=at=>{const t=Math.min(1,(at-start)/300),ease=1-(1-t)**3;animated.value=target.map(item=>({...item,points:item.points.map((v,i)=>{
         if(v===null)return null;const prior=before.get(item.id),old=prior?.length===item.points.length?prior[i]:0;return old+(v-old)*ease;
       })}));if(t<1)frame=requestAnimationFrame(tick);};
@@ -77,7 +93,11 @@ export const TrendChart={
     watch(()=>[props.kind,props.data.mode,props.pannable,props.liveRevision,series.value.map(item=>item.id).join('|')].join(':'),()=>resizeScale(requestedMaximum.value));
     onBeforeUnmount(()=>cancelAnimationFrame(scaleFrame));
     const span=computed(()=>props.data.step*Math.max(1,props.data.points.length));
-    const visibleStart=computed(()=>props.pannable&&Number.isFinite(props.viewEnd)?props.viewEnd-span.value:props.data.start);
+    const liveEnd=ref(props.viewEnd);let clockFrame=0,clockAnchor=performance.now(),clockValue=props.viewEnd;
+    watch(()=>props.viewEnd,value=>{clockValue=props.live?Math.max(value,liveEnd.value??value):value;clockAnchor=performance.now();liveEnd.value=clockValue;});
+    onMounted(()=>{const tick=at=>{if(props.live&&Number.isFinite(clockValue))liveEnd.value=clockValue+(at-clockAnchor)/1000;clockFrame=requestAnimationFrame(tick);};clockFrame=requestAnimationFrame(tick);});
+    onBeforeUnmount(()=>cancelAnimationFrame(clockFrame));
+    const visibleStart=computed(()=>props.pannable&&Number.isFinite(props.viewEnd)?(props.live?liveEnd.value:props.viewEnd)-span.value:props.data.start);
     const panOffset=computed(()=>props.pannable?(props.data.start-visibleStart.value)/span.value*width:0);
     const curves=computed(()=>animated.value.map(item=>({...item,path:linePath(item.points,props.pannable?width-step.value:width,height,maximum.value),geometry:curveGeometry(item.points,props.pannable?width-step.value:width,height,maximum.value)})));
     function area(path){return `${path}L${shown.value.length>1?width:width/2},${height}L${shown.value.length>1?0:width/2},${height}Z`;}
@@ -91,8 +111,8 @@ export const TrendChart={
     const dailyLabels=computed(()=>props.kind==='bar'&&props.data.points.length===7&&props.data.step===86400?props.data.points.map((_,i)=>({x:44+(i+.5)*width/7,label:timeLabel(props.data.start+i*86400).slice(0,5)})):[]);
     const bars=computed(()=>{
       const totals=props.data.points.map(()=>0);
-      return animated.value.map(item=>({...item,buckets:item.points.map((value,i)=>{
-        totals[i]+=value;return {value,y:height-totals[i]/maximum.value*height};
+      return animated.value.map(item=>({...item,buckets:item.points.slice(0,totals.length).map((value,i)=>{
+        totals[i]+=value||0;return {value,y:height-totals[i]/maximum.value*height};
       })}));
     });
     const markers=computed(()=>curves.value.filter(item=>item.points[hover.value]!=null).map(item=>({id:item.id,color:item.color,y:Math.max(0,Math.min(height,curveY(item.geometry,mouseX.value)))})));
@@ -129,6 +149,7 @@ export const TrendChart={
 };
 
 export const DonutChart={
+  components:{RollingValue},
   props:{devices:{required:true},totals:{required:true},quotaTotals:{default:()=>({})},quotaStates:{default:()=>({})},quotaReady:Boolean,quotaUnavailable:{default:''},cacheTokens:{default:()=>({})},cacheTotals:{default:()=>({})},cacheMissing:{default:()=>({})}},
   setup(props){
     const hover=ref(''),animated=ref({});let frame=0,lastTarget={};
@@ -147,5 +168,5 @@ export const DonutChart={
     function share(id){return props.quotaUnavailable||chartQuotaPercent(props.quotaTotals[id],props.quotaReady,props.quotaStates[id]==='pending',props.quotaStates[id]==='estimated',1);}
     function cacheShare(id){return props.quotaUnavailable||chartQuotaPercent(props.cacheTotals[id],props.quotaReady&&!props.cacheMissing[id],props.quotaStates[id]==='pending',props.quotaStates[id]==='estimated');}return {cacheShare,share,hover,arcs,compact};
   },
-  template:`<div class="donut-content"><svg class="donut-svg" viewBox="0 0 140 140" aria-label="各设备 Token 用量占比"><circle cx="70" cy="70" r="50" fill="none" stroke="#282c34" stroke-width="21"/><g v-for="arc in arcs" :key="arc.id" class="donut-piece" :style="{transform:hover===arc.id?'translate('+arc.dx+'px,'+arc.dy+'px)':'translate(0,0)'}"><circle v-if="arc.length>0" cx="70" cy="70" r="50" fill="none" :stroke="arc.color" stroke-width="21" :stroke-dasharray="arc.length+' '+(314.159-arc.length)" :stroke-dashoffset="arc.offset" transform="rotate(-90 70 70)" tabindex="0" :aria-label="arc.label+' '+compact(totals[arc.id]||0)+' Token'" @pointerenter="hover=arc.id" @pointerleave="hover=''" @focus="hover=arc.id" @blur="hover=''"/></g></svg><div class="donut-legend"><div v-for="device in devices" :key="device.id" class="legend-row" @pointerenter="hover=device.id" @pointerleave="hover=''"><span class="legend-dot" :style="{background:device.color}"></span><span class="legend-name" :title="device.label">{{device.label}}</span><em class="donut-share" title="按官方已确认额度增量和时段用量权重分摊；跟随额度显示模式" :style="{color:device.color}"><span class="donut-main-share">{{share(device.id)}}</span><small class="cache-quota" title="缓存消耗已包含在总额度消耗内">缓存 {{cacheShare(device.id)}}</small></em><span class="legend-value">{{compact(totals[device.id]||0)}}<small class="cache-quota">缓存 {{compact(cacheTokens[device.id])}}</small></span></div><span v-if="!devices.length" class="muted">暂无设备数据</span></div></div>`
+  template:`<div class="donut-content"><svg class="donut-svg" viewBox="0 0 140 140" aria-label="各设备 Token 用量占比"><circle cx="70" cy="70" r="50" fill="none" stroke="#282c34" stroke-width="21"/><g v-for="arc in arcs" :key="arc.id" class="donut-piece" :style="{transform:hover===arc.id?'translate('+arc.dx+'px,'+arc.dy+'px)':'translate(0,0)'}"><circle v-if="arc.length>0" cx="70" cy="70" r="50" fill="none" :stroke="arc.color" stroke-width="21" :stroke-dasharray="arc.length+' '+(314.159-arc.length)" :stroke-dashoffset="arc.offset" transform="rotate(-90 70 70)" tabindex="0" :aria-label="arc.label+' '+compact(totals[arc.id]||0)+' Token'" @pointerenter="hover=arc.id" @pointerleave="hover=''" @focus="hover=arc.id" @blur="hover=''"/></g></svg><div class="donut-legend"><div v-for="device in devices" :key="device.id" class="legend-row" @pointerenter="hover=device.id" @pointerleave="hover=''"><span class="legend-dot" :style="{background:device.color}"></span><span class="legend-name" :title="device.label">{{device.label}}</span><em class="donut-share" title="按官方已确认额度增量和时段用量权重分摊；跟随额度显示模式" :style="{color:device.color}"><span class="donut-main-share"><RollingValue :value="share(device.id)"/></span><small class="cache-quota" title="缓存消耗已包含在总额度消耗内">缓存 <RollingValue :value="cacheShare(device.id)"/></small></em><span class="legend-value"><RollingValue :value="compact(totals[device.id]||0)"/><small class="cache-quota">缓存 <RollingValue :value="compact(cacheTokens[device.id])"/></small></span></div><span v-if="!devices.length" class="muted">暂无设备数据</span></div></div>`
 };

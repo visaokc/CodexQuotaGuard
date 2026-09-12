@@ -110,7 +110,8 @@ def attribution(database, rules, now):
     from .clean_start import prepare
     prepare(database, rules, result, now)
     from .shared_costs import apply
-    apply(result, policy)
+    from .maintenance import cost_policy
+    apply(result, cost_policy(rules))
     return result
 
 

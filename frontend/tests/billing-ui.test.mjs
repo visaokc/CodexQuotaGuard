@@ -54,7 +54,7 @@ try{
   await page.waitForTimeout(200);await page.screenshot({path:path.join(artifacts,'billing-model-names.png')});
   await page.getByRole('button',{name:'筛选模型',exact:true}).click();
   await page.evaluate(()=>window.__initialPerson=structuredClone(window.__fixture.view.summary.devices[0]));
-  for(const [available,available_cap,expected] of [[100/3,100/3,'100.0%'],[100/3-2,100/3,'94.0%'],[100/3,200/3,'50.0%'],[35,100/3,'105.0%'],[0,0,'—']]){
+  for(const [available,available_cap,expected] of [[100/3,100/3,'100.0%'],[100/3-2,100/3,'94.0%'],[100/3,200/3,'100.0%'],[35,100/3,'105.0%'],[0,0,'0.0%']]){
     await page.evaluate(({available,available_cap})=>{Object.assign(window.__fixture.view.summary.devices[0],{available,available_cap});window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture));},{available,available_cap});
     assert.equal(await page.locator('.device-usage').first().innerText(),expected);
   }
@@ -79,20 +79,20 @@ try{
   await page.screenshot({path:path.join(artifacts,'billing-overview-dark.png')});
   await page.getByRole('button',{name:'筛选账号',exact:true}).click();await page.getByRole('option',{name:'账号2',exact:true}).click();
   const filtered=await page.evaluate(()=>window.__CQG_TEST__.getState());
-  assert.equal(filtered.pie.quotaTotals.person1,undefined);assert.equal(filtered.pie.quotaTotals.person3,billingFixture().view.analytics.windows.today.quota_rows.filter(r=>r.device==='person3').reduce((n,r)=>n+r.quota*1.5,0));
+  assert.equal(filtered.pie.quotaTotals.person1,undefined);assert.equal(filtered.pie.quotaTotals.person3,billingFixture().view.analytics.windows.today.quota_rows.filter(r=>r.device==='person3').reduce((n,r)=>n+r.quota*3,0));
   await page.getByRole('button',{name:'筛选账号',exact:true}).click();await page.getByRole('option',{name:'两账号合计',exact:true}).click();
   await page.getByTestId('device-row').first().click();await page.locator('.user-pool-summary').waitFor();
-  for(const [cap,basis,debt] of [[100/3,'100% = 33.33 点','6.0%'],[200/3,'100% = 66.67 点','3.0%']]){
+  for(const [cap,basis,debt] of [[100/3,'100% = 33.33 点','6.0%'],[200/3,'100% = 33.33 点','6.0%']]){
     await page.evaluate(cap=>{const data=structuredClone(window.__fixture);Object.assign(data.view.summary.devices[0],{available:cap/2,available_cap:cap,debt:2,pending_debt:1,confirmed_debt:1});data.view.account_summaries[0].epoch.used=100;window.__CQG_TEST__.applySnapshot(data);},cap);
-    assert.equal(await page.locator('.user-pool-summary>div').first().locator('strong').innerText(),'50.0%');
+    assert.equal(await page.locator('.user-pool-summary>div').first().locator('strong').innerText(),cap===100/3?'50.0%':'100.0%');
     assert.equal(await page.getByTestId('personal-basis').innerText(),basis);
     assert.equal(await page.locator('.user-pool-summary>div').nth(1).locator('strong').innerText(),debt);
-    assert.equal(await page.locator('.device-usage').first().innerText(),'50.0%');
+    assert.equal(await page.locator('.device-usage').first().innerText(),cap===100/3?'50.0%':'100.0%');
     assert.ok((await page.locator('.user-summary-note').innerText()).includes(basis));
     assert.ok(!(await page.locator('.user-pool-summary').innerText()).includes('其中结转'));
   }
   await page.evaluate(()=>{const data=structuredClone(window.__fixture);Object.assign(data.view.summary.devices[0],{available:35,available_cap:100/3,debt:-2,pending_debt:-1,confirmed_debt:-1});window.__CQG_TEST__.applySnapshot(data);});
-  assert.equal(await page.locator('.user-pool-summary>div').nth(1).locator('span').innerText(),'待获补偿');
+  assert.equal(await page.locator('.user-pool-summary>div').nth(1).locator(':scope > span').innerText(),'待获补偿');
   assert.equal(await page.locator('.user-pool-summary>div').nth(1).locator('strong').innerText(),'6.0%');
   assert.equal(await page.locator('.device-usage').first().innerText(),'105.0%');
   await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
@@ -160,7 +160,7 @@ try{
   assert.ok((await page.evaluate(()=>window.__commands)).some(c=>c.action==='device_remove'&&c.payload.device==='fixture-peer'));
   await page.getByTestId('nav-help').click();
   const help=await page.locator('.prose').innerText();
-  assert.ok(help.includes('账号额度用尽不会缩小这个基准')&&help.includes('未用且未被借用的部分到期消失'));
+  assert.ok(help.includes('个人100%固定为100/3')&&help.includes('未用且未被借用的部分到期消失'));
   assert.ok(help.includes('历史周期百分比也使用该基准')&&!help.includes('启用结转后'));
   await page.getByTestId('nav-settings').click();await page.locator('.group-policy-panel').waitFor();
   const toggle=page.getByRole('switch',{name:'跨周期补偿',exact:true});assert.equal(await toggle.isEnabled(),true);
@@ -183,7 +183,7 @@ try{
   assert.equal(await page.getByTestId('display-mode-locked').innerText(),'补偿显示模式 · 固定');
   assert.equal(await page.getByRole('switch',{name:'跨周期补偿',exact:true}).count(),0);
   assert.equal(await page.getByRole('button',{name:'额度显示基准',exact:true}).count(),0);
-  assert.ok((await page.locator('.settings-line').first().innerText()).includes('100% = 66.67 点'));
+  assert.ok((await page.locator('.settings-line').filter({hasText:'设备配额'}).innerText()).includes('100% = 33.33 点'));
   assert.equal(await page.getByTestId('settings-user').first().locator('strong').innerText(),'A');
   await page.evaluate(()=>{window.__fixture.view.shared_group.can_manage=true;window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture));});
   assert.equal(await page.locator('.membership-advanced').getAttribute('open'),null);
@@ -197,7 +197,7 @@ try{
   assert.equal(await page.locator('.legend-name').first().innerText(),'A');
   assert.equal(await page.locator('.device-usage').first().innerText(),'—');
   await page.getByRole('button',{name:'设备占比时间范围',exact:true}).click();await page.getByRole('option',{name:'本周期',exact:true}).click();
-  assert.equal(await page.locator('.donut-main-share').first().innerText(),'34.5%');await page.waitForTimeout(200);
+  assert.equal(await page.locator('.donut-main-share').first().innerText(),'69.0%');await page.waitForTimeout(200);
   assert.equal(await page.locator('.device-quota-cell small').count(),0,'unavailable balance is explained once, not repeated as unknown under every member');
   assert.ok((await page.locator('.billing-status').innerText()).includes('已确认消费继续显示'));
   await page.evaluate(()=>{const data=structuredClone(window.__fixture);data.view.billing.last_confirmed={at:data.view.analytics.at-60,pending_quota:1};Object.assign(data.view.summary.devices.find(d=>d.id==='person2'),{confirmed_available:30,confirmed_available_cap:100/3});window.__CQG_TEST__.applySnapshot(data);});
@@ -258,7 +258,7 @@ try{
   await page.getByTestId('nav-stats').click();await page.locator('.pool-members-summary').waitFor();
   assert.ok((await page.locator('.pool-members-summary strong').first().innerText()).startsWith('A'));
   assert.equal(await page.locator('.pool-members-summary b').first().innerText(),'0.00%');
-  assert.deepEqual(await page.locator('.pool-members-summary b').allTextContents(),['0.00%','3.00%','0.00%'],'account 2 member totals include only account 2 confirmed usage');
+  assert.deepEqual(await page.locator('.pool-members-summary b').allTextContents(),['0.00%','6.00%','0.00%'],'account 2 member totals include only account 2 confirmed usage');
   assert.equal(await page.getByTestId('cycle-record').count(),1,'the account filter survives page changes');
   assert.ok((await page.getByTestId('cycle-record').innerText()).includes('账号2'));
   const accountHeading=await page.locator('.cycle-account-label').evaluate(n=>({size:parseFloat(getComputedStyle(n).fontSize),color:getComputedStyle(n).color}));

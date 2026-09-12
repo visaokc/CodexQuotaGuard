@@ -316,7 +316,7 @@ test('hidden internal models keep their tokens and appear only in cycle unknown 
   assert.ok(cycleModels(cycle)[0].usage_share<100);
 });
 
-test('personal consumption and shared card use received quota capacity without changing Token totals',()=>{
+test('personal consumption and shared card keep the fixed single-cycle basis without changing Token totals',()=>{
   const data=billingFixture(),person=data.view.summary.devices[2],window=data.view.analytics.windows.cycle;
   person.available_cap=100/3;person.available=30;
   window.rows=[{account:'fixture-account-b',device:person.id,model:'gpt-6-astra',bucket:0,tokens:1000,shared_tokens:600}];
@@ -325,5 +325,5 @@ test('personal consumption and shared card use received quota capacity without c
   assert.equal(result.quota,'10.00%');assert.equal(result.sharedQuota,'3.00%');
   assert.equal(result.shared_tokens,600);assert.equal(result.tokens,1000);
   person.available_cap=200/3;
-  assert.equal(userBreakdown(data,person.id).quota,'5.00%');
+  assert.equal(userBreakdown(data,person.id).quota,'10.00%');
 });

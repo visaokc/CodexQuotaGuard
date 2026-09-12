@@ -39,7 +39,7 @@ try{
   assert.ok((await page.getByTestId('pool-quota-card').getAttribute('title')).includes('估算'));
   assert.ok((await page.getByTestId('pool-quota-card').innerText()).includes('单周期剩余'));
   assert.ok((await page.getByTestId('pool-quota-card').innerText()).includes('单周期消耗'));
-  assert.equal(await page.locator('.device-usage').first().innerText(),'90.0%');assert.equal(await page.getByTestId('device-row').first().evaluate(n=>n.style.getPropertyValue('--balance-fill')),'90%');assert.equal(await page.getByTestId('device-row').first().evaluate(n=>getComputedStyle(n,'::before').right),'0px');assert.equal(await page.getByTestId('device-row').nth(1).evaluate(n=>n.style.getPropertyValue('--balance-fill')),'100%');
+  assert.equal(await page.locator('.device-usage').first().innerText(),'90.0%');assert.equal(await page.getByTestId('device-row').first().evaluate(n=>n.style.getPropertyValue('--balance-fill')),'90%');assert.equal(await page.getByTestId('device-row').first().evaluate(n=>getComputedStyle(n,'::before').right),'0px');assert.equal(await page.getByTestId('device-row').first().evaluate(n=>getComputedStyle(n,'::before').borderTopLeftRadius),'0px');assert.equal(await page.getByTestId('device-row').nth(1).evaluate(n=>n.style.getPropertyValue('--balance-fill')),'100%');
   assert.ok((await page.locator('.pool-legend').innerText()).includes('76.4%'));
   const piePercent=await page.evaluate(()=>{const s=window.__CQG_TEST__.getState();return Object.values(s.pie.quotaTotals).reduce((n,v)=>n+v,0)/3;});assert.equal(await page.locator('.pie-total-percent').innerText(),piePercent.toFixed(2)+'%');
   await page.waitForTimeout(1200);

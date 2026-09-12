@@ -39,7 +39,7 @@ try{
   assert.ok((await page.getByTestId('pool-quota-card').getAttribute('title')).includes('估算'));
   assert.ok((await page.getByTestId('pool-quota-card').innerText()).includes('单周期剩余'));
   assert.ok((await page.getByTestId('pool-quota-card').innerText()).includes('单周期消耗'));
-  assert.equal(await page.locator('.device-usage').first().innerText(),'90.0%');assert.equal(await page.getByTestId('device-row').first().evaluate(n=>n.style.getPropertyValue('--balance-fill')),'90%');assert.equal(await page.getByTestId('device-row').nth(1).evaluate(n=>n.style.getPropertyValue('--balance-fill')),'100%');
+  assert.equal(await page.locator('.device-usage').first().innerText(),'90.0%');assert.equal(await page.getByTestId('device-row').first().evaluate(n=>n.style.getPropertyValue('--balance-fill')),'90%');assert.equal(await page.getByTestId('device-row').first().evaluate(n=>getComputedStyle(n,'::before').right),'0px');assert.equal(await page.getByTestId('device-row').nth(1).evaluate(n=>n.style.getPropertyValue('--balance-fill')),'100%');
   assert.ok((await page.locator('.pool-legend').innerText()).includes('76.4%'));
   const piePercent=await page.evaluate(()=>{const s=window.__CQG_TEST__.getState();return Object.values(s.pie.quotaTotals).reduce((n,v)=>n+v,0)/3;});assert.equal(await page.locator('.pie-total-percent').innerText(),piePercent.toFixed(2)+'%');
   await page.waitForTimeout(1200);
@@ -55,7 +55,7 @@ try{
   await page.waitForTimeout(500);assert.equal(await changed.count(),1,'digit is still sliding halfway through');
   await page.getByTestId('personal-daily-button').click();
   const personal=await page.evaluate(()=>window.__CQG_TEST__.getState());
-  assert.equal(personal.personalChart,true);assert.equal(personal.trend.series.length,1);assert.equal(personal.trend.series[0].id,'person1');
+  assert.equal(personal.personalChart,true);assert.equal(personal.kind,'bar');assert.equal(await page.locator('.personal-quota-bar').count(),1);assert.equal(await page.locator('.personal-quota-bar').evaluate(n=>getComputedStyle(n).animationName),'personal-bar-enter');assert.equal(personal.trend.series.length,1);assert.equal(personal.trend.series[0].id,'person1');
   assert.equal(await page.getByTestId('personal-usage-chart').count(),1);assert.ok((await page.getByTestId('personal-usage-chart').innerText()).includes('个人额度 %'));assert.equal(await page.locator('.modal').count(),0);assert.ok((await page.getByTestId('trend-chart').locator('h2').innerText()).includes('个人用量图'));
   await page.screenshot({path:path.join(artifacts,'personal-daily-066.png')});
   await page.getByTestId('personal-daily-button').click();

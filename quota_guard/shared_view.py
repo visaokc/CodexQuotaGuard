@@ -52,12 +52,12 @@ def person_rows(database, row, rules, now, share_tokens=False):
     return output
 
 
-def shared_usage(database, scope, accounts, now=None, rules=None, **options):
+def shared_usage(database, scope, accounts, now=None, rules=None, selected_windows=None, **options):
     import time
     now = time.time() if now is None else now
-    sources = [(account, usage(database, account, now, **options)) for account in sorted(accounts)]
+    sources = [(account, usage(database, account, now, selected_windows=selected_windows, **options)) for account in sorted(accounts)]
     if not sources:
-        sources = [('', usage(database, '', now, **options))]
+        sources = [('', usage(database, '', now, selected_windows=selected_windows, **options))]
     attributed = None
     if rules and rules.get('policy'):
         from .shared_quota import attribution, accounting
@@ -91,25 +91,26 @@ def shared_usage(database, scope, accounts, now=None, rules=None, **options):
         result['windows'][key] = window
     # Each account contributes its complete selected cycle, not just the
     # overlapping portion and not consumption from its newer adjacent cycle.
-    cycle_window = result['windows']['cycle']
-    cycle_window.update(start=min(starts) if starts else now,
-                        step=max(1, now-min(starts)) if starts else 1, rows=[])
-    with database.connect() as db:
-        for cycle in pair['cycles']:
-            rows = db.execute('''SELECT device, model, 0 AS bucket, SUM(tokens) AS tokens,
-                SUM(weight) AS weight, SUM(CASE WHEN known=0 THEN tokens ELSE 0 END) AS unknown,
-                COUNT(*) AS event_count, COUNT(input_tokens) AS detail_count,
-                MIN(ts) AS first_at, MAX(ts) AS last_at, SUM(input_tokens) AS input_tokens,
-                SUM(output_tokens) AS output_tokens, SUM(reasoning_output_tokens) AS reasoning_tokens,
-                COUNT(reasoning_output_tokens) AS reasoning_count,
-                SUM(CASE WHEN reasoning_output_tokens IS NULL THEN COALESCE(output_tokens,0) ELSE 0 END) AS reasoning_missing,
-                SUM(cached_input_tokens) AS cache_tokens,
-                SUM(CASE WHEN input_tokens IS NULL THEN tokens ELSE 0 END) AS detail_missing
-                FROM events LEFT JOIN event_details USING(id)
-                WHERE account=? AND ts>? AND ts<=? GROUP BY device, model ORDER BY device, model''',
-                (cycle['account'], cycle['started'], cycle['matched_until'])).fetchall()
-            cycle_window['rows'].extend(dict(row, account=cycle['account']) for row in rows)
-    if not options:
+    if 'cycle' in result['windows']:
+        cycle_window = result['windows']['cycle']
+        cycle_window.update(start=min(starts) if starts else now,
+                            step=max(1, now-min(starts)) if starts else 1, rows=[])
+        with database.connect() as db:
+            for cycle in pair['cycles']:
+                rows = db.execute('''SELECT device, model, 0 AS bucket, SUM(tokens) AS tokens,
+                    SUM(weight) AS weight, SUM(CASE WHEN known=0 THEN tokens ELSE 0 END) AS unknown,
+                    COUNT(*) AS event_count, COUNT(input_tokens) AS detail_count,
+                    MIN(ts) AS first_at, MAX(ts) AS last_at, SUM(input_tokens) AS input_tokens,
+                    SUM(output_tokens) AS output_tokens, SUM(reasoning_output_tokens) AS reasoning_tokens,
+                    COUNT(reasoning_output_tokens) AS reasoning_count,
+                    SUM(CASE WHEN reasoning_output_tokens IS NULL THEN COALESCE(output_tokens,0) ELSE 0 END) AS reasoning_missing,
+                    SUM(cached_input_tokens) AS cache_tokens,
+                    SUM(CASE WHEN input_tokens IS NULL THEN tokens ELSE 0 END) AS detail_missing
+                    FROM events LEFT JOIN event_details USING(id)
+                    WHERE account=? AND ts>? AND ts<=? GROUP BY device, model ORDER BY device, model''',
+                    (cycle['account'], cycle['started'], cycle['matched_until'])).fetchall()
+                cycle_window['rows'].extend(dict(row, account=cycle['account']) for row in rows)
+    if not options and selected_windows is None:
         for account in sorted(accounts):
             for row in cycle_statistics(database, account, now)['rows']:
                 result['cycles'].append(dict(row, id=account+':'+str(row['id']),
@@ -130,7 +131,7 @@ def shared_usage(database, scope, accounts, now=None, rules=None, **options):
         from .live_reporting import reports
         live = reports(database, rules, attributed, result['billing'], now)
         result['account_estimates'] = live['accounts']
-        if not options:
+        if not options and selected_windows is None:
             result['live_reporting'] = live
         for name, window in result['windows'].items():
             window['rows'] = [mapped for row in window['rows'] for mapped in person_rows(database, row, rules, now, share_tokens=name == 'cycle')]
@@ -196,7 +197,7 @@ def shared_usage(database, scope, accounts, now=None, rules=None, **options):
                     window['quota_pending_rows'].append({k: row[k] for k in ('account','device','model','bucket','maintenance') if k in row})
             window['quota_ready'] = window['quota_available'] = bool(attributed['epochs'])
         result['rules'] = rules
-    if not options:
+    if not options and selected_windows is None:
         from .usage_history import archive_boundary, donut_windows
         result['donut_archive_at'] = archive_boundary(database, rules, now)
         if result['donut_archive_at'] is not None or ((rules or {}).get('policy') or {}).get('shared_costs') or (rules or {}).get('maintenance_costs'):

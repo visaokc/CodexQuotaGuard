@@ -61,7 +61,7 @@ def add_quota(grouped, key, quota, cached):
 
 
 def usage(database, account, now=None, hour_end=None, hour_buffer=False, day_end=None, day_buffer=False,
-          rolling_period=None, rolling_end=None, rolling_buffer=False):
+          rolling_period=None, rolling_end=None, rolling_buffer=False, selected_windows=None):
     now = time.time() if now is None else now
     result = {'account': account, 'at': now, 'windows': {}, 'models': []}
     models = set()
@@ -73,6 +73,8 @@ def usage(database, account, now=None, hour_end=None, hour_buffer=False, day_end
                            (account,)).fetchone()
         result['cycle_start'] = epoch['started'] if epoch else None
         for name, (duration, count) in WINDOWS.items():
+            if selected_windows is not None and name not in selected_windows:
+                continue
             if hour_buffer and name in ('hour', 'hour_curve'):
                 duration *= 26
                 count *= 26

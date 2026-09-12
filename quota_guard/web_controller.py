@@ -416,6 +416,8 @@ class WebController:
         options = dict(day_end=end,day_buffer=True) if period == 'day' else dict(hour_end=end,hour_buffer=True)
         if period in ('six_hours', 'twelve_hours'):
             options = dict(rolling_period=period, rolling_end=end, rolling_buffer=True)
+        windows = ('hour','hour_curve') if period == 'hour' else (period,)
+        options['selected_windows'] = windows
         if account.startswith('group:'):
             from .shared_view import shared_usage
             from .shared_policy import load_rules
@@ -424,7 +426,6 @@ class WebController:
             analytics = shared_usage(self._engine.group_db, account, labels, rules=rules, **options)
         else:
             analytics = usage(self._engine.group_db,account,**options)
-        windows = ('hour','hour_curve') if period == 'hour' else (period,)
         analytics['windows'] = {k:v for k,v in analytics['windows'].items() if k in windows}
         return _view({'analytics':analytics})['analytics']
 

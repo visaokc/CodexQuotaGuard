@@ -33,10 +33,18 @@ try{
   assert.equal(await page.getByTestId('pool-remaining').innerText(),'77.0%');
   assert.ok((await page.getByTestId('pool-quota-card').innerText()).includes('单周期剩余'));
   assert.ok((await page.getByTestId('pool-quota-card').innerText()).includes('单周期消耗'));
-  assert.equal(await page.locator('.device-usage').first().innerText(),'≈90.0%');
-  assert.ok(await page.locator('.device-usage .number-changing').count()>0);
+  assert.equal(await page.locator('.device-usage').first().innerText(),'90.0%');
+  await page.waitForTimeout(450);
+  await page.evaluate(()=>{window.__fixture.view.summary.devices[0].available_estimate=100/3*.91;window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture));});
+  await page.waitForTimeout(450);
+  await page.evaluate(()=>{window.__fixture.view.summary.devices[0].available_estimate=30;window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture));});
+  const changed=page.locator('.device-usage').first().locator('.number-changing');
+  assert.equal(await changed.count(),1);assert.equal(await changed.innerText(),'0');assert.equal(await changed.getAttribute('data-previous'),'1');
+  assert.ok((await page.locator('.device-usage').first().getAttribute('title')).includes('估算'));
+  assert.ok(!(await page.locator('.device-columns').innerText()).includes('≈'));
   await page.getByTestId('personal-daily-button').click();
   assert.ok((await page.locator('.personal-daily-row').innerText()).includes('4.50%'));
+  assert.equal(await page.locator('.modal .rolling-value').count(),0);
   await page.getByRole('button',{name:'关闭对话框',exact:true}).click();
   await page.getByTestId('nav-settings').click();
   const maintenance=page.getByRole('switch',{name:'软件维护模式',exact:true});
@@ -54,6 +62,7 @@ try{
   const normal=await page.evaluate(()=>window.__CQG_TEST__.getState());
   assert.equal(normal.trend.total,initial.trend.total-token);assert.equal(normal.pie.total,initial.pie.total);
   await page.getByRole('button',{name:'曲线内容模式',exact:true}).click();
+  assert.equal(await page.getByRole('option').last().innerText(),'维护曲线');
   await page.getByRole('option',{name:'维护曲线',exact:true}).click();
   const mode=await page.evaluate(()=>window.__CQG_TEST__.getState());
   assert.equal(mode.trend.total,token);assert.equal(mode.trend.series.length,1);assert.equal(mode.trend.series[0].color,'#9299a6');

@@ -1,19 +1,40 @@
 import {ref, computed, watch, onMounted, onBeforeUnmount, nextTick} from 'vue';
 import {chartQuotaPercent,compact,niceScale,linePath,timeLabel,curveGeometry,curveY} from './data.js';
 
-export const RollingValue={
-  props:{value:[String,Number]},
+const RollingDigit={
+  props:{value:String},
   setup(props){
     const node=ref(null),previous=ref(''),changing=ref(false),direction=ref(1);let timer=0;
-    function roll(value,old=''){
-      previous.value=old??'';direction.value=parseFloat(String(value).replace(/[^\d.-]/g,''))<parseFloat(String(old).replace(/[^\d.-]/g,''))?-1:1;
-      changing.value=false;clearTimeout(timer);
-      nextTick(()=>{if(!node.value)return;changing.value=true;node.value.animate([{transform:`translateY(${direction.value*110}%)`,opacity:0},{transform:'translateY(0)',opacity:1}],{duration:420,easing:'cubic-bezier(.2,.7,.2,1)'});timer=setTimeout(()=>changing.value=false,420);});
-    }
-    watch(()=>props.value,roll);onMounted(()=>roll(props.value));onBeforeUnmount(()=>clearTimeout(timer));
+    watch(()=>props.value,(value,old)=>{
+      clearTimeout(timer);changing.value=false;
+      if(!/^[0-9]$/.test(value)||!/^[0-9]$/.test(old))return;
+      previous.value=old;direction.value=Number(value)<Number(old)?-1:1;
+      nextTick(()=>{if(!node.value)return;changing.value=true;node.value.getAnimations().forEach(a=>a.cancel());node.value.animate([{transform:`translateY(${direction.value*110}%)`,opacity:0},{transform:'translateY(0)',opacity:1}],{duration:420,easing:'cubic-bezier(.2,.7,.2,1)'});timer=setTimeout(()=>changing.value=false,420);});
+    });
+    onBeforeUnmount(()=>clearTimeout(timer));
     return {node,previous,changing,direction};
   },
-  template:`<span class="rolling-value" :class="{'number-changing':changing}" :data-previous="previous" :style="{'--roll-direction':direction}"><span ref="node">{{value}}</span></span>`
+  template:`<span class="rolling-digit" :class="{'number-changing':changing}" :data-previous="previous" :style="{'--roll-direction':direction}"><span ref="node">{{value}}</span></span>`
+};
+
+export const RollingValue={
+  components:{RollingDigit},props:{value:[String,Number]},
+  setup(props){
+    const parts=computed(()=>{
+      const value=String(props.value??''),result=[];let cursor=0,run=0;
+      for(const match of value.matchAll(/\d+(?:\.\d+)?/g)){
+        for(let i=cursor;i<match.index;i++)result.push({key:'text-'+run+'-'+(i-cursor),value:value[i]});
+        const [integer,fraction]=match[0].split('.');
+        [...integer].forEach((value,i)=>result.push({key:'number-'+run+'-integer-'+(integer.length-i-1),value}));
+        if(fraction!==undefined){result.push({key:'number-'+run+'-dot',value:'.'});[...fraction].forEach((value,i)=>result.push({key:'number-'+run+'-fraction-'+i,value}));}
+        cursor=match.index+match[0].length;run++;
+      }
+      for(let i=cursor;i<value.length;i++)result.push({key:'text-'+run+'-'+(i-cursor),value:value[i]});
+      return result;
+    });
+    return {parts};
+  },
+  template:`<span class="rolling-value"><RollingDigit v-for="part in parts" :key="part.key" :value="part.value"/></span>`
 };
 
 export const SelectBox={

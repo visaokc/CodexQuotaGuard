@@ -3,7 +3,8 @@
 - Reproduced on a read-only live database copy: both official cycles reset, but a pending old account2 segment forced the personal display back to pre-reset balances.
 - User-confirmed account1 reset cause appended as one profile fact after backup; all 16,574 existing facts preserved. Account2 already identified an official reset.
 - Current balance unblocks only after both official resets, no intervening official consumption, and expired unused inventory. Historical pending attribution remains unchanged.
-- Full backend suite: 550 passed (292.11 s). Final focused reset suite: 7 passed, including late attribution convergence, new consumption, override, one-account/natural/unknown/rollover and intervening-spend guards.
+- Full backend suite: 550 passed (292.11 s). Final focused accounting/estimate suite: 48 passed (8 reset regressions), including late attribution convergence, new consumption, override, one-account/natural/unknown/rollover and intervening-spend guards.
+- Post-install data exposed a second regression: new pending consumption selected an obsolete pre-reset fallback. Reproduced with a failing regression and fixed last-confirmed selection to ignore expired old gaps; live-copy replay now selects a post-reset balance with only the new 1-point increment pending.
 - Live-copy replay yields 66.6666667 quota points per person after the resets (200% at the fixed personal basis), before new consumption.
 - Frozen code/frontend/native/updater/license matching and isolated frozen GUI startup/clean exit passed. Unchanged native helper reused; no Go runtime was available in this shell.
 - Maintenance switch remained enabled. No manual repair cost interval was added.

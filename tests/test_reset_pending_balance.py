@@ -66,3 +66,21 @@ def test_confirmed_reset_override_and_new_consumption_are_applied():
     result = accounting(rules, data, 400)
     assert result['status'] == 'active'
     assert [p['available'] for p in result['people'].values()] == pytest.approx([200/3-2, 200/3, 200/3])
+
+
+def test_new_pending_consumption_falls_back_after_the_resets(monkeypatch):
+    from quota_guard import shared_quota
+    rules, data = case()
+    data['streams'].append(dict(account='a', start=310, end=330, cycle_start=300,
+                                units=units(2), ready=False, reason='等待成员采集确认', events=[]))
+    def at_time(database, current_rules, at):
+        result = copy.deepcopy(data)
+        result['streams'] = [s for s in result['streams'] if s['end'] <= at]
+        result['epochs'] = {a: [e for e in epochs if e['started'] <= at]
+                            for a, epochs in result['epochs'].items()}
+        return result
+    monkeypatch.setattr(shared_quota, 'attribution', at_time)
+    previous = shared_quota.last_confirmed(None, rules, data, 400)
+    assert previous['at'] == pytest.approx(330-0.000001)
+    assert previous['pending_quota'] == 2
+    assert [p['available'] for p in previous['people'].values()] == pytest.approx([200/3]*3)

@@ -238,6 +238,7 @@ def last_confirmed(database, rules, attributed, now):
     anchors, clean = attributed['anchors'], attributed.get('clean_start', {})
     pending = [s for s in attributed['streams'] if not s['ready'] and s['account'] in anchors
                and s['end'] > anchors[s['account']]['at']
+               and not _pending_expired(s, rules, attributed)
                and not (clean and s['account'] == clean['account']
                         and s['cycle_start'] == anchors[s['account']]['cycle']['started'])]
     if not pending:

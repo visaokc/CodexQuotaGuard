@@ -42,6 +42,7 @@ class Pool:
         self.confirmed = {p: 0 for p in PERSONS}
         self.cycles = {}
         self.entries = []
+        self.paused = set()
 
     def record(self, kind, at, account='', **value):
         self.entries.append(dict(kind=kind, at=at, account=account,
@@ -53,18 +54,31 @@ class Pool:
         self.stock[account] = split(amount, {p: 1 for p in PERSONS})
         self.entitlements[account] = dict(self.stock[account])
         self.record('initial' if initial else 'grant', at, account, amount=points(amount))
-        if self.enabled and not initial:
-            payments = {p: min(self.stock[account][p], max(0, self.confirmed[p])) for p in PERSONS}
-            credits = {p: max(0, -self.confirmed[p]) for p in PERSONS}
-            total = sum(payments.values())
-            received = split(total, credits) if total else {p: 0 for p in PERSONS}
-            for p in PERSONS:
-                self.stock[account][p] += received[p]-payments[p]
-                self.confirmed[p] += received[p]-payments[p]
-                if payments[p] or received[p]:
-                    self.record('repay', at, account, person=p,
-                                paid=points(payments[p]), received=points(received[p]))
+        if self.enabled and not initial and account not in self.paused:
+            self.repay(account, at)
         self.check()
+
+    def repay(self, account, at):
+        payments = {p: min(self.stock[account][p], max(0, self.confirmed[p])) for p in PERSONS}
+        credits = {p: max(0, -self.confirmed[p]) for p in PERSONS}
+        total = sum(payments.values())
+        received = split(total, credits) if total else {p: 0 for p in PERSONS}
+        for p in PERSONS:
+            self.stock[account][p] += received[p]-payments[p]
+            self.confirmed[p] += received[p]-payments[p]
+            if payments[p] or received[p]:
+                self.record('repay', at, account, person=p,
+                            paid=points(payments[p]), received=points(received[p]))
+        self.check()
+
+    def availability(self, paused, at):
+        paused = set(paused)
+        resumed = self.paused-paused
+        self.paused = paused
+        if self.enabled:
+            for account in self.accounts:
+                if account in resumed:
+                    self.repay(account, at)
 
     def spend(self, account, person, amount, at):
         if amount < 0 or amount > self.remaining[account]:
@@ -74,7 +88,7 @@ class Pool:
         self.stock[account][person] -= own
         left -= own
         for other in self.accounts:
-            if other == account or not left:
+            if other == account or not left or account in self.paused or other in self.paused:
                 continue
             holders = {p: self.stock[account][p] for p in PERSONS if p != person}
             exchange = min(left, self.stock[other][person], sum(holders.values()))
@@ -160,9 +174,9 @@ class Pool:
             assert 0 <= self.remaining[account] <= FULL
 
     def summary(self):
-        return {p: dict(available=points(sum(self.stock[a][p] for a in self.accounts)+self.bank[p]),
+        return {p: dict(available=points(sum(self.stock[a][p] for a in self.accounts if a not in self.paused)+self.bank[p]),
                        rollover=points(self.bank[p]),
-                       available_cap=points(sum(self.entitlements[a][p] for a in self.accounts)),
+                       available_cap=points(sum(self.entitlements[a][p] for a in self.accounts if a not in self.paused)),
                        fair_usage=points(sum(self.entitlements[a][p]-self.stock[a][p] for a in self.accounts)-self.bank[p]+self.debt(p)),
                        by_account={a: points(self.stock[a][p]) for a in self.accounts},
                        pending=points(sum(self.pending[a][p] for a in self.accounts)),

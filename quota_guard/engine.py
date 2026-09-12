@@ -432,6 +432,15 @@ class Engine:
                 raise ValueError('周期已变化，请重新选择')
             changes['reset_types'] = [r for r in rules['policy'].get('reset_types', []) if (r['account'],r['started']) != (account,started)]
             changes['reset_types'].append(dict(account=account, started=started, type=cause))
+        elif payload.get('kind') == 'availability':
+            account, paused = payload.get('account'), payload.get('paused')
+            if account not in rules['accounts'] or type(paused) is not bool:
+                raise ValueError('请选择共享账号和暂停状态')
+            current = set(rules['policy'].get('paused_accounts', []))
+            if (account in current) == paused:
+                return
+            current.add(account) if paused else current.discard(account)
+            changes['paused_accounts'] = [a for a in rules['accounts'] if a in current]
         else:
             raise ValueError('未知共享规则操作')
         publish_change(self.journal, rules, self.config['device_id'], self.config['name'], self.config['quota'], changes, now)

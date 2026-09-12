@@ -252,6 +252,8 @@ def shared_overview(database, scope, accounts, members, local, now, analytics, r
         from .shared_policy import PERSONS, person_for
         rules, billing = analytics['rules'], analytics['billing']
         cards.sort(key=lambda card: rules['accounts'].index(card['account']))
+        for card in cards:
+            card['paused'] = card['account'] in rules['policy'].get('paused_accounts', [])
         people_rows = []
         for index, person in enumerate(PERSONS):
             attached = sorted(device for device in people if person_for(rules, device, now) == person)
@@ -319,6 +321,7 @@ def daily_usage(database, cards, people, analytics, now):
     """Use a single available cycle unless both accounts have official stock."""
     totals = {person['id']: 0. for person in people}
     total, unassigned = 0., 0.
+    cards = [c for c in cards if not c.get('paused')]
     usable = [c for c in cards if c.get('epoch') and c['epoch']['used'] < 100]
     selected = usable if usable else [max((c for c in cards if c.get('epoch')), key=lambda c:c['epoch']['started'])] if any(c.get('epoch') for c in cards) else []
     divisor = max(1, len(selected))

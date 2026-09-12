@@ -13,6 +13,7 @@ PERSONAL_BASE = 100/3
 def reports(database, rules, attributed, billing, now):
     from .maintenance import cost_policy
     policy = cost_policy(rules)
+    paused = set(policy.get('paused_accounts', []))
     confirmed = billing.get('last_confirmed') or {}
     base = billing.get('people', {}) if billing['status'] == 'active' else confirmed.get('people', {})
     base_at = now if billing['status'] == 'active' else confirmed.get('at', 0)
@@ -100,7 +101,7 @@ def reports(database, rules, attributed, billing, now):
         if not base or epoch['started'] > base_at or account in reset_pending:
             continue  # Never carry a stale personal balance estimate across a reset.
         projected, missing = estimate_after(cutoff)
-        for row in missing:
+        for row in missing if account not in paused else []:
             person = person_for(rules, row['device'], row['ts'])
             if person:
                 incomplete.update(recipient for recipient, _ in token_shares(row, person, policy))
@@ -121,11 +122,11 @@ def reports(database, rules, attributed, billing, now):
                       quota=confirmed_events[row['id']]['quota'],
                       cache_quota=confirmed_events[row['id']]['cache_quota'])
                  if row['id'] in confirmed_events else row for row in projected['events']]
-    stale_reset = bool(reset_pending.intersection(rules['accounts'])) or any(epochs and epochs[-1]['started'] > base_at for epochs in attributed['epochs'].values())
+    stale_reset = bool(reset_pending.intersection(set(rules['accounts'])-paused)) or any(epochs and epochs[-1]['started'] > base_at for account, epochs in attributed['epochs'].items() if account not in paused)
     balances = {}
     for person in PERSONS:
         available = base.get(person, {}).get('available')
-        pending = sum(row['quota'] for row in estimates if row['device'] == person)
+        pending = sum(row['quota'] for row in estimates if row['device'] == person and row['account'] not in paused)
         balances[person] = dict(available_estimate=max(0., available-pending) if available is not None and not stale_reset and person not in incomplete else None,
             balance_estimated=bool(pending or confirmed) and not stale_reset and person not in incomplete,
             estimate_missing=stale_reset or person in incomplete,

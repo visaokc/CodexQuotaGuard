@@ -68,7 +68,7 @@ def _view(value):
                                              for member in shared.get('members', [])]
     result['account_summaries'] = []
     for card in value.get('account_summaries', []):
-        clean = _pick(card, ('account', 'label', 'reset_pending', 'used_estimate', 'remaining_estimate',
+        clean = _pick(card, ('account', 'label', 'paused', 'reset_pending', 'used_estimate', 'remaining_estimate',
                              'balance_estimated', 'estimate_pending', 'estimate_missing', 'estimate_samples', 'estimate_at'))
         clean['epoch'] = _pick(card.get('epoch'), ('id', 'account', 'started', 'ended', 'baseline', 'used', 'reset_at', 'observed_at', 'reason')) or None
         result['account_summaries'].append(clean)
@@ -459,7 +459,7 @@ class WebController:
         if payload.get('revision') != group.get('revision'):
             raise ValueError('规则已更新，请刷新后重试')
         kind = payload.get('kind')
-        if kind not in ('compensation','bind','accounts','reset'):
+        if kind not in ('compensation','bind','accounts','reset','availability'):
             raise ValueError('未知共享规则操作')
         if kind == 'compensation':
             raise ValueError('跨周期补偿已固定开启，不能关闭')
@@ -469,7 +469,9 @@ class WebController:
             raise ValueError('请选择两个不同账号')
         if kind == 'reset' and (type(payload.get('started')) not in (int,float) or not math.isfinite(payload['started']) or payload.get('cause') not in ('natural','card','official')):
             raise ValueError('请选择周期和重置原因')
-        self._engine.commands.put(('group_rule', {k: payload[k] for k in ('kind','revision','enabled','person','device','accounts','account','started','cause') if k in payload}))
+        if kind == 'availability' and (type(payload.get('paused')) is not bool or not any(a['account'] == payload.get('account') for a in group.get('available_accounts', []))):
+            raise ValueError('请选择共享账号和暂停状态')
+        self._engine.commands.put(('group_rule', {k: payload[k] for k in ('kind','revision','enabled','person','device','accounts','account','started','cause','paused') if k in payload}))
         self._engine.wakeup.set()
         return dict(queued=True)
 

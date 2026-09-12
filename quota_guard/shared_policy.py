@@ -45,6 +45,10 @@ def validate(value, origin, at):
                 or len(weights) != 3 or any(not timestamp(w) or w > 1e6 for w in weights)):
             raise ValueError('共享计量权重无效')
     overrides = value.get('reset_types', [])
+    paused = value.get('paused_accounts', [])
+    if (not isinstance(paused, list) or any(a not in value['accounts'] for a in paused)
+            or len(set(paused)) != len(paused)):
+        raise ValueError('暂停账号设置无效')
     if not isinstance(overrides, list) or len(overrides) > 1000:
         raise ValueError('重置确认无效')
     for row in overrides:

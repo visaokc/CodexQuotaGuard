@@ -164,6 +164,10 @@ def accounting(rules, attributed, now):
     else:
         for revision in rules['policies']:
             actions.append((revision['effective'], 0, 'policy', revision))
+    for revision in rules['policies']:
+        if revision['effective'] <= now:
+            actions.append((revision['effective'], .1, 'policy',
+                            dict(kind='availability', paused=revision.get('paused_accounts', []))))
     for account, anchor in anchors.items():
         actions.append((anchor['at'], 1, account, dict(kind='initial', **anchor)))
         previous = anchor['cycle']
@@ -196,6 +200,8 @@ def accounting(rules, attributed, now):
     for at, order, account, action in actions:
         if order == 0:
             pool.compensation(action['compensation'], at)
+        elif action['kind'] == 'availability':
+            pool.availability(action['paused'], at)
         elif action['kind'] == 'expire_saved':
             pool.expire_saved(at)
         elif action['kind'] == 'initial':
@@ -249,4 +255,8 @@ def last_confirmed(database, rules, attributed, now):
     previous = accounting(rules, attribution(database, rules, at), at)
     if previous['status'] != 'active':
         return None
+    paused = set((rules.get('policy') or {}).get('paused_accounts', []))
+    for value in previous['people'].values():
+        value['available'] = sum(amount for account, amount in value['by_account'].items()
+                                 if account not in paused)+(value.get('rollover') or 0)
     return dict(at=at, people=previous['people'], pending_quota=sum(points(s['units']) for s in pending))

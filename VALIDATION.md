@@ -1,3 +1,11 @@
+## 0.6.9 — 2026-09-12
+
+- Accounting, estimate, shared bridge/engine/view, maintenance and reset regression suite: 76 passed.
+- Pause/resume tests cover retained inventory and statistics, no cross-account funding from paused inventory, paused resets, deferred repayment, repeated toggles, authenticated administrator validation and offline members.
+- Isolated headless Edge verified settings pause/resume command payloads, paused account label, remaining pool and retained three members; no page errors.
+- Live database copy: one policy fact pauses account2, prior 16,870 facts and all Token records unchanged; current billing active and all three display estimates available.
+- Maintenance owner switch remains unchanged; no manual release-sharing interval added.
+
 ## 0.6.8 — 2026-09-12
 
 - Offline checkpoint regression reproduced: first official sample existed but absent peer checkpoints disabled all estimates. Complete current-cycle samples remain preferred; otherwise received same-cycle usage provisionally calibrates the display. Late peer facts refit without adding duplicate confirmed charges.

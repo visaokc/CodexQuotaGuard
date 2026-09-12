@@ -5,6 +5,7 @@ import math
 import re
 
 from . import __version__
+from .journal import validate_presence
 
 from .sync_diagnostics import rejection_reason
 
@@ -127,20 +128,7 @@ class SharedSync:
             raise ValueError('来源尚未声明共享此账号')
 
     def _presence_value(self, peer, account, value, now):
-        if (not isinstance(value, dict) or value.get('device') != peer
-                or value.get('account') != account):
-            raise ValueError('设备心跳无效')
-        for field in ('at', 'scan_at'):
-            if type(value.get(field)) not in (int, float) or not math.isfinite(value[field]):
-                raise ValueError('设备心跳无效')
-        if abs(now-value['at']) > 90:
-            raise ValueError('设备心跳无效')
-        for field in ('active', 'uncertain', 'unbound_active', 'unbound_uncertain'):
-            if field in ('active', 'uncertain') and field not in value:
-                raise ValueError('设备心跳无效')
-            if type(value.get(field, 0)) is not int or not 0 <= value.get(field, 0) <= 10000:
-                raise ValueError('设备心跳无效')
-        return value
+        return validate_presence(peer, account, value, now)
 
     def _set_current(self, peer, account, presence, now):
         if peer not in self.current_accounts or self.current_accounts[peer] != account:

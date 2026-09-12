@@ -63,6 +63,8 @@ class Database:
             for name in ('unbound_active', 'unbound_uncertain'):
                 if name not in columns:
                     db.execute(f'ALTER TABLE devices ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0')
+            if 'active_models' not in columns:
+                db.execute("ALTER TABLE devices ADD COLUMN active_models TEXT NOT NULL DEFAULT 'null'")
             if 'reasoning_output_tokens' not in {row['name'] for row in db.execute('PRAGMA table_info(event_details)')}:
                 db.execute('ALTER TABLE event_details ADD COLUMN reasoning_output_tokens INTEGER')
 

@@ -751,6 +751,10 @@ class Engine:
         self.db.put('scanner_scope', dict(scope=self.scanner_scope(ident), since=self.scanner.scope_since))
         active, uncertain = self.scanner.activity(now, account)
         unbound_active, unbound_uncertain = self.scanner.activity(now, '')
+        active_models = self.scanner.active_models(now, account)
+        for model in self.scanner.active_models(now, ''):
+            if model not in active_models:
+                active_models.append(model)
         self.publish_events(account, now)
         if not recovery_error:
             self.publish_sample_checkpoint(account, now)
@@ -759,7 +763,7 @@ class Engine:
             except Exception as e:
                 recovery_error = '历史补记异常：'+type(e).__name__+'；稍后重试'
         presence = dict(device=self.config['device_id'], account=account, at=now, scan_at=now,
-                        active=active, uncertain=uncertain,
+                        active=active, uncertain=uncertain, active_models=active_models[:16],
                         unbound_active=unbound_active, unbound_uncertain=unbound_uncertain)
         self.journal.presence(account, self.config['device_id'], presence, now)
         if not self.shared_mode and self.mesh and network_allowed and (sync_due or (not self._network_limited and now-self.last_broadcast >= 2)):

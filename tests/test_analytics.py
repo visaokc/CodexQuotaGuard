@@ -330,7 +330,7 @@ def test_pending_quota_is_distinct_from_zero_and_resolves_on_increment(tmp_path)
     assert window['quota_rows'][0]['quota']==1
 
 
-def test_logged_tokens_update_live_but_quota_waits_for_official_increments(tmp_path):
+def test_logged_tokens_update_live_with_estimate_then_reconcile_to_official_increment(tmp_path):
     db = Database(tmp_path/'live-estimate.sqlite')
     with db.connect() as conn:
         epoch = conn.execute("INSERT INTO epochs(account,started,baseline,used,reset_at,observed_at,reason) VALUES ('a',100,0,2,999,200,'reset')").lastrowid
@@ -338,8 +338,8 @@ def test_logged_tokens_update_live_but_quota_waits_for_official_increments(tmp_p
         for id, device, ts, tokens, weight, known in [('sample','one',150,100,10,1), ('cached','one',250,1000000,2,1), ('output','two',260,100,6,1)]:
             conn.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?,?)', (id,device,'a',ts,'model',tokens,weight,known))
     window = usage(db,'a',300)['windows']['total']
-    assert len(window['quota_pending_rows']) == 2
-    assert window['quota_estimate_rows'] == []
+    assert window['quota_pending_rows'] == []
+    assert {r['device']:r['quota'] for r in window['quota_estimate_rows']} == pytest.approx({'one':.4,'two':1.2})
     assert sum(r['tokens'] for r in window['rows']) == 1000200
     assert sum(r['quota'] for r in window['quota_rows']) == 2
     with db.connect() as conn:
@@ -379,18 +379,36 @@ def test_cache_quota_is_discounted_part_of_total_and_missing_is_not_zero(tmp_pat
     window=usage(db,'a',300)['windows']['total']
     assert window['rows'][0]['cache_tokens'] == 1800
     assert window['rows'][0]['detail_missing'] == 0
-    assert window['quota_estimate_rows'] == []
+    assert window['quota_estimate_rows'][0]['quota'] == pytest.approx(1)
+    assert window['quota_estimate_rows'][0]['cache_quota'] == pytest.approx(22500/172500)
     assert window['quota_rows'][0]['quota'] == 1
     assert abs(window['quota_rows'][0]['cache_quota']-22500/172500)<1e-10
     with db.connect() as conn:
         conn.execute("DELETE FROM event_details WHERE id='fresh'")
     window=usage(db,'a',300)['windows']['total']
     assert window['rows'][0]['detail_missing'] == 1100
-    assert window['quota_estimate_rows'] == []
+    assert window['quota_estimate_rows'][0]['quota'] == pytest.approx(1)
+    assert window['quota_estimate_rows'][0]['cache_quota'] is None
     with db.connect() as conn:
         conn.execute('INSERT INTO segments(epoch,start,end,delta) VALUES (?,?,?,?)', (epoch,200,280,1))
     window=usage(db,'a',300)['windows']['total']
     assert window['quota_rows'][0]['cache_quota'] is None
+
+
+def test_estimator_uses_every_confirmed_sample_in_current_cycle(tmp_path):
+    db = Database(tmp_path/'cumulative-estimate.sqlite')
+    with db.connect() as conn:
+        epoch = conn.execute("INSERT INTO epochs(account,started,baseline,used,reset_at,observed_at,reason) VALUES ('a',100,0,15,9999,700,'reset')").lastrowid
+        for index, delta in enumerate([10,1,1,1,1,1]):
+            start, end = 100+index*100, 200+index*100
+            conn.execute('INSERT INTO segments(epoch,start,end,delta) VALUES (?,?,?,?)', (epoch,start,end,delta))
+            conn.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?,?)',
+                         (f'sample-{index}','one','a',end-10,'model',100,10,1))
+        conn.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?,?)', ('pending','one','a',750,'model',100,4,1))
+    data = usage(db,'a',800)
+    assert data['quota_estimate']['estimate_samples'] == 6
+    assert data['quota_estimate']['estimate_pending'] == pytest.approx(1)
+    assert data['quota_estimate']['remaining_estimate'] == pytest.approx(84)
 
 
 def test_hour_panning_reads_past_tokens_with_later_official_calibration(tmp_path):

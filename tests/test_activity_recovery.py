@@ -93,6 +93,38 @@ def test_current_runtime_evidence_marks_activity_without_start_event(tmp_path):
     assert scanner.activity(115, A) == (0, 0)
 
 
+def test_parallel_active_sessions_report_each_model(tmp_path):
+    scanner, path = fixture(tmp_path)
+    scanner.seed()
+    scanner.boundary(100)
+    with path.open('a') as f:
+        f.write(line('turn_context', dict(model='gpt-5.6-sol', turn_id='five'), 110)+
+                usage(2000, 111))
+    other = path.parent/'six.jsonl'
+    other.write_text(line('session_meta', dict(id='six', model_provider='openai'), 105)+
+                     line('turn_context', dict(model='gpt-6-astra', turn_id='six'), 112)+
+                     usage(1000, 113))
+    scanner.scan(A)
+    assert scanner.activity(120, A) == (2, 0)
+    assert scanner.active_models(120, A) == ['gpt-6-astra', 'gpt-5.6-sol']
+    # Concurrent sessions retain their own model and numeric accounting.
+    events = scanner.pending()
+    assert {event['model']: event['tokens'] for event in events} == {
+        'gpt-5.6-sol': 1100, 'gpt-6-astra': 1100}
+    assert {event['model']: event['weight'] for event in events} == {
+        'gpt-5.6-sol': .105, 'gpt-6-astra': .2625}
+    with path.open('a') as f:
+        f.write(line('event_msg', dict(type='task_complete', turn_id='five'), 121))
+    with other.open('a') as f:
+        f.write(usage(1500, 122))
+    scanner.scan(A)
+    assert scanner.active_models(123, A) == ['gpt-6-astra']
+    assert [event['model'] for event in scanner.pending()] == [
+        'gpt-5.6-sol', 'gpt-6-astra', 'gpt-6-astra']
+    scanner.scan(A)
+    assert len(scanner.pending()) == 3  # Repeated scans never duplicate usage.
+
+
 def test_unbound_activity_reaches_authenticated_peer_presence_without_tokens(tmp_path):
     from test_account_scope import setup, append
     from quota_guard.journal import Journal
@@ -115,3 +147,38 @@ def test_unbound_activity_reaches_authenticated_peer_presence_without_tokens(tmp
     assert journal.ledger.summary(A, 100)['devices'][0]['tokens'] == 0
     journal.ledger.logout('one')
     assert journal.ledger.summary(A, 100)['devices'][0]['unbound_active'] == 0
+
+
+def test_activity_refresh_updates_model_without_changing_billing_cursor(tmp_path):
+    scanner, path = fixture(tmp_path)
+    scanner.seed()
+    with path.open('a') as f:
+        f.write(line('turn_context', dict(model='gpt-5.6-sol', turn_id='five'), 110)+usage(2000, 111))
+    scanner.scan(A)
+    with scanner.db.connect() as db:
+        before = json.loads(db.execute('SELECT state FROM cursors').fetchone()[0])
+    with path.open('a') as f:
+        f.write(line('turn_context', dict(model='gpt-6-astra', turn_id='six'), 120)+usage(3000, 121))
+    scanner.refresh_activity(122)
+    assert scanner.active_models(122, A) == ['gpt-6-astra']
+    with scanner.db.connect() as db:
+        state = json.loads(db.execute('SELECT state FROM cursors').fetchone()[0])
+    assert state['offset'] == before['offset'] and state['model'] == 'gpt-5.6-sol'
+    assert len(scanner.pending()) == 1
+    scanner.scan(A)
+    assert [(event['model'], event['tokens']) for event in scanner.pending()] == [
+        ('gpt-5.6-sol', 1100), ('gpt-6-astra', 1100)]
+
+
+def test_active_model_list_is_bounded_and_filters_non_identifiers(tmp_path):
+    scanner, path = fixture(tmp_path)
+    scanner.seed()
+    with scanner.db.connect() as db:
+        for index, model in enumerate(['', None, 'x'*101, 'line\nbreak', 'codex-auto-review',
+                                       'gpt-spark', *['gpt-test-'+str(i) for i in range(20)]]):
+            state = dict(session=str(index), activity=110, active=True, provider='openai',
+                         activity_account=A, model=model)
+            db.execute('INSERT INTO cursors VALUES (?,?)', (str(index), json.dumps(state)))
+    models = scanner.active_models(115, A)
+    assert len(models) == 16 and len(set(models)) == 16
+    assert all(model.startswith('gpt-test-') for model in models)

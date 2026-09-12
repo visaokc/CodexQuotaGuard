@@ -234,7 +234,7 @@ try{
   for(const [used,color] of [[91,'rgb(237, 141, 152)'],[90,'rgb(232, 191, 117)'],[80,normalUsageColor],[null,normalUsageColor]]){
     await page.evaluate(used=>{const data=structuredClone(window.__fixture);data.view.summary.epoch.used=used;window.__CQG_TEST__.applySnapshot(data);},used);
     assert.equal(await page.getByTestId('official-remaining').evaluate(node=>getComputedStyle(node).color),color);
-    assert.equal(await page.getByTestId('official-remaining').innerText(),used===null?'—':(100-used)+'%');
+    assert.equal(await page.getByTestId('official-remaining').innerText(),used===null?'—':(100-used).toFixed(1)+'%');
     assert.equal(await page.locator('.quota-progress').getAttribute('aria-valuenow'),used===null?null:String(100-used));
     if(used===91||used===90)assert.equal(await page.locator('.quota-progress i').evaluate(node=>getComputedStyle(node).backgroundColor),color);
   }
@@ -543,9 +543,9 @@ try{
   assert.notEqual(await page.locator('.tooltip-series-row[data-device="fixture-local"] .tooltip-user-quota').innerText(),'待更新');
   await page.evaluate(()=>{const data=structuredClone(window.__fixture);for(const key of ['day','cycle'])data.view.analytics.windows[key].quota_estimate_rows=[{device:'fixture-local',model:'gpt-5.5',bucket:0,quota:.12}];window.__CQG_TEST__.applySnapshot(data);});
   await hoverAt(0);
-  assert.equal(await page.locator('.tooltip-total-percent').innerText(),'0.24%');
+  assert.equal(await page.locator('.tooltip-total-percent').innerText(),'0.36%');
   assert.ok(!(await page.locator('.donut-share').allInnerTexts()).some(text=>text.startsWith('≈ ')));
-  assert.equal(await page.locator('.quota-estimate-note').count(),0);
+  assert.equal(await page.locator('.quota-estimate-note').count(),1);
   await page.screenshot({path:'test-artifacts/official-quota-calibration.png'});
   await page.evaluate(()=>window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture)));
   await hoverAt(0);

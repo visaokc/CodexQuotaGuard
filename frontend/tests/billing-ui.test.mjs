@@ -42,6 +42,9 @@ try{
   assert.ok(tokenBasis.includes('包含均摊')&&tokenBasis.includes('不按 Token 总数同比扣减'));
   assert.equal(await page.locator('.model-badge.gold').innerText(),'GPT-6 Astra');
   assert.equal(await page.locator('.model-badge:not(.gold)').innerText(),'GPT-5.6 Sol');
+  await page.evaluate(()=>{Object.assign(window.__fixture.view.summary.devices[0],{active:2,active_models:['gpt-6-astra','gpt-5.6-sol']});window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture));});
+  assert.equal(await page.getByTestId('device-row').first().locator('.model-badge').innerText(),'GPT-6 + 5.6');
+  await page.evaluate(()=>{const d=window.__fixture.view.summary.devices[0];d.active=1;delete d.active_models;window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture));});
   const badgeLayout=await page.getByTestId('device-row').evaluateAll(rows=>rows.map(row=>{
     const nodes=['.connection-badge','.model-badge, .model-placeholder','.member-activity','.device-tokens','.device-quota-cell'].map(s=>row.querySelector(s).getBoundingClientRect());
     return nodes.map(r=>({x:r.x+r.width/2,y:r.y+r.height/2,left:r.left,right:r.right}));

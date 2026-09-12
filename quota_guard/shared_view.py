@@ -1,4 +1,6 @@
 """Multi-account views with one shared official attribution and pooled ledger."""
+import json
+
 from .analytics import usage
 from .cycle_statistics import cycle_statistics
 from .cycle_pair import choose_cycles
@@ -69,6 +71,7 @@ def shared_usage(database, scope, accounts, now=None, rules=None, **options):
     result = dict(account=scope, account_ids=sorted(accounts), at=now,
                   cycle_start=min(starts) if starts else None,
                   statistics_start=min((data.get('statistics_start', now) for _, data in sources), default=now),
+                  account_estimates={account: data.get('quota_estimate', {}) for account, data in sources},
                   models=sorted({model for _, data in sources for model in data['models']}),
                   windows={}, cycles=[], cycle_pair=pair, quota_unavailable='计费待启用')
     for key in sources[0][1]['windows']:
@@ -120,13 +123,15 @@ def shared_usage(database, scope, accounts, now=None, rules=None, **options):
                 cycle['reset_type'] = {'natural':'自然重置','card':'重置卡','official':'官方临时重置'}.get(cause, cause)
         result['quota_unavailable'] = ''
         result['billing'] = accounting(rules, attributed, now)
-        if not options and result['billing']['status'] == 'syncing':
+        if result['billing']['status'] == 'syncing':
             from .shared_quota import last_confirmed
             result['billing']['last_confirmed'] = last_confirmed(database, rules, attributed, now)
         result['official_events'] = attributed['events']
+        from .live_reporting import reports
+        live = reports(database, rules, attributed, result['billing'], now)
+        result['account_estimates'] = live['accounts']
         if not options:
-            from .live_reporting import reports
-            result['live_reporting'] = reports(database, rules, attributed, result['billing'], now)
+            result['live_reporting'] = live
         for name, window in result['windows'].items():
             window['rows'] = [mapped for row in window['rows'] for mapped in person_rows(database, row, rules, now, share_tokens=name == 'cycle')]
             quotas = {}
@@ -154,10 +159,37 @@ def shared_usage(database, scope, accounts, now=None, rules=None, **options):
                 row['cache_quota'] = (row['cache_quota']+event['cache_quota']
                                       if row['cache_quota'] is not None and event['cache_quota'] is not None else None)
             window['quota_rows'] = list(quotas.values())
+            estimates = {}
+            for event in live['events']:
+                if name == 'cycle':
+                    selected = next((c for c in pair['cycles'] if c['account'] == event['account']), None)
+                    include = selected and selected['started'] < event['ts'] <= selected['matched_until']
+                else:
+                    end = min(now, options.get('hour_end', now)) if name in ('hour','hour_curve') else min(now, options.get('day_end', now)) if name == 'day' else now
+                    if name == options.get('rolling_period') and name in ('six_hours', 'twelve_hours'):
+                        end = min(now, options.get('rolling_end', now))
+                    include = window['start'] <= event['ts'] < end
+                if not include:
+                    continue
+                bucket = min(window['count']-1, int((event['ts']-window['start'])/window['step']))
+                maintenance = bool(event.get('shared_cost')) and name != 'cycle'
+                owner = person_for(rules, event.get('source_device', ''), event['ts']) if maintenance else event['device']
+                key = event['account'], owner or event['device'], event['model'], bucket, maintenance
+                row = estimates.setdefault(key, dict(account=key[0], device=key[1], model=key[2],
+                    bucket=bucket, quota=0., cache_quota=0., shared_quota=0.))
+                if maintenance:
+                    row['maintenance'] = True
+                row['quota'] += event['quota']
+                if event.get('shared_cost'):
+                    row['shared_quota'] += event['quota']
+                row['cache_quota'] = (row['cache_quota']+event['cache_quota']
+                                      if row['cache_quota'] is not None and event['cache_quota'] is not None else None)
+            window['quota_estimate_rows'] = list(estimates.values())
             last = {a: max([s['end'] for s in attributed['streams'] if s['account'] == a and s['ready']]
                           + [e['ts'] for e in attributed['events'] if e['account'] == a and e.get('baseline')], default=0) for a in rules['accounts']}
             for row in window['rows']:
-                pending = row.get('last_at', 0) > last.get(row['account'], 0) or any(
+                pending = (row.get('last_at', 0) > last.get(row['account'], 0)
+                    and result['account_estimates'].get(row['account'], {}).get('estimate_missing')) or any(
                     gap['account'] == row['account'] and gap['end'] >= row.get('first_at', now)
                     and gap['start'] < row.get('last_at', now) for gap in attributed['gaps'])
                 if pending:
@@ -182,7 +214,7 @@ def shared_overview(database, scope, accounts, members, local, now, analytics, r
             row = db.execute('SELECT * FROM epochs WHERE account=? ORDER BY id DESC LIMIT 1', (account,)).fetchone()
             pending = db.execute('SELECT 1 FROM meta WHERE key=?', ('reset_candidate:'+account,)).fetchone() is not None
             cards.append(dict(account=account, label=label, epoch=dict(row) if row else None,
-                              reset_pending=pending))
+                              reset_pending=pending, **analytics.get('account_estimates', {}).get(account, {})))
             for row in db.execute('SELECT * FROM devices WHERE account=?', (account,)):
                 if row['id'] in removed:
                     continue
@@ -208,6 +240,7 @@ def shared_overview(database, scope, accounts, members, local, now, analytics, r
             scan_at=record.get('scan_at', 0), online=online, logged_in=bool(current), removed=False,
             active=activity.get('active', 0), uncertain=activity.get('uncertain', 0),
             unbound_active=activity.get('unbound_active', 0), unbound_uncertain=activity.get('unbound_uncertain', 0)))
+        devices[-1]['active_models'] = json.loads(activity.get('active_models') or 'null')
         person.update(id=device, local=device == local, online=online)
     summary = dict(account=scope, epoch=None, devices=devices, server_time=now,
                    compensation_enabled=False, allocation='shared_preparing', reset_pending=False,
@@ -229,9 +262,10 @@ def shared_overview(database, scope, accounts, members, local, now, analytics, r
             debt, available = value.get('debt'), value.get('available')
             pending = any(row['device'] == person for row in analytics['windows']['cycle']['quota_pending_rows'])
             name = next((people[d]['name'] for d in attached if people[d].get('name')), '待加入成员' if index == 2 else '成员'+str(index+1))
-            active_model = latest_active_model(database, people, device_rows, now)
+            active_models = latest_active_models(database, people, device_rows, now)
+            active_model = active_models[0] if active_models else None
             people_rows.append(dict(id=person, name=name, avatar=person+'.jpg', device_ids=attached,
-                active_model=active_model,
+                active_model=active_model, active_models=active_models,
                 local=local in attached, online=bool(live), joined=bool(attached), cap=100/3, fair_base_cap=100/3,
                 fair_cap=100/3, estimated=quota, settled=quota, quota_pending=pending,
                 carry=value['fair_usage']-quota if value.get('fair_usage') is not None else 0,
@@ -252,18 +286,32 @@ def shared_overview(database, scope, accounts, members, local, now, analytics, r
     return dict(summary=summary, account_summaries=cards, members=list(people.values()))
 
 
-def latest_active_model(database, people, devices, now):
-    latest = None
+def latest_active_models(database, people, devices, now):
+    models = []
     with database.connect() as db:
         for device in devices:
-            if not device['online'] or not (device.get('active', 0) or device.get('unbound_active', 0)):
+            account = people.get(device['id'], {}).get('current_account')
+            slots = max(0, int(device.get('active', 0)))+max(0, int(device.get('unbound_active', 0)))
+            if not device.get('online') or not account or not slots:
                 continue
-            account = people[device['id']].get('current_account')
-            row = db.execute('''SELECT ts,id,model FROM events WHERE account=? AND device=? AND tokens>0
-                AND ts>=? AND ts<=? AND model NOT IN ('codex-auto-review','unknown') ORDER BY ts DESC,id DESC LIMIT 1''', (account,device['id'],now-180,now)).fetchone()
-            if row and (latest is None or (row['ts'],row['id']) > (latest['ts'],latest['id'])):
-                latest = row
-    return latest['model'] if latest else None
+            reported = device.get('active_models')
+            if reported is None:
+                # Older peers did not report models. An explicit empty list from
+                # a newer peer means no known active model, not stale history.
+                reported = [row['model'] for row in db.execute('''SELECT model,MAX(ts) AS ts,MAX(id) AS id FROM events
+                    WHERE account=? AND device=? AND tokens>0 AND ts>=? AND ts<=?
+                    AND model NOT IN ('codex-auto-review','unknown') GROUP BY model
+                    ORDER BY ts DESC,id DESC LIMIT ?''',
+                    (account, device['id'], now-180, now, slots))]
+            for model in reported[:slots]:
+                if model not in models:
+                    models.append(model)
+    return models
+
+
+def latest_active_model(database, people, devices, now):
+    models = latest_active_models(database, people, devices, now)
+    return models[0] if models else None
 
 
 def daily_usage(database, cards, people, analytics, now):

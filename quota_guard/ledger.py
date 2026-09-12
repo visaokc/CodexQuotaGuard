@@ -30,7 +30,7 @@ class Ledger:
         with self.lock, self.db.connect() as db:
             self.fairness_cache.pop(account, None)
             # Keep prior accounts in the ledger, but never present them as still logged in.
-            db.execute('UPDATE devices SET logged_in=0,active=0,uncertain=0,unbound_active=0,unbound_uncertain=0 WHERE id=? AND account<>?', (device, account))
+            db.execute("UPDATE devices SET logged_in=0,active=0,uncertain=0,unbound_active=0,unbound_uncertain=0,active_models='[]' WHERE id=? AND account<>?", (device, account))
             db.execute('''INSERT INTO devices(account,id,name,cap,seen,scan_at,active,uncertain,logged_in)
               VALUES (?,?,?,?,?,?,?,?,1) ON CONFLICT(account,id) DO UPDATE SET
               name=excluded.name,seen=excluded.seen,scan_at=excluded.scan_at,
@@ -61,7 +61,7 @@ class Ledger:
 
     def logout(self, device):
         with self.db.connect() as db:
-            db.execute('UPDATE devices SET logged_in=0,active=0,uncertain=0,unbound_active=0,unbound_uncertain=0 WHERE id=?', (device,))
+            db.execute("UPDATE devices SET logged_in=0,active=0,uncertain=0,unbound_active=0,unbound_uncertain=0,active_models='[]' WHERE id=?", (device,))
 
     def history(self, account, device, now=None):
         """Calendar buckets use the local Windows timezone, never a quota epoch."""

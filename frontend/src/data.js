@@ -76,7 +76,7 @@ export function aggregate(snapshot, window, model='', device='', accountFilter='
   const source=data.account===account ? data.windows?.[window]||{} : {};
   const quotaUnavailable=snapshot.view?.shared_group?.enabled&&snapshot.view.shared_group.stage==='preparing'?'计费待启用':'';
   const points=Array(Math.max(1,source.count||1)).fill(0), totals={},quotaPoints=points.slice(),quotaTotals={},quotaPendingPoints=points.map(()=>false),quotaEstimatedPoints=points.map(()=>false),quotaStates={};
-  const series=active.filter(d=>!device||device===d.id).map(d=>({id:d.id,label:d.label,color:d.color,points:points.slice(),quotaPoints:points.slice(),quotaPendingPoints:points.map(()=>false)}));
+  const series=active.filter(d=>!device||device===d.id).map(d=>({id:d.id,label:d.label,color:d.color,points:points.slice(),quotaPoints:points.slice(),quotaPendingPoints:points.map(()=>false),quotaEstimatedPoints:points.map(()=>false)}));
   const byDevice=new Map(series.map(item=>[item.id,item]));
   const cacheQuotaPoints=points.slice(),cacheQuotaTotals={},sharedQuotaTotals={},cacheMissingPoints=points.map(()=>false),cacheMissingTotals={};
   for(const item of series){item.cachePoints=points.slice();item.cacheQuotaPoints=points.slice();item.cacheMissingPoints=points.map(()=>false);}
@@ -96,16 +96,20 @@ export function aggregate(snapshot, window, model='', device='', accountFilter='
     }
     totals[row.device]=(totals[row.device]||0)+tokens;
   }
-  for(const row of (quotaUnavailable?[]:source.quota_rows||[])) {
+  let rawQuotaTotal=0;
+  const quotaRows=quotaUnavailable?[]:[...(source.quota_rows||[]).map(row=>[row,false]),...(source.quota_estimate_rows||[]).map(row=>[row,true])];
+  for(const [row,estimated] of quotaRows) {
     const item=byDevice.get(row.device);
     if(!item||(accountFilter&&row.account!==accountFilter)||(model&&row.model!==model)||!Number.isInteger(row.bucket)||row.bucket<0||row.bucket>=points.length)continue;
     const d=active.find(d=>d.id===row.device),cap=snapshot.view?.shared_group?.stage==='billing'?100/3:(d.fair_base_cap??d.cap);
     const personal=['personal','fair'].includes(snapshot.settings?.quota_display||'personal');
     const multiplier=personal&&cap>0?100/cap:(snapshot.view?.shared_group?.stage==='billing'?.5:1);
+    rawQuotaTotal+=Number(row.quota)||0;
     const value=Number(row.quota)*multiplier;
     item.quotaPoints[row.bucket]+=value;quotaPoints[row.bucket]+=value;
     quotaTotals[row.device]=(quotaTotals[row.device]||0)+value;
     sharedQuotaTotals[row.device]=(sharedQuotaTotals[row.device]||0)+(Number(row.shared_quota)||0)*multiplier;
+    if(estimated){item.quotaEstimatedPoints[row.bucket]=true;quotaEstimatedPoints[row.bucket]=true;quotaStates[row.device]='estimated';}
     if(typeof row.cache_quota==='number'&&Number.isFinite(row.cache_quota)){
       const cached=row.cache_quota*multiplier;
       item.cacheQuotaPoints[row.bucket]+=cached;cacheQuotaPoints[row.bucket]+=cached;
@@ -127,7 +131,7 @@ export function aggregate(snapshot, window, model='', device='', accountFilter='
     points[0]=Object.values(totals).reduce((a,b)=>a+b,0);
   }
   const cacheTotals=Object.fromEntries(series.map(item=>[item.id,item.cachePoints.includes(null)?null:item.cachePoints.reduce((a,b)=>a+b,0)]));
-  return {quotaUnavailable,cacheTotals,cacheQuotaPoints,cacheQuotaTotals,sharedQuotaTotals,cacheMissingPoints,cacheMissingTotals,quotaPendingPoints,quotaEstimatedPoints,quotaStates,quotaPoints,quotaTotals,quotaReady:!quotaUnavailable&&source.quota_ready===true,points,series,totals,total:Object.values(totals).reduce((a,b)=>a+b,0),start:source.start||0,step:source.step||1};
+  return {rawQuotaTotal,quotaUnavailable,cacheTotals,cacheQuotaPoints,cacheQuotaTotals,sharedQuotaTotals,cacheMissingPoints,cacheMissingTotals,quotaPendingPoints,quotaEstimatedPoints,quotaStates,quotaPoints,quotaTotals,quotaReady:!quotaUnavailable&&source.quota_ready===true,points,series,totals,total:Object.values(totals).reduce((a,b)=>a+b,0),start:source.start||0,step:source.step||1};
 }
 export function historyWindow(source,end,duration=3600){
   const count=duration/source.step,start=Math.floor(end/source.step)*source.step-(count-1)*source.step;
@@ -174,7 +178,8 @@ export function chartQuotaPercent(value,ready,pending=false,estimated=false,digi
 export function trendForMode(data,mode){
   if(mode==='maintenance'){
     const item={id:'maintenance',label:'软件维护',color:'#9299a6',points:data.points,cachePoints:data.points.map((_,i)=>data.series.some(s=>s.cachePoints[i]===null)?null:data.series.reduce((n,s)=>n+(s.cachePoints[i]||0),0)),quotaPoints:data.quotaPoints,cacheQuotaPoints:data.cacheQuotaPoints,quotaPendingPoints:data.quotaPendingPoints,quotaEstimatedPoints:data.quotaEstimatedPoints,cacheMissingPoints:data.cacheMissingPoints};
-    return {...data,mode,series:[item],totals:{maintenance:data.total},quotaTotals:{maintenance:Object.values(data.quotaTotals).reduce((n,v)=>n+v,0)},quotaStates:{maintenance:Object.values(data.quotaStates).includes('pending')?'pending':'confirmed'}};
+    const states=Object.values(data.quotaStates);
+    return {...data,mode,series:[item],totals:{maintenance:data.total},quotaTotals:{maintenance:Object.values(data.quotaTotals).reduce((n,v)=>n+v,0)},quotaStates:{maintenance:states.includes('pending')?'pending':states.includes('estimated')?'estimated':'confirmed'}};
   }
   if(mode!=='cache')return {...data,mode};
   const series=data.series.map(item=>({...item,points:item.cachePoints.slice(),quotaPoints:item.cacheQuotaPoints}));

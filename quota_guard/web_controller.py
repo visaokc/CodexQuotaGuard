@@ -44,7 +44,7 @@ def _summary(value):
     result['epoch'] = _pick(value.get('epoch'), ('id', 'account', 'started', 'ended', 'baseline', 'used',
         'reset_at', 'observed_at', 'reason', 'cycle')) or None
     result['devices'] = [_pick(d, ('id', 'name', 'cap', 'seen', 'scan_at', 'active', 'uncertain', 'logged_in',
-        'unbound_active', 'unbound_uncertain', 'estimated', 'settled', 'carry', 'fair_cap', 'fair_base_cap', 'tokens', 'weight', 'unknown_tokens', 'online', 'removed', 'quota_pending', 'avatar', 'device_ids', 'local', 'joined', 'available', 'rollover', 'available_cap', 'debt', 'pending_debt', 'confirmed_debt', 'by_account', 'fair_usage', 'active_model', 'confirmed_available', 'confirmed_available_cap', 'available_estimate', 'balance_estimated', 'estimate_missing', 'estimate_pending', 'estimate_at'))
+        'unbound_active', 'unbound_uncertain', 'estimated', 'settled', 'carry', 'fair_cap', 'fair_base_cap', 'tokens', 'weight', 'unknown_tokens', 'online', 'removed', 'quota_pending', 'avatar', 'device_ids', 'local', 'joined', 'available', 'rollover', 'available_cap', 'debt', 'pending_debt', 'confirmed_debt', 'by_account', 'fair_usage', 'active_model', 'active_models', 'confirmed_available', 'confirmed_available_cap', 'available_estimate', 'balance_estimated', 'estimate_missing', 'estimate_pending', 'estimate_at'))
         for d in value.get('devices', [])]
     result['attribution_gaps'] = [_pick(d, ('start', 'end', 'delta', 'reason', 'devices', 'unknown_models'))
                                   for d in value.get('attribution_gaps', [])]
@@ -68,7 +68,8 @@ def _view(value):
                                              for member in shared.get('members', [])]
     result['account_summaries'] = []
     for card in value.get('account_summaries', []):
-        clean = _pick(card, ('account', 'label', 'reset_pending'))
+        clean = _pick(card, ('account', 'label', 'reset_pending', 'used_estimate', 'remaining_estimate',
+                             'balance_estimated', 'estimate_pending', 'estimate_missing', 'estimate_samples', 'estimate_at'))
         clean['epoch'] = _pick(card.get('epoch'), ('id', 'account', 'started', 'ended', 'baseline', 'used', 'reset_at', 'observed_at', 'reason')) or None
         result['account_summaries'].append(clean)
     result['connection'] = _pick(value.get('connection'), ('state', 'ready', 'tailnet', 'ips', 'connected',
@@ -88,7 +89,8 @@ def _view(value):
     result['sync_confirmed_at'] = (min(receipts[p] for p in result['sync_progress'])
         if states and all(s == 'caught_up' for s in states) and all(receipts.get(p) for p in result['sync_progress']) else None)
     analytics = value.get('analytics') or {}
-    result['analytics'] = _pick(analytics, ('account', 'at', 'models', 'cycle_start', 'statistics_start', 'quota_unavailable', 'donut_archive_at'))
+    result['analytics'] = _pick(analytics, ('account', 'at', 'models', 'cycle_start', 'statistics_start',
+        'quota_unavailable', 'donut_archive_at', 'quota_estimate', 'account_estimates'))
     if analytics.get('live_reporting'):
         result['analytics']['personal_daily'] = analytics['live_reporting']['daily']
     if analytics.get('donut_windows'):
@@ -117,7 +119,7 @@ def _view(value):
             if 'quota_gaps' in source:
                 window['quota_gaps'] = [_pick(r, ('start','end')) for r in source['quota_gaps']]
             window['quota_pending_rows'] = [_pick(r, ('account', 'device', 'model', 'bucket', 'maintenance')) for r in source.get('quota_pending_rows', [])]
-            window['quota_estimate_rows'] = [_pick(r, ('device', 'model', 'bucket', 'quota', 'cache_quota')) for r in source.get('quota_estimate_rows', [])]
+            window['quota_estimate_rows'] = [_pick(r, ('account', 'device', 'model', 'bucket', 'quota', 'cache_quota', 'shared_quota', 'maintenance')) for r in source.get('quota_estimate_rows', [])]
             window['quota_rows'] = [_pick(r, ('account', 'device', 'model', 'bucket', 'quota', 'cache_quota', 'shared_quota', 'maintenance')) for r in source.get('quota_rows', [])]
             window['rows'] = [_pick(r, ('account', 'device', 'model', 'bucket', 'tokens', 'weight', 'unknown', 'cache_tokens', 'detail_missing', 'input_tokens', 'output_tokens', 'reasoning_tokens', 'reasoning_count', 'reasoning_missing', 'event_count', 'detail_count', 'first_at', 'last_at', 'shared_tokens', 'maintenance')) for r in source.get('rows', [])]
             result['analytics']['windows'][key] = window

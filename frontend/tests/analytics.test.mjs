@@ -62,7 +62,7 @@ test('all-user chart series preserve each bucket, device color and stacked total
   const result=aggregate(data,'day');
   assert.deepEqual(result.points,[200,200,70]);
   assert.equal(result.total,470);
-  const basic=items=>items.map(({cachePoints,cacheQuotaPoints,cacheMissingPoints,...item})=>item);
+  const basic=items=>items.map(({cachePoints,cacheQuotaPoints,cacheMissingPoints,quotaEstimatedPoints,...item})=>item);
   assert.deepEqual(basic(result.series),[
     {id:'fixture-local',label:'Local',color:COLORS[1],points:[150,0,70],quotaPoints:[0,0,0],quotaPendingPoints:[false,false,false]},
     {id:'fixture-peer',label:'Peer',color:COLORS[0],points:[50,200,0],quotaPoints:[0,0,0],quotaPendingPoints:[false,false,false]},
@@ -193,19 +193,19 @@ test('chart quota uses official allocation and personal cap, independent of toke
   assert.equal(aggregate(data,'today','gpt-5.5','fixture-local').quotaPoints[0],28);
 });
 
-test('only official quota is displayed and pending logs retain the last calibrated percentage',()=>{
+test('estimated quota is displayed then replaced by the next official calibration',()=>{
   const data=fixture(),window=data.view.analytics.windows.today;
   window.quota_rows=[{device:'fixture-local',model:'gpt-5.5',bucket:0,quota:1}];
   window.quota_estimate_rows=[{device:'fixture-local',model:'gpt-5.5',bucket:0,quota:.25}];
   window.quota_pending_rows=[{device:'fixture-peer',model:'gpt-5.5',bucket:0}];
   data.settings.quota_display='personal';
   const result=aggregate(data,'today');
-  assert.equal(result.quotaTotals['fixture-local'],2);
-  assert.equal(result.quotaStates['fixture-local'],undefined);
+  assert.equal(result.quotaTotals['fixture-local'],2.5);
+  assert.equal(result.quotaStates['fixture-local'],'estimated');
   assert.equal(result.quotaStates['fixture-peer'],'pending');
-  assert.equal(chartQuotaPercent(result.quotaPoints[0],true,result.quotaPendingPoints[0],result.quotaEstimatedPoints[0]),'2.00%');
+  assert.equal(chartQuotaPercent(result.quotaPoints[0],true,result.quotaPendingPoints[0],result.quotaEstimatedPoints[0]),'2.50%');
   const selected=aggregate(data,'today','','fixture-local');
-  assert.equal(chartQuotaPercent(selected.quotaPoints[0],true,selected.quotaPendingPoints[0],selected.quotaEstimatedPoints[0]),'2.00%');
+  assert.equal(chartQuotaPercent(selected.quotaPoints[0],true,selected.quotaPendingPoints[0],selected.quotaEstimatedPoints[0]),'2.50%');
   assert.equal(chartQuotaPercent(0,true,true,false),'待更新');
   assert.equal(chartQuotaPercent(2.5,false,false,true),'—');
   window.quota_estimate_rows=[];window.quota_pending_rows=[];
@@ -326,4 +326,11 @@ test('personal consumption and shared card keep the fixed single-cycle basis wit
   assert.equal(result.shared_tokens,600);assert.equal(result.tokens,1000);
   person.available_cap=200/3;
   assert.equal(userBreakdown(data,person.id).quota,'10.00%');
+});
+
+// The donut footer uses official quota points, not the member display multiplier.
+test('daily total keeps official quota points across display modes',()=>{
+  const snapshot={settings:{quota_display:'personal'},view:{display_account:'pool',shared_group:{enabled:true,stage:'billing'},summary:{devices:[{id:'p',cap:100/3}]},analytics:{account:'pool',windows:{today:{count:1,quota_ready:true,rows:[],quota_rows:[{device:'p',bucket:0,quota:2,cache_quota:1}],quota_estimate_rows:[{device:'p',bucket:0,quota:.2,cache_quota:.1}]}}}}};
+  const personal=aggregate(snapshot,'today');assert.equal(personal.rawQuotaTotal,2.2);assert.ok(Math.abs(personal.quotaTotals.p-6.6)<1e-10);
+  snapshot.settings.quota_display='account';assert.equal(aggregate(snapshot,'today').rawQuotaTotal,2.2);
 });

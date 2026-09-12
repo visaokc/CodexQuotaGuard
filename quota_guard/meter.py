@@ -168,7 +168,8 @@ class Scanner:
         if obj.get('type') == 'turn_context':
             payload = obj.get('payload') or {}
             state.update(active=True, activity=event_time, closed_turn=None,
-                         activity_turn=payload.get('turn_id'))
+                         activity_turn=payload.get('turn_id'),
+                         activity_model=payload.get('model', 'unknown'))
             return
         if obj.get('type') == 'response_item':
             if not state.get('closed_turn'):
@@ -329,6 +330,27 @@ class Scanner:
         active = sum(1 for s in eligible if s.get('active') and 0 <= now-s.get('activity', 0) < 120)
         uncertain = sum(1 for s in eligible if s.get('active') and 120 <= now-s.get('activity', 0) < 7200)
         return active, uncertain
+
+    def active_models(self, now=None, account=None):
+        now = time.time() if now is None else now
+        sessions = {}
+        with self.db.connect() as db:
+            for row in db.execute('SELECT state FROM cursors'):
+                state = json.loads(row[0])
+                session = state['session']
+                if state.get('activity', 0) >= sessions.get(session, {}).get('activity', 0):
+                    sessions[session] = state
+        models = []
+        for state in sorted(sessions.values(), key=lambda value:value.get('activity', 0), reverse=True):
+            model = state.get('activity_model', state.get('model', 'unknown'))
+            if (isinstance(model, str) and 0 < len(model) <= 100 and model.isprintable()
+                    and state.get('active') and 0 <= now-state.get('activity', 0) < 120
+                    and state.get('provider', 'unknown') == 'openai'
+                    and (account is None or state.get('activity_account', '') == account)
+                    and model not in ('unknown', 'codex-auto-review') and 'spark' not in model.lower()
+                    and model not in models):
+                models.append(model)
+        return models[:16]
 
     def pending(self, limit=1000, account=None):
         with self.db.connect() as db:

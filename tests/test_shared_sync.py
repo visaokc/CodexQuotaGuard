@@ -1,6 +1,7 @@
 """Three isolated journals and a bounded fake bus; no login, native node, or credentials."""
 import copy
 import hashlib
+import json
 
 import pytest
 
@@ -208,7 +209,8 @@ def test_presence_is_direct_only_and_switches_clear_old_activity(tmp_path):
     bus.tick(200)
     remote_mesh, local_mesh = bus.clients['remote'][1], bus.clients['local'][1]
     def presence(account, now):
-        return dict(device='remote', account=account, at=now, scan_at=now, active=1, uncertain=0)
+        return dict(device='remote', account=account, at=now, scan_at=now, active=1, uncertain=0,
+                    active_models=['gpt-6-astra', 'gpt-5.6-sol'])
     remote.tick(remote_mesh, 205, presence(A, 205))
     bus.deliver(205)
     assert local.snapshot(local_mesh, 205)['members']['remote']['current_account'] == A
@@ -218,6 +220,8 @@ def test_presence_is_direct_only_and_switches_clear_old_activity(tmp_path):
         rows = {row['account']: dict(row) for row in database.execute("SELECT * FROM devices WHERE id='remote'")}
     assert rows[A]['active'] == 0 and rows[A]['logged_in'] == 0
     assert rows[B]['active'] == 1 and rows[B]['logged_in'] == 1
+    assert json.loads(rows[A]['active_models']) == []
+    assert json.loads(rows[B]['active_models']) == ['gpt-6-astra', 'gpt-5.6-sol']
     forged = presence(A, 207)
     forged['device'] = 'somebody-else'
     assert not local.receive('remote', dict(type='presence', account=A, presence=forged), local_mesh, 207)
@@ -326,3 +330,64 @@ def test_catalog_validation_is_bounded_and_atomic(tmp_path, mutation):
     assert not local.receive('remote', message, bus.clients['local'][1], 200)
     assert local.directory == before
     assert local.catalog_receipts == {}
+
+
+@pytest.mark.parametrize('models', ['gpt-6-astra', {}, [None], [''], ['x'*101],
+                                  ['line\nbreak'], ['gpt-6-astra']*17])
+def test_model_presence_is_validated_before_both_sync_and_direct_writes(tmp_path, models):
+    bus = Bus()
+    local, remote = bus.add(tmp_path, 'local', (A,)), bus.add(tmp_path, 'remote', (A,))
+    seed(remote, A, 0)
+    bus.tick(200)
+    presence = dict(device='remote', account=A, at=205, scan_at=205, active=1, uncertain=0,
+                    active_models=models)
+    with pytest.raises(ValueError):
+        local.journal.presence(A, 'remote', presence, 205)
+    assert not local.receive('remote', dict(type='presence', account=A, presence=presence),
+                             bus.clients['local'][1], 205)
+    with local.db.connect() as db:
+        row = dict(db.execute("SELECT * FROM devices WHERE id='remote'").fetchone())
+    assert row['active_models'] == 'null' and row['active'] == 0
+
+
+def test_old_presence_clears_previous_models_and_migration_preserves_records(tmp_path):
+    import sqlite3
+    path = tmp_path/'legacy.sqlite'
+    with sqlite3.connect(path) as db:
+        db.execute("""CREATE TABLE devices (account TEXT NOT NULL, id TEXT NOT NULL,
+            name TEXT NOT NULL, cap REAL NOT NULL, seen REAL NOT NULL,
+            scan_at REAL NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 0,
+            uncertain INTEGER NOT NULL DEFAULT 0, logged_in INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY(account,id))""")
+        db.execute("INSERT INTO devices(account,id,name,cap,seen) VALUES (?,?,?,?,?)",
+                   (A, 'old', 'old', 33, 100))
+    database = Database(path)
+    journal = Journal(database, Ledger(database), 'local')
+    presence = dict(device='old', account=A, at=205, scan_at=205, active=1, uncertain=0)
+    journal.presence(A, 'old', dict(presence, active_models=['gpt-6-astra']), 205)
+    journal.presence(A, 'old', dict(presence, active_models=[]), 206)
+    with database.connect() as db:
+        assert db.execute('SELECT active_models FROM devices').fetchone()[0] == '[]'
+    journal.presence(A, 'old', presence, 207)
+    Database(path)  # Migration is repeatable.
+    with database.connect() as db:
+        row = dict(db.execute('SELECT * FROM devices').fetchone())
+    assert row['name'] == 'old' and row['cap'] == 33
+    assert row['active_models'] == 'null' and row['active'] == 1 and row['logged_in'] == 1
+
+
+
+def test_explicit_empty_models_do_not_reuse_history_and_mixed_peers_remain_visible(tmp_path):
+    from quota_guard.shared_view import latest_active_models
+    bus = Bus()
+    local, remote = bus.add(tmp_path, 'local', (A,)), bus.add(tmp_path, 'remote', (A,))
+    seed(local, A, 1)
+    seed(remote, A, 1)
+    bus.tick(200)
+    people = {device: dict(current_account=A) for device in ('local', 'remote')}
+    devices = [dict(id='local', online=True, active=1, active_models=[]),
+               dict(id='remote', online=True, active=1, active_models=None)]
+    assert latest_active_models(local.db, people, devices[:1], 200) == []
+    assert latest_active_models(local.db, people, devices, 200) == ['gpt-6-astra']
+    devices[0]['active_models'] = ['gpt-5.6-sol']
+    assert latest_active_models(local.db, people, devices, 200) == ['gpt-5.6-sol', 'gpt-6-astra']

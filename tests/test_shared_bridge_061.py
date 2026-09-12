@@ -71,6 +71,17 @@ def test_active_model_requires_running_request_and_recent_real_token_increment(t
     assert latest_active_model(db,people,devices,300) is None
 
 
+def test_parallel_active_models_do_not_collapse_to_the_last_writer(tmp_path):
+    from quota_guard.shared_view import latest_active_models
+    db,journals,_=setup_group(tmp_path)
+    add_event(journals,model='gpt-5.6-sol',at=250)
+    add_event(journals,model='gpt-6-astra',at=260)
+    people={'one':dict(current_account=A)}
+    devices=[dict(id='one',online=True,active=2,
+                  active_models=['gpt-6-astra','gpt-5.6-sol'])]
+    assert latest_active_models(db,people,devices,300)==['gpt-6-astra','gpt-5.6-sol']
+
+
 def test_natural_week_average_uses_official_clock_not_recent_first_sync(tmp_path):
     db,journals,_=setup_group(tmp_path,used_a=20)
     labels={A:'账号1',B:'账号2'}

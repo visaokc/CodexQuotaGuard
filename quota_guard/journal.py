@@ -10,6 +10,28 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
 
 
+def validate_presence(peer, account, value, now):
+    if (not isinstance(value, dict) or value.get('device') != peer
+            or value.get('account') != account):
+        raise ValueError('设备心跳无效')
+    for field in ('at', 'scan_at'):
+        if type(value.get(field)) not in (int, float) or not math.isfinite(value[field]):
+            raise ValueError('设备心跳无效')
+    if abs(now-value['at']) > 90:
+        raise ValueError('设备心跳无效')
+    for field in ('active', 'uncertain', 'unbound_active', 'unbound_uncertain'):
+        if field in ('active', 'uncertain') and field not in value:
+            raise ValueError('设备心跳无效')
+        if type(value.get(field, 0)) is not int or not 0 <= value.get(field, 0) <= 10000:
+            raise ValueError('设备心跳无效')
+    models = value.get('active_models', [])
+    if (not isinstance(models, list) or len(models) > 16
+            or any(not isinstance(model, str) or not model or len(model) > 100
+                   or not model.isprintable() for model in models)):
+        raise ValueError('设备心跳无效')
+    return value
+
+
 class Journal:
     def __init__(self, database, ledger, device):
         self.db, self.ledger, self.device = database, ledger, device
@@ -226,13 +248,12 @@ class Journal:
 
     def presence(self, account, peer, value, now=None):
         now = time.time() if now is None else now
-        if (value.get('device') != peer or value.get('account') != account
-                or abs(now-float(value['at'])) > 90):
-            raise ValueError('设备心跳无效')
+        validate_presence(peer, account, value, now)
         with self.db.connect() as db:
-            db.execute('''UPDATE devices SET seen=?,scan_at=?,active=?,uncertain=?,unbound_active=?,unbound_uncertain=?,logged_in=1
+            db.execute('''UPDATE devices SET seen=?,scan_at=?,active=?,uncertain=?,unbound_active=?,unbound_uncertain=?,active_models=?,logged_in=1
                           WHERE account=? AND id=?''',
                        (now, min(now, float(value['scan_at'])), max(0, min(10000, int(value['active']))),
                         max(0, min(10000, int(value['uncertain']))),
                         max(0, min(10000, int(value.get('unbound_active', 0)))),
-                        max(0, min(10000, int(value.get('unbound_uncertain', 0)))), account, peer))
+                        max(0, min(10000, int(value.get('unbound_uncertain', 0)))),
+                        json.dumps(value.get('active_models')), account, peer))

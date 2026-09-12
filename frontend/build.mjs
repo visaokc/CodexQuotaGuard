@@ -10,7 +10,7 @@ const result=await build({entryPoints:['src/app.js'],bundle:true,minify:true,out
   target:['chrome109'],legalComments:'eof',plugins:[{name:'local-vue-templates',setup(plugin){
     plugin.onResolve({filter:/^cqg-template:/},args=>({path:args.path,namespace:'vue-template'}));
     plugin.onLoad({filter:/.*/,namespace:'vue-template'},args=>({contents:templates.get(args.path),loader:'js',resolveDir:process.cwd()}));
-    plugin.onLoad({filter:/src[\\/](app|components)\.js$/},async args=>{
+    plugin.onLoad({filter:/src[\\/](app|components|personal-usage)\.js$/},async args=>{
       const source=await readFile(args.path,'utf8'),imports=[];
       const contents=source.replace(/template:\s*`([\s\S]*?)`/g,(_match,template)=>{
         const name='__template'+templates.size,key='cqg-template:'+templates.size;

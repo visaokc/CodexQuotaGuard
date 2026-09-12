@@ -4,6 +4,7 @@ import time
 from datetime import datetime, timezone
 
 from .meter import RATES
+from .quota_estimation import fit_rate, project
 
 
 WINDOWS = {'cycle': (None, 1), 'total': (None, 1), 'today': (None, 1), 'pie_hour': (3600, 1), 'pie_six_hours': (21600, 1), 'pie_twelve_hours': (43200, 1), 'hour': (3600, 30), 'hour_curve': (3600, 60), 'six_hours': (21600, 72), 'twelve_hours': (43200, 144), 'day': (86400, 24),
@@ -39,10 +40,9 @@ def quota_events(db, account, now):
             result.append(dict(device=row['device'], model=row['model'], ts=row['ts'],
                                quota=quota, cache_quota=quota*fraction if fraction is not None else None))
         samples.setdefault(segment['epoch'], []).append((segment['delta'], total))
-    # Recent official increments calibrate weighted usage, not raw Token counts.
-    rates = {epoch: sum(delta for delta, _ in rows[-5:])/sum(weight for _, weight in rows[-5:])
-             for epoch, rows in samples.items()}
-    return result, gaps, rates
+    # Every confirmed sample in the current cycle improves the same cumulative fit.
+    calibrations = {epoch: fit_rate(rows) for epoch, rows in samples.items()}
+    return result, gaps, calibrations
 
 
 def cache_fraction(row):
@@ -69,7 +69,7 @@ def usage(database, account, now=None, hour_end=None, hour_buffer=False, day_end
         saved = db.execute('SELECT value FROM meta WHERE key=?', ('statistics_start:'+account,)).fetchone()
         baseline = float(json.loads(saved[0])) if saved else 0
         result['statistics_start'] = baseline
-        epoch = db.execute('SELECT id, started FROM epochs WHERE account=? ORDER BY id DESC LIMIT 1',
+        epoch = db.execute('SELECT id, started, used FROM epochs WHERE account=? ORDER BY id DESC LIMIT 1',
                            (account,)).fetchone()
         result['cycle_start'] = epoch['started'] if epoch else None
         for name, (duration, count) in WINDOWS.items():
@@ -126,12 +126,25 @@ def usage(database, account, now=None, hour_end=None, hour_buffer=False, day_end
             result['windows'][name] = dict(start=start, step=step, count=count,
                                            rows=[dict(row) for row in rows])
             models.update(row['model'] for row in rows)
-        allocated, gaps, _ = quota_events(db, account, now)
-        last_increment = db.execute('SELECT MAX(s.end) FROM segments s JOIN epochs e ON e.id=s.epoch WHERE e.account=? AND s.end<=?', (account, now)).fetchone()[0] or 0
+        allocated, gaps, calibrations = quota_events(db, account, now)
+        last_increment = (db.execute('SELECT MAX(end) FROM segments WHERE epoch=? AND end<=?',
+                                     (epoch['id'], now)).fetchone()[0] if epoch else None) or (epoch['started'] if epoch else now)
         waiting = list(db.execute('SELECT e.*,d.input_tokens,d.cached_input_tokens,d.output_tokens FROM events e LEFT JOIN event_details d ON d.id=e.id WHERE account=? AND ts>? AND ts<=? AND tokens>0', (account, last_increment, now)))
 
         observed = db.execute('SELECT 1 FROM epochs WHERE account=? LIMIT 1', (account,)).fetchone() is not None
         pending = db.execute('SELECT 1 FROM meta WHERE key=?', ('reset_candidate:'+account,)).fetchone() is not None
+        calibration = calibrations.get(epoch['id']) if epoch and not pending else None
+        estimates, unresolved = project(waiting, calibration,
+            lambda row: (row['weight'], row['weight']*cache_fraction(row)
+                         if row['known'] and cache_fraction(row) is not None else None)
+                        if row['known'] else None)
+        estimate_pending = sum(row['quota'] for row in estimates)
+        result['quota_estimate'] = dict(
+            used_estimate=epoch['used']+estimate_pending if epoch and not unresolved and not pending else None,
+            remaining_estimate=max(0., 100-epoch['used']-estimate_pending) if epoch and not unresolved and not pending else None,
+            balance_estimated=bool(estimates), estimate_pending=estimate_pending,
+            estimate_missing=bool(unresolved or pending), estimate_samples=calibration['samples'] if calibration else 0,
+            estimate_at=last_increment)
         for name, window in result['windows'].items():
             until = min(now,hour_end) if hour_end is not None and name in ('hour','hour_curve') else now
             if day_end is not None and name == 'day':
@@ -148,17 +161,24 @@ def usage(database, account, now=None, hour_end=None, hour_buffer=False, day_end
                 bucket = min(window['count']-1, int((row['ts']-window['start'])/step))
                 key = (row['device'], row['model'], bucket)
                 add_quota(grouped, key, row['quota'], row['cache_quota'])
+            estimated_grouped = {}
+            for row in estimates:
+                if row['ts'] < start or row['ts'] >= until or row['ts'] <= baseline:
+                    continue
+                if name == 'cycle' and row['ts'] <= window['start']:
+                    continue
+                key = (row['device'], row['model'], min(window['count']-1, int((row['ts']-window['start'])/step)))
+                add_quota(estimated_grouped, key, row['quota'], row['cache_quota'])
             waiting_keys = set()
-            for row in waiting:
+            for row in unresolved:
                 if row['ts'] < start or row['ts'] >= until or row['ts'] <= baseline:
                     continue
                 if name == 'cycle' and row['ts'] <= window['start']:
                     continue
                 key = (row['device'], row['model'], min(window['count']-1, int((row['ts']-window['start'])/step)))
                 waiting_keys.add(key)
-            # Log counts continue immediately. Quota changes only after an
-            # observed official increment; never extrapolate unconfirmed usage.
-            window['quota_estimate_rows'] = []
+            window['quota_estimate_rows'] = [dict(device=d, model=m, bucket=b, quota=q, cache_quota=c)
+                                               for (d, m, b), (q, c) in estimated_grouped.items()]
             window['quota_pending_rows'] = [dict(device=d, model=m, bucket=b) for d, m, b in sorted(waiting_keys)]
             window['quota_rows'] = [dict(device=d, model=m, bucket=b, quota=q, cache_quota=c) for (d, m, b), (q,c) in grouped.items()]
             window['quota_ready'] = observed and not pending and not any(end > start and begin < until for begin, end in gaps)

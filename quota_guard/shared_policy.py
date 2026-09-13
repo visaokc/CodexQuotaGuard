@@ -45,6 +45,10 @@ def validate(value, origin, at):
                 or len(weights) != 3 or any(not timestamp(w) or w > 1e6 for w in weights)):
             raise ValueError('共享计量权重无效')
     overrides = value.get('reset_types', [])
+    if 'network_baseline' in value:
+        from .network_guard import public_ip
+        if public_ip(value['network_baseline']) != value['network_baseline']:
+            raise ValueError('住宅IP基准格式无效')
     paused = value.get('paused_accounts', [])
     if (not isinstance(paused, list) or any(a not in value['accounts'] for a in paused)
             or len(set(paused)) != len(paused)):

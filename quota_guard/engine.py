@@ -309,6 +309,7 @@ class Engine:
                 reason=billing.get('reason', rules['reason']), revision=policy.get('revision'),
                 admin=policy.get('admin'), can_manage=policy.get('admin') == self.config['device_id'],
                 rules_locked=True,
+                network_baseline=policy.get('network_baseline'),
                 maintenance_enabled=rules.get('maintenance', {}).get(person_for(rules, self.config['device_id'], now), {}).get('enabled', False),
                 pending_rule=bool(self.group_db.get('shared:pending_rule')),
                 available_accounts=[dict(account=a, label=label) for a,label in state.get('account_labels', {}).items()],
@@ -441,6 +442,9 @@ class Engine:
                 return
             current.add(account) if paused else current.discard(account)
             changes['paused_accounts'] = [a for a in rules['accounts'] if a in current]
+        elif payload.get('kind') == 'network_baseline':
+            from .network_guard import public_ip
+            changes['network_baseline'] = public_ip(payload.get('ip'))
         else:
             raise ValueError('未知共享规则操作')
         publish_change(self.journal, rules, self.config['device_id'], self.config['name'], self.config['quota'], changes, now)

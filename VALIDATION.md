@@ -1,3 +1,11 @@
+## 0.6.10 — 2026-09-13
+
+- Network guard, administrator policy, shared bridge/engine, account pause and controller regression suite: 59 passed (46.50 s).
+- Tests cover two-domain agreement, partial failure, mismatch, expired samples, recovery, redirect rejection, public address validation, nonblocking snapshots, concurrent retry deduplication, stale revisions and administrator ownership. Browser-supplied IPs cannot override observed baseline candidates.
+- Isolated headless Edge covers persistent red border across pages/retry, automatic failure modal, failure deduplication, modal ownership, baseline update confirmation and paused countdown removal.
+- Live unauthenticated probes to both configured domains returned the same egress. A live database copy accepted one new baseline policy fact while preserving 18,880 existing facts, all Token statistics, maintenance ownership and account pause rules. No proxy, account credential or quota mutation is involved in probing.
+- Only shared-group policy stores the user's IP; public release assets contain no live baseline or local runtime database.
+
 ## 0.6.9 — 2026-09-12
 
 - Accounting, estimate, shared bridge/engine/view, maintenance and reset regression suite: 76 passed.

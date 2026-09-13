@@ -33,6 +33,10 @@ try{
   await page.waitForTimeout(1300);
   assert.equal(await page.getByTestId('pool-remaining').innerText(),'47.0%');
   assert.match(await page.getByTestId('pool-quota-card').innerText(),/已暂停/);
+  const pausedCountdown=page.getByTestId('pool-refresh-card').locator('.account-reset-row').nth(1);
+  assert.equal(await pausedCountdown.locator('strong').innerText(),'已停用');
+  assert.equal(await pausedCountdown.locator('small').count(),0);
+  assert.equal(await page.getByTestId('pool-refresh-card').locator('.account-reset-row').first().locator('small').count(),1);
   assert.deepEqual(await page.locator('.pool-track i').evaluateAll(nodes=>nodes.map(n=>n.style.width)),['47%','0%']);
   assert.equal(await page.getByTestId('device-row').count(),3);
   await page.screenshot({path:path.join(artifacts,'account-paused-069.png')});

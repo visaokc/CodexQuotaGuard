@@ -144,6 +144,8 @@ class WebController:
         self._settings_cache = self._public_settings()
         self._accounts_cache = self._public_accounts()
         self._demo_view = {}
+        from .network_guard import NetworkGuard
+        self._network_guard = NetworkGuard()
 
     def _public_settings(self):
         return _pick(self._config, _SETTINGS)
@@ -192,6 +194,8 @@ class WebController:
         self._engine = Engine(self._database, self._config, account_enroller=self._auto_enroll)
         self._engine.background_mode = self._hidden
         self._engine.start()
+        if not self._demo and self._config.get('shared_group_enabled'):
+            self._network_guard.start()
         if self._startup_enabled:
             startup.apply(self._config.get('autostart', True), self._folder,
                           elevated=self._config['auto_block'])
@@ -205,6 +209,7 @@ class WebController:
 
     def _close(self):
         with self._mutation:
+            self._network_guard.close()
             if self._engine:
                 self._engine.close()
                 if self._engine.blocked or self._database.get('paused_processes'):
@@ -227,6 +232,7 @@ class WebController:
         if 'auto_block' in raw:
             settings['auto_block'] = raw['auto_block']
         return dict(version=__version__, view=safe, settings=settings,
+                    network_guard=self._network_guard.snapshot(raw.get('shared_group', {}).get('network_baseline')),
                     accounts=copy.deepcopy(self._accounts_cache),
                     pairing=dict(self._pairing, **safe['connection']),
                     update=copy.deepcopy(self._update), notices=list(self._notices))
@@ -245,7 +251,7 @@ class WebController:
         actions = {'refresh', 'account_scan', 'account_add', 'account_remove', 'account_history', 'member_history', 'chart_history', 'cap_save',
                    'limit_toggle', 'compensation_toggle', 'maintenance_toggle', 'restore', 'note_save', 'color_save', 'device_order_save', 'device_remove', 'settings_save',
                    'programs_discover', 'pair_generate', 'pair_join', 'tailscale_login', 'tailscale_switch',
-                   'connection_save', 'update_check', 'update_install', 'diagnostics', 'group_rule'}
+                   'connection_save', 'update_check', 'update_install', 'diagnostics', 'group_rule', 'network_retry', 'network_baseline'}
         if action not in actions:
             return {'ok': False, 'error': '未知操作'}
         if not self._mutation.acquire(blocking=action in ('chart_history', 'member_history')):
@@ -449,6 +455,27 @@ class WebController:
             raise ValueError('账本尚未就绪')
         self._engine.commands.put(('compensation', dict(account=account, enabled=payload['enabled'])))
         self._engine.wakeup.set()
+
+    def _network_retry(self, _payload):
+        if not self._config.get('shared_group_enabled'):
+            raise ValueError('请先启用共享组')
+        self._network_guard.retry()
+        return dict(queued=True)
+
+    def _network_baseline(self, payload):
+        if not self._engine or not self._config.get('shared_billing_v1'):
+            raise ValueError('共享组尚未就绪')
+        group = self._engine.snapshot().get('shared_group', {})
+        if not group.get('can_manage'):
+            raise ValueError('住宅IP基准由共享组管理员设置')
+        if payload.get('revision') != group.get('revision'):
+            raise ValueError('规则已更新，请刷新后重试')
+        if group.get('network_baseline'):
+            self._confirm(payload)
+        ip = self._network_guard.baseline_candidate()
+        self._engine.commands.put(('group_rule', dict(kind='network_baseline', revision=group['revision'], ip=ip)))
+        self._engine.wakeup.set()
+        return dict(queued=True)
 
     def _group_rule(self, payload):
         if not self._engine or not self._config.get('shared_billing_v1'):

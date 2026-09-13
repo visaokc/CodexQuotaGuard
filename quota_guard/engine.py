@@ -290,6 +290,10 @@ class Engine:
             rules = self._billing_rules(labels, now)
             if rules.get('policy'):
                 labels = {a: '账号'+str(i+1) for i, a in enumerate(rules['accounts'])}
+        from .network_history import members as network_members, publish as publish_network_report
+        report = self.shared.network_reports.get(self.config['device_id'])
+        if report and now-report['checked_at'] <= 90:
+            publish_network_report(self.journal, rules or {}, self.config, report, now)
         analytics = self.shared_analytics_cache
         if (not analytics or now-analytics['at'] >= 10
                 or analytics.get('account_ids') != sorted(labels) or self.shared_rules_cache != rules):
@@ -323,6 +327,8 @@ class Engine:
         published.update(overview)
         published.update(display_account=scope, shared_group_enabled=True,
                 shared_group=group_view, identity=self.last_identity or {},
+                network_members=network_members(self.group_db, rules or {}, state.get('members', {}),
+                    self.shared.network_reports, self.config['device_id'], now),
                 error=(observed or {}).get('error', ''), history=None,
                 active=activity.get('active', 0), uncertain=activity.get('uncertain', 0),
                 unbound_active=activity.get('unbound_active', 0),
@@ -583,6 +589,11 @@ class Engine:
                 rules = load_rules(self.group_db, self.shared.snapshot(self.mesh, now)['account_labels'], now)
                 publish(self.journal, rules, self.config, payload['enabled'], payload['at'])
                 self.shared_analytics_cache = None
+            elif kind == 'network_report' and self.shared:
+                from .network_history import validate_report
+                report = validate_report(payload, now, live=True)
+                if report['checked_at'] > self.shared.network_reports.get(self.config['device_id'], {}).get('checked_at', -1):
+                    self.shared.network_reports[self.config['device_id']] = report
             elif kind == 'group_rule' and self.shared and self.config.get('shared_billing_v1'):
                 from .shared_policy import load_rules
                 rules = load_rules(self.group_db, self.shared.snapshot(self.mesh, now)['account_labels'], now)

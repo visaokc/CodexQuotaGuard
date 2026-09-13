@@ -1,3 +1,12 @@
+## 0.6.11 — 2026-09-13
+
+- Network guard/history, shared sync/engine and web controller regressions: 102 passed (86.27 s). Coverage includes Ping0 identity/response validation, risk cache, ten-second polling, process-detection failure, native alert dispatch/deduplication, authenticated reports, stale/replayed report rejection, offline history and unchanged quota records.
+- Isolated headless Edge verifies three side-by-side member cards, green known purity in both themes, expandable history, missing/zero risk values, personal IP details, settings-only baseline controls, adjacent status arrow, Codex-running popup gating and simulated native-alert events. Shared UI and account availability regressions passed; final screenshots were inspected.
+- Live unauthenticated Ping0 requests returned a matching IP, country/location and public risk grade. IP checks use the documented free /geo endpoint; public risk-page results are cached for ten minutes and refreshed on IP change or manual retry. No paid API or account credentials are used.
+- No manual release-sharing interval, maintenance toggle, account availability or baseline policy change is included. Member IP history begins with actual reports from the new version; missing earlier reports are not fabricated.
+- Real anomaly-driven foreground activation on another member's desktop is not claimed; native dispatch and frontend reaction were verified in isolation.
+- Frozen 0.6.11 modules, frontend assets, native transport and updater helper match source. An isolated WebView2 background launch produced the expected version health record and exited cleanly.
+
 ## 0.6.10 — 2026-09-13
 
 - Network guard, administrator policy, shared bridge/engine, account pause and controller regression suite: 59 passed (46.50 s).

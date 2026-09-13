@@ -77,6 +77,7 @@ class SharedSync:
         self.catalog_receipts, self.catalog_errors, self._catalog_at = {}, {}, {}
         self.peer_accounts, self.current_accounts = {}, {}
         self.peer_versions = {}
+        self.network_reports = {}
         self._sent, self._last_catalog = {}, {}
         self._presence = None
         self._update_own()
@@ -114,6 +115,8 @@ class SharedSync:
                     directory=[copy.deepcopy(row) for device, row in sorted(self.directory.items()) if device != self.device],
                     current_account=self.current_accounts.get(self.device),
                     vectors={account: self.journal.vector(account) for account in self._labels()},
+                    **({'network_report': copy.deepcopy(self.network_reports[self.device])}
+                       if self.device in self.network_reports and now-self.network_reports[self.device]['checked_at'] <= 90 else {}),
                     **({'presence': copy.deepcopy(self._presence)} if self._presence else {}))
         if len(json.dumps(message, separators=(',', ':')).encode()) > _MAX_BYTES:
             raise ValueError('共享成员目录过大')
@@ -180,6 +183,10 @@ class SharedSync:
             if current is None:
                 raise ValueError('设备心跳无效')
             self._presence_value(peer, current, presence, now)
+        network_report = message.get('network_report')
+        if network_report is not None:
+            from .network_history import validate_report
+            network_report = validate_report(network_report, now, live=True)
         first = peer not in self.catalog_receipts
         changed = candidate != self.directory
         if changed:
@@ -189,6 +196,9 @@ class SharedSync:
         self.catalog_receipts[peer] = now
         self._catalog_at[peer] = at
         self.catalog_errors.pop(peer, None)
+        if (network_report is not None and network_report['checked_at'] >
+                self.network_reports.get(peer, {}).get('checked_at', -1)):
+            self.network_reports[peer] = network_report
         self._set_current(peer, current, presence, now)
         for account, vector in vectors.items():
             self.vectors[account, peer] = vector

@@ -92,6 +92,9 @@ class Journal:
         if r['kind'] == 'profile' and 'maintenance' in p:
             from .maintenance import validate
             validate(p['maintenance'])
+        if r['kind'] == 'profile' and 'network_report' in p:
+            from .network_history import validate_report
+            validate_report(p['network_report'], r['ts'])
         if r['kind'] == 'profile' and 'member_claim' in p:
             value = p['member_claim']
             if (not isinstance(value, dict) or value.get('device') != r['origin']

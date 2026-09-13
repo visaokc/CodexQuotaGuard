@@ -125,6 +125,10 @@ def _view(value):
             result['analytics']['windows'][key] = window
     result['recovery'] = _pick(value.get('recovery'), ('scanning', 'recovered_events', 'recovered_tokens',
         'inferred_tokens', 'runtime_tokens', 'unresolved_events', 'unresolved_tokens'))
+    fields = ('ip','location','country','purity','risk_score','checked_at','error','risk_error','risk_at','device','device_name')
+    result['network_members'] = [dict(_pick(row, ('id','name','online','device')),
+        report=_pick(row['report'], fields) if row.get('report') else None,
+        history=[_pick(item, fields) for item in row.get('history', [])]) for row in value.get('network_members', [])]
     return result
 
 
@@ -145,7 +149,8 @@ class WebController:
         self._accounts_cache = self._public_accounts()
         self._demo_view = {}
         from .network_guard import NetworkGuard
-        self._network_guard = NetworkGuard()
+        self._network_episode = None
+        self._network_guard = NetworkGuard(on_result=self._network_result)
 
     def _public_settings(self):
         return _pick(self._config, _SETTINGS)
@@ -455,6 +460,30 @@ class WebController:
             raise ValueError('账本尚未就绪')
         self._engine.commands.put(('compensation', dict(account=account, enabled=payload['enabled'])))
         self._engine.wakeup.set()
+
+    def _network_result(self):
+        if self._closed.is_set() or self._network_guard.closed.is_set() or not self._engine:
+            return
+        group = self._engine.snapshot().get('shared_group', {})
+        value = self._network_guard.snapshot(group.get('network_baseline'))
+        if self._config.get('shared_billing_v1'):
+            report = {k: value.get(k) for k in ('location','country','purity','risk_score','checked_at','error','risk_error','risk_at')}
+            report['ip'] = value['current_ip']
+            self._engine.commands.put(('network_report', report))
+            self._engine.wakeup.set()
+        if value['state'] == 'aligned' or not value['codex_running']:
+            self._network_episode = None
+        elif value['state'] == 'mismatch':
+            episode = (value['baseline'], value['current_ip'])
+            if episode != self._network_episode:
+                if self._hidden and self._window_handler:
+                    try:
+                        result = self._window_handler('network_alert')
+                    except Exception:
+                        return  # Keep monitoring if the native window is closing or not ready.
+                    if not result.get('ok'):
+                        return
+                self._network_episode = episode
 
     def _network_retry(self, _payload):
         if not self._config.get('shared_group_enabled'):

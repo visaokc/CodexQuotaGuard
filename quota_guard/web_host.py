@@ -22,6 +22,7 @@ class DesktopHost:
         self.animation_callback = None
         self.closed = threading.Event()
         self.navigation_handler = None
+        self.network_alert_pending = False
 
     def invoke(self, callback):
         from System import Action
@@ -74,7 +75,7 @@ class DesktopHost:
         timer.Tick += tick
         timer.Start()
 
-    def show(self):
+    def show(self, alert=False):
         def visible():
             from System.Windows.Forms import FormWindowState
             form = self.window.native
@@ -84,7 +85,15 @@ class DesktopHost:
                 form.WindowState = FormWindowState.Normal
             self.corners()
             if not self.args.smoke_seconds:
-                form.Activate()
+                topmost = form.TopMost
+                try:
+                    if alert:
+                        form.TopMost = True
+                        form.BringToFront()
+                    form.Activate()
+                finally:
+                    if alert:
+                        form.TopMost = topmost
             self.controller._set_hidden(False)
             if self.controller._engine:
                 self.controller._engine.wakeup.set()
@@ -151,6 +160,15 @@ class DesktopHost:
         return False
 
     def dispatch(self, action):
+        if action == 'network_alert':
+            if self.quitting:
+                return {'ok': False}
+            if not self.ready:
+                self.network_alert_pending = True
+                return {'ok': True}
+            self.show(alert=True)
+            self.window.evaluate_js("window.dispatchEvent(new Event('network-alert'))")
+            return {'ok': True}
         if action == 'shown':
             if not self.ready:
                 self.ready = True
@@ -163,6 +181,9 @@ class DesktopHost:
                     expected = self.args.data_dir.resolve()/'updates'/(nonce+'.health')
                     if path.resolve() == expected:
                         atomic_json(expected, dict(nonce=nonce, version=__version__))
+                if self.network_alert_pending:
+                    self.network_alert_pending = False
+                    threading.Thread(target=lambda: self.dispatch('network_alert'), daemon=True).start()
             return {'ok': True}
         if action == 'minimize':
             self.minimize()

@@ -1,4 +1,5 @@
 """Member-authored IP observations, separate from quota and maintenance accounting."""
+import hashlib
 import json
 import math
 
@@ -8,7 +9,6 @@ from .shared_policy import PERSONS, contiguous, person_for, profile
 
 _TEXT_LIMITS = dict(location=240, country=240, purity=40, error=320, risk_error=320)
 _FIELDS = {'ip', 'checked_at', 'risk_score', 'risk_at', 'previous_ip', 'codex_running', *_TEXT_LIMITS}
-_SEMANTIC = ('ip', 'location', 'country', 'purity', 'risk_score', 'error', 'risk_error')
 
 
 def validate_report(value, now, live=False):
@@ -44,56 +44,95 @@ def validate_report(value, now, live=False):
     return result
 
 
-def signature(report):
-    return tuple(report.get(key) for key in _SEMANTIC)
+def validate_change(value, now):
+    if (not isinstance(value, dict) or set(value) != {'checked_at'}
+            or type(value['checked_at']) not in (int, float)
+            or not math.isfinite(value['checked_at']) or not 0 <= value['checked_at'] <= now+60):
+        raise ValueError('住宅IP变更记录无效')
+    return dict(value)
+
+
+def redact_record(record):
+    """Canonical privacy migration, also applied to legacy records before merging."""
+    if record['kind'] != 'profile':
+        return record
+    if 'network_report' not in record['payload']:
+        return dict(record, ts=float(record['ts'])) if 'network_change' in record['payload'] else record
+    payload = dict(record['payload'])
+    report = validate_report(payload.pop('network_report'), record['ts'])
+    if report['previous_ip']:
+        payload['network_change'] = dict(checked_at=report['checked_at'])
+    # SQLite stores the envelope timestamp as REAL; replays must use the same digest.
+    return dict(record, ts=float(record['ts']), payload=payload)
+
+
+def redact_persisted(database):
+    """Erase legacy report payloads without removing fact sequence positions."""
+    from .journal import canonical
+    with database.connect() as db:
+        rows = db.execute("""SELECT * FROM facts WHERE kind='profile'
+            AND json_type(payload,'$.network_report') IS NOT NULL""").fetchall()
+        pending = db.execute("SELECT 1 FROM meta WHERE key='network_history_erasure_pending'").fetchone()
+        if not rows and not pending:
+            return 0
+        db.execute('PRAGMA secure_delete=ON')
+        for row in rows:
+            original = {key: row[key] for key in ('account','origin','seq','ts','kind')}
+            original['payload'] = json.loads(row['payload'])
+            record = redact_record(original)
+            digest = hashlib.sha256(canonical(record).encode()).hexdigest()
+            db.execute('UPDATE facts SET payload=?,digest=? WHERE account=? AND origin=? AND seq=?',
+                       (canonical(record['payload']), digest, row['account'], row['origin'], row['seq']))
+        db.execute("INSERT OR REPLACE INTO meta VALUES ('network_history_erasure_pending','true')")
+        db.commit()
+        db.execute('VACUUM')
+        if db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0] == 0:
+            db.execute("DELETE FROM meta WHERE key='network_history_erasure_pending'")
+    return len(rows)
 
 
 def publish(journal, rules, config, report, now):
-    """Only IP/metadata changes become immutable facts; timestamps remain live."""
+    """Persist only change times. Current IP and metadata stay in memory."""
     value = validate_report(report, now)
-    if not rules.get('policy') or not rules.get('accounts'):
+    if not value['previous_ip'] or not rules.get('policy') or not rules.get('accounts'):
         return False
     account = rules['accounts'][0]
     with journal.db.connect() as db:
         previous = db.execute("""SELECT payload FROM facts WHERE account=? AND origin=?
-            AND kind='profile' AND json_type(payload,'$.network_report') IS NOT NULL
+            AND kind='profile' AND json_type(payload,'$.network_change') IS NOT NULL
             ORDER BY ts DESC,seq DESC LIMIT 1""", (account, config['device_id'])).fetchone()
     if previous:
-        old = json.loads(previous['payload'])['network_report']
-        if (value['checked_at'] <= old['checked_at']
-                or (not value['previous_ip'] and signature(old) == signature(value))):
+        old = json.loads(previous['payload'])['network_change']
+        if value['checked_at'] <= old['checked_at']:
             return False
-    journal.append(account, 'profile', profile(config, account, network_report=value), now)
+    journal.append(account, 'profile', profile(config, account,
+                   network_change=dict(checked_at=value['checked_at'])), now)
     return True
 
 
 def members(database, rules, devices, reports, local, now):
     """Show exactly three members, including offline observations and absent history."""
     history = {person: [] for person in PERSONS}
-    latest = {}
     accounts = rules.get('accounts', [])
     if accounts:
         with database.connect() as db:
             vector = contiguous(db, accounts[0])
             rows = db.execute("""SELECT origin,seq,ts,payload FROM facts WHERE account=?
-                AND kind='profile' AND ts<=? AND json_type(payload,'$.network_report') IS NOT NULL
+                AND kind='profile' AND ts<=? AND json_type(payload,'$.network_change') IS NOT NULL
                 ORDER BY ts DESC,origin DESC,seq DESC""", (accounts[0], now))
             for row in rows:
                 if row['seq'] > vector.get(row['origin'], 0):
                     continue
                 payload = json.loads(row['payload'])
-                value = validate_report(payload['network_report'], row['ts'])
+                value = validate_change(payload['network_change'], row['ts'])
                 device = row['origin']
-                latest.setdefault(device, value)
                 person = person_for(rules, device, row['ts'])
-                if value['previous_ip'] and person in history and len(history[person]) < 20:
+                if person in history and len(history[person]) < 20:
                     history[person].append(dict(value, device=device, device_name=payload['name']))
-    current = dict(latest)
+    current = {}
     for device, report in reports.items():
-        if device != local and not devices.get(device, {}).get('online'):
-            continue
         try:
-            value = validate_report(report, now, live=True)
+            value = validate_report(report, now)
         except (ValueError, TypeError):
             continue
         if value['checked_at'] >= current.get(device, {}).get('checked_at', -1):

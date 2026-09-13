@@ -115,7 +115,7 @@ class SharedSync:
                     directory=[copy.deepcopy(row) for device, row in sorted(self.directory.items()) if device != self.device],
                     current_account=self.current_accounts.get(self.device),
                     vectors={account: self.journal.vector(account) for account in self._labels()},
-                    **({'network_report': copy.deepcopy(self.network_reports[self.device])}
+                    **({'network_report': {key: copy.deepcopy(value) for key, value in self.network_reports[self.device].items() if key != 'previous_ip'}}
                        if self.device in self.network_reports and now-self.network_reports[self.device]['checked_at'] <= 90 else {}),
                     **({'presence': copy.deepcopy(self._presence)} if self._presence else {}))
         if len(json.dumps(message, separators=(',', ':')).encode()) > _MAX_BYTES:

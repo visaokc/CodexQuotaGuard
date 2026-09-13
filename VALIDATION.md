@@ -472,3 +472,11 @@
 - 用户模型统计移到总用量下方，四列紧凑卡片，保留 Token、占比进度条及缓存、未命中、输出、命中率明细。真实数字副本渲染已检查；四模型隔离场景验证同排、位于总用量和输入输出之间，无卡片溢出。
 - 前端 17 项数值测试、完整隔离界面测试、冻结包代码与资源一致性检查通过。回归覆盖滑到低用量窗口降刻度、刻度中间帧、回到高用量窗口升刻度、实时端点不重播、按钮仍重播。此次未修改后端和历史账本，未重复执行历史回补。
 - 18:10:40 已备份并替换运行 `outputs/0.4.7/CodexQuotaGuard-0.4.7.exe`，启动进程 38280。安装与 dist SHA256 均为 `3A70E8E006B84D3C46A326BAD57DED52D4D4266E7547F12803488110AA1D04D6`。数据与旧程序备份为 `review-047-audited-20260910-181039`。未上传 GitHub；实际滑动手感待用户审核。
+## 0.6.12 — 2026-09-13
+
+- IP privacy/controller/background regressions: 83 passed. Legacy report payloads become address-free change timestamps before storage or forwarding; repeated packets normalize to the same digest. Unrelated facts, tables and contiguous sequence vectors are preserved.
+- Final erasure/shared Engine/Bridge/sync/projection integration suite: 62 passed (77.67 s).
+- Migration tests verify that IPv4/IPv6 addresses disappear from SQLite files and WAL, pending erasure survives a blocked checkpoint or interruption, and a later startup retries physical cleanup. The bridge also strips historical fields from nested observations and history DTOs.
+- Headless Edge verifies both history panels show only time and "IP 已变更", including legacy records with address-bearing device names, locations and tooltips. IP, billing and shared UI suites passed. Current IP remains a live report; it is no longer a durable historical snapshot.
+- Frozen module/frontend matching and isolated background startup health/clean exit passed. Older clients must upgrade to 0.6.12 to erase their own stored copies; mixed-version replay can temporarily conflict. Remote disk erasure is not claimed without observing the upgraded client.
+- Local cleanup erased 152 report payloads across five database files, including 66 in the live journal, three existing backups and one diagnostic database copy. All other table contents and fact sequence positions remained identical; physical erasure completed with no pending checkpoint. Installed startup health, autostart and zero Token breakdown inconsistencies were verified after replacement.

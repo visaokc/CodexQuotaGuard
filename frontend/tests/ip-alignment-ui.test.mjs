@@ -15,7 +15,7 @@ try{
   page.on('pageerror',error=>errors.push(error.message));page.on('console',message=>{if(message.type()==='error')errors.push(message.text());});
   const fixture=billingFixture(),reportAt=Date.now()/1000-30;
   const peerReport={ip:'198.51.100.24',country:'日本',location:'日本 东京',purity:'纯净',risk_score:12,checked_at:reportAt,error:null,risk_error:null,risk_at:reportAt};
-  fixture.view.network_members=[{id:'person1',name:'橙猫猫',online:true,device:'fixture-local',report:{...peerReport,ip:'192.0.2.1',purity:null,risk_score:null},history:[]},{id:'person2',name:'A',online:false,device:'fixture-peer',report:peerReport,history:[{...peerReport,previous_ip:'192.0.2.24',device:'fixture-peer',device_name:'A的电脑'},{...peerReport,previous_ip:'192.0.2.23',ip:'192.0.2.24',checked_at:reportAt-3600,purity:'极度纯净',risk_score:0,device:'fixture-peer',device_name:'A的电脑'}]},{id:'person3',name:'第三人',online:false,device:'fixture-third',report:null,history:[]}];
+  fixture.view.network_members=[{id:'person1',name:'橙猫猫',online:true,device:'fixture-local',report:{...peerReport,ip:'192.0.2.1',purity:null,risk_score:null},history:[]},{id:'person2',name:'A',online:false,device:'fixture-peer',report:peerReport,history:[{...peerReport,previous_ip:'192.0.2.24',device:'198.51.100.77',device_name:'A的电脑 198.51.100.88',error:'ERROR_ADDRESS 198.51.100.99'},{checked_at:reportAt-3600,device:'198.51.100.66',device_name:'A的电脑 198.51.100.55'}]},{id:'person3',name:'第三人',online:false,device:'fixture-third',report:null,history:[]}];
   await page.addInitScript(data=>{window.__fixture=data;window.__commands=[];window.__CQG_TEST_BRIDGE__={snapshot:async()=>structuredClone(window.__fixture),command:async(action,payload)=>{window.__commands.push({action,payload});if(action==='network_retry')Object.assign(window.__fixture.network_guard,{checking:true,state:'checking'});if(action==='chart_history'||action==='member_history')return{ok:true,data:structuredClone(window.__fixture.view.analytics)};return{ok:true,data:{}};},window_action:async()=>({ok:true})};},fixture);
   await page.goto(`http://127.0.0.1:${server.address().port}/?test=1`);
   await page.locator('.app-shell.ready').waitFor();await page.evaluate(()=>window.__CQG_TEST__.pausePolling());
@@ -49,7 +49,15 @@ try{
   assert.equal(ipStyle.background,'rgba(0, 0, 0, 0)');assert.equal(ipStyle.color,ipStyle.parentColor);assert.equal(ipStyle.border,'rgb(115, 215, 176)');assert.equal(ipStyle.dot,'rgb(115, 215, 176)');assert.equal(ipStyle.dotContent,'""');
   assert.equal(await local.getByTestId('member-ip').innerText(),'203.0.113.20');assert.equal(await peer.getByTestId('member-ip').innerText(),'198.51.100.24');
   assert.equal(await peer.locator('.network-member-presence').innerText(),'离线');assert.equal(await third.getByTestId('member-ip').innerText(),'未上报');
-  await peer.locator('.network-history summary').click();assert.equal(await peer.getByTestId('network-history-row').count(),2);assert.equal(await peer.locator('.network-history-purity').first().evaluate(el=>getComputedStyle(el).color),'rgb(115, 215, 176)');assert.match(await peer.locator('.network-history').innerText(),/192.0.2.24/);assert.match(await peer.getByTestId('network-ip-change').first().innerText(),/192.0.2.24 →\s*198.51.100.24/);assert.doesNotMatch(await peer.locator('.network-history').innerText(),/日本 · 日本/);
+  const assertPrivateHistory=async owner=>{
+    const histories=owner.getByTestId('network-history-row');assert.equal(await histories.count(),2);
+    for(const row of await histories.all()){
+      assert.match(await row.locator('time').innerText(),/\d{2}-\d{2} \d{2}:\d{2}/);assert.equal(await row.locator('span').innerText(),'IP 已变更');
+      const html=await row.evaluate(el=>el.outerHTML);assert.doesNotMatch(html,/(?:\d{1,3}\.){3}\d{1,3}|日本|纯净|A的电脑|ERROR_ADDRESS/);assert.equal(await row.locator('[title]').count(),0);
+    }
+  };
+  await peer.locator('.network-history summary').click();await assertPrivateHistory(peer);
+
   await third.locator('.network-history summary').click();assert.equal(await third.getByTestId('network-history-row').count(),0);assert.match(await third.locator('.network-history').innerText(),/暂无历史记录/);
   await page.screenshot({path:path.join(artifacts,'ip-alignment-history-0611.png')});
   await peer.locator('.network-history summary').click();await third.locator('.network-history summary').click();
@@ -125,12 +133,12 @@ try{
   assert.equal(await dialog.getByTestId('personal-ip-details').count(),1);assert.match(await dialog.locator('.user-cycle-primary').innerText(),/总用量/);assert.match(await dialog.locator('.user-cycle-primary').innerText(),/额度消耗/);
   assert.equal(await personal.getByTestId('member-ip').innerText(),'198.51.100.24');assert.equal(await personal.getByTestId('member-purity').innerText(),'纯净');
   assert.equal(await dialog.getByTestId('shared-consumption-card').count(),1);
-  await personal.locator('.network-history summary').click();assert.equal(await personal.getByTestId('network-history-row').count(),2);await personal.scrollIntoViewIfNeeded();assert.equal(await personal.evaluate(el=>el.getBoundingClientRect().height),210);assert.ok(await personal.locator('.network-history-list').evaluate(el=>el.scrollHeight>el.clientHeight&&el.clientHeight<=125));
+  await personal.locator('.network-history summary').click();await assertPrivateHistory(personal);await personal.scrollIntoViewIfNeeded();assert.equal(await personal.evaluate(el=>el.getBoundingClientRect().height),210);assert.ok(await personal.locator('.network-history-list').evaluate(el=>el.clientHeight<=125));
   await page.screenshot({path:path.join(artifacts,'ip-alignment-personal-0611.png')});await dismiss();
   await page.evaluate(()=>{window.__fixture.settings.theme='light';window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture));});await apply(mismatch);
   assert.equal(await dialog.locator('.network-error').first().evaluate(el=>getComputedStyle(el).color),'rgb(199, 47, 72)');
   assert.equal(await local.getByTestId('member-purity').evaluate(el=>getComputedStyle(el).color),'rgb(24, 124, 88)');
   await page.screenshot({path:path.join(artifacts,'ip-alignment-light-0611.png')});
   assert.deepEqual(errors,[]);
-  console.log('Ping0 alignment UI: settings controls, compact arrow, country/location, purity and risk 0/unknown, Codex-gated native alert, three members and history, personal IP details, warning lifecycle, and paused countdown passed');
+  console.log('Ping0 alignment UI: settings controls, compact arrow, country/location, purity and risk 0/unknown, Codex-gated native alert, three members and timestamp-only history privacy, personal IP details, warning lifecycle, and paused countdown passed');
 }finally{await browser.close();server.close();}

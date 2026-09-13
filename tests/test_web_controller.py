@@ -36,6 +36,15 @@ def test_snapshot_reports_current_ui_activity(controller):
     assert controller.snapshot()['ui_active'] is True
 
 
+def test_snapshot_drops_previous_ip_from_nested_observations(controller):
+    controller._network_guard = Mock()
+    controller._network_guard.snapshot.side_effect = lambda _: dict(previous_ip='9.9.9.9',
+        current_ip='1.1.1.1', observations=[dict(ip='1.1.1.1', previous_ip='9.9.9.9')])
+    value = controller.snapshot()['network_guard']
+    assert '9.9.9.9' not in json.dumps(value)
+    assert value['current_ip'] == value['observations'][0]['ip'] == '1.1.1.1'
+
+
 def test_compensation_switch_targets_tracked_account_and_requires_bool(controller):
     controller._engine=Mock(commands=queue.Queue(),wakeup=threading.Event())
     assert controller.command('compensation_toggle',dict(account='a'*64,enabled=True))['ok']

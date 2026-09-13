@@ -125,10 +125,10 @@ def _view(value):
             result['analytics']['windows'][key] = window
     result['recovery'] = _pick(value.get('recovery'), ('scanning', 'recovered_events', 'recovered_tokens',
         'inferred_tokens', 'runtime_tokens', 'unresolved_events', 'unresolved_tokens'))
-    fields = ('ip','location','country','purity','risk_score','checked_at','error','risk_error','risk_at','device','device_name','previous_ip','codex_running')
+    fields = ('ip','location','country','purity','risk_score','checked_at','error','risk_error','risk_at','device','device_name','codex_running')
     result['network_members'] = [dict(_pick(row, ('id','name','online','device')),
         report=_pick(row['report'], fields) if row.get('report') else None,
-        history=[_pick(item, fields) for item in row.get('history', [])]) for row in value.get('network_members', [])]
+        history=[_pick(item, ('checked_at',)) for item in row.get('history', [])]) for row in value.get('network_members', [])]
     return result
 
 
@@ -242,9 +242,13 @@ class WebController:
         settings = copy.deepcopy(self._settings_cache)
         if raw['auto_block'] is not None:
             settings['auto_block'] = raw['auto_block']
+        network = self._network_guard.snapshot(raw['network_baseline'])
+        network.pop('previous_ip', None)
+        for observation in network.get('observations', []):
+            observation.pop('previous_ip', None)
         return dict(version=__version__, view=safe, settings=settings,
                     ui_active=not self._hidden,
-                    network_guard=self._network_guard.snapshot(raw['network_baseline']),
+                    network_guard=network,
                     accounts=copy.deepcopy(self._accounts_cache),
                     pairing=dict(self._pairing, **safe['connection']),
                     update=copy.deepcopy(self._update), notices=list(self._notices))

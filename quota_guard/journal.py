@@ -43,6 +43,8 @@ class Journal:
               PRIMARY KEY(account,origin,seq));
             CREATE INDEX IF NOT EXISTS facts_kind ON facts(account,kind,ts);
             ''')
+        from .network_history import redact_persisted
+        redact_persisted(self.db)
 
     def append(self, account, kind, payload, now=None):
         now = time.time() if now is None else now
@@ -95,6 +97,9 @@ class Journal:
         if r['kind'] == 'profile' and 'network_report' in p:
             from .network_history import validate_report
             validate_report(p['network_report'], r['ts'])
+        if r['kind'] == 'profile' and 'network_change' in p:
+            from .network_history import validate_change
+            validate_change(p['network_change'], r['ts'])
         if r['kind'] == 'profile' and 'member_claim' in p:
             value = p['member_claim']
             if (not isinstance(value, dict) or value.get('device') != r['origin']
@@ -170,6 +175,8 @@ class Journal:
         changes = []
         for r in records:
             self._validate(account, r)
+        from .network_history import redact_record
+        records = [redact_record(r) for r in records]
         with self.ledger.lock, self.db.connect() as db:
             if records:
                 db.execute('BEGIN IMMEDIATE')

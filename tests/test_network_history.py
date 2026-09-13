@@ -29,7 +29,7 @@ def config(device='one'):
 def network_facts(sync):
     with sync.db.connect() as db:
         return [json.loads(row[0]) for row in db.execute("SELECT payload FROM facts WHERE kind='profile'")
-                if 'network_report' in json.loads(row[0])]
+                if 'network_change' in json.loads(row[0])]
 
 
 def test_only_changes_persist_and_restart_does_not_duplicate_or_change_ledger(tmp_path):
@@ -39,13 +39,17 @@ def test_only_changes_persist_and_restart_does_not_duplicate_or_change_ledger(tm
     with sync.db.connect() as db:
         original = {table: [tuple(row) for row in db.execute('SELECT * FROM '+table)]
                     for table in ('events', 'event_details', 'epochs', 'segments', 'devices')}
-    assert publish(sync.journal, rules(), config(), report(200), 200)
+    assert not publish(sync.journal, rules(), config(), report(200), 200)
     assert not publish(sync.journal, rules(), config(), report(210), 210)
     fresh = SharedSync(sync.db, Journal(sync.db, Ledger(sync.db), 'one'), 'one', 'User one', sync.tracked)
     assert not publish(fresh.journal, rules(), config(), report(220), 220)
-    assert publish(fresh.journal, rules(), config(), report(230, '8.8.8.8'), 230)
+    changed = report(230, '8.8.8.8', previous_ip='1.1.1.1', codex_running=True)
+    assert publish(fresh.journal, rules(), config(), changed, 230)
+    assert not publish(fresh.journal, rules(), config(), changed, 240)
     assert not publish(fresh.journal, rules(), config(), report(225), 235)
-    assert len(network_facts(sync)) == 2
+    assert len(network_facts(sync)) == 1
+    assert network_facts(sync)[0]['network_change'] == {'checked_at': 230}
+    assert '8.8.8.8' not in json.dumps(network_facts(sync)) and '1.1.1.1' not in json.dumps(network_facts(sync))
     with sync.db.connect() as db:
         assert {table: [tuple(row) for row in db.execute('SELECT * FROM '+table)]
                 for table in original} == original
@@ -55,9 +59,10 @@ def test_live_catalog_refreshes_timestamp_but_only_self_report_and_no_replay(tmp
     bus = Bus()
     left, right = bus.add(tmp_path, 'one', (A,)), bus.add(tmp_path, 'two', (A,))
     mesh = bus.clients['one'][1]
-    right.network_reports['two'] = report(200)
+    right.network_reports['two'] = report(200, previous_ip='8.8.8.8', codex_running=True)
     right.network_reports['third'] = report(200, '8.8.8.8')
     catalog = right._catalog(200)
+    assert 'previous_ip' not in catalog['network_report']
     assert 'network_reports' not in catalog
     assert left.receive('two', catalog, mesh, 200)
     assert set(left.network_reports) == {'two'}
@@ -122,7 +127,7 @@ def test_three_member_offline_history_replication_and_missing_history(tmp_path):
     bus.links = set()
     state = left.snapshot(bus.clients['one'][1], 215)
     offline = members(left.db, rules(), state['members'], left.network_reports, 'one', 215)
-    assert not offline[1]['online'] and offline[1]['report']['checked_at'] == 200
+    assert not offline[1]['online'] and offline[1]['report']['checked_at'] == 210
     assert len(offline[1]['history']) == 1
 
 
@@ -140,19 +145,19 @@ def test_history_limit_and_sequence_holes_are_not_presented_as_complete_history(
     left.journal.merge(A, rows[:1])
     projected = members(left.db, rules(), {}, {}, 'one', 230)
     assert len(projected[1]['history']) == 20
-    assert projected[1]['report']['checked_at'] == 224
+    assert projected[1]['report'] is None
     assert projected[1]['history'][-1]['checked_at'] == 205
 
 
 def test_error_transition_keeps_failure_timestamp_and_can_recover(tmp_path):
     bus = Bus()
     sync = bus.add(tmp_path, 'one', (A,))
-    assert publish(sync.journal, rules(), config(), report(200), 200)
+    assert not publish(sync.journal, rules(), config(), report(200), 200)
     failed = dict(ip=None, checked_at=210, error='Ping0 暂时无法访问')
-    assert publish(sync.journal, rules(), config(), failed, 210)
+    assert not publish(sync.journal, rules(), config(), failed, 210)
     assert not publish(sync.journal, rules(), config(), dict(failed, checked_at=220), 220)
-    assert publish(sync.journal, rules(), config(), report(230), 230)
-    value = members(sync.db, rules(), {}, {}, 'one', 230)[0]
+    assert not publish(sync.journal, rules(), config(), report(230), 230)
+    value = members(sync.db, rules(), {}, {'one': report(230)}, 'one', 230)[0]
     assert value['history'] == []
     assert value['report']['ip'] == '1.1.1.1' and value['report']['checked_at'] == 230
 
@@ -181,9 +186,9 @@ def test_initial_offline_and_purity_only_reports_never_enter_history(tmp_path):
     publish(sync.journal, rules(), config(), report(200), 200)
     publish(sync.journal, rules(), config(), dict(report(210), purity='危险', risk_score=90), 210)
     publish(sync.journal, rules(), config(), report(220, '8.8.8.8'), 220)
-    value = members(sync.db, rules(), {}, {}, 'one', 230)[0]
+    value = members(sync.db, rules(), {}, {'one': report(220, '8.8.8.8')}, 'one', 230)[0]
     assert value['history'] == [] and value['report']['ip'] == '8.8.8.8'
-    assert len(network_facts(sync)) == 3
+    assert len(network_facts(sync)) == 0
 
 
 def test_delayed_engine_retains_each_change_before_latest_normal_report(tmp_path):
@@ -201,7 +206,7 @@ def test_delayed_engine_retains_each_change_before_latest_normal_report(tmp_path
     engine.step(400)
     member = engine.view['network_members'][0]
     assert [row['checked_at'] for row in member['history']] == [220, 210]
-    assert member['history'][0]['previous_ip'] == '8.8.8.8'
+    assert set(member['history'][0]) == {'checked_at', 'device', 'device_name'}
     assert not engine._network_change_pending
     engine.step(410)
     assert len(engine.view['network_members'][0]['history']) == 2

@@ -80,6 +80,8 @@ def test_live_catalog_refreshes_timestamp_but_only_self_report_and_no_replay(tmp
     dict(checked_at=1000), dict(checked_at=100), dict(checked_at=True),
     dict(risk_score=float('nan')), dict(risk_score=True), dict(risk_score=101),
     dict(country='A\nB'), dict(purity='x'*41), dict(risk_at=999), dict(device='third'),
+    dict(codex_running='true'), dict(previous_ip='8.8.8.8'),
+    dict(previous_ip='1.1.1.1', codex_running=True), dict(previous_ip='127.0.0.1', codex_running=True),
 ])
 def test_malformed_live_reports_rejected(change):
     value = report()
@@ -106,7 +108,7 @@ def test_journal_rejects_forged_origin_and_invalid_report_atomically(tmp_path):
 def test_three_member_offline_history_replication_and_missing_history(tmp_path):
     bus = Bus()
     left, right = bus.add(tmp_path, 'one', (A,)), bus.add(tmp_path, 'two', (A,))
-    publish(right.journal, rules(), config('two'), report(200), 200)
+    publish(right.journal, rules(), config('two'), report(200, previous_ip='8.8.8.8', codex_running=True), 200)
     right.network_reports['two'] = report(210)
     bus.tick(210, duplicate=True)
     state = left.snapshot(bus.clients['one'][1], 210)
@@ -128,7 +130,9 @@ def test_history_limit_and_sequence_holes_are_not_presented_as_complete_history(
     bus = Bus()
     left, right = bus.add(tmp_path, 'one', (A,)), bus.add(tmp_path, 'two', (A,))
     for index in range(25):
-        publish(right.journal, rules(), config('two'), report(200+index, '1.1.1.1' if index%2 else '8.8.8.8'), 200+index)
+        publish(right.journal, rules(), config('two'), report(200+index,
+            '1.1.1.1' if index%2 else '8.8.8.8',
+            previous_ip='8.8.8.8' if index%2 else '1.1.1.1', codex_running=True), 200+index)
     rows = right.journal.since(A, {}, limit=40)
     left.journal.merge(A, rows[1:], limit=40)
     projected = members(left.db, rules(), {}, {}, 'one', 230)
@@ -149,8 +153,8 @@ def test_error_transition_keeps_failure_timestamp_and_can_recover(tmp_path):
     assert not publish(sync.journal, rules(), config(), dict(failed, checked_at=220), 220)
     assert publish(sync.journal, rules(), config(), report(230), 230)
     value = members(sync.db, rules(), {}, {}, 'one', 230)[0]
-    assert [row['ip'] for row in value['history']] == ['1.1.1.1', None, '1.1.1.1']
-    assert value['history'][1]['checked_at'] == 210
+    assert value['history'] == []
+    assert value['report']['ip'] == '1.1.1.1' and value['report']['checked_at'] == 230
 
 
 def test_engine_accepts_report_without_three_online_members_and_publishes_view(tmp_path):
@@ -164,8 +168,40 @@ def test_engine_accepts_report_without_three_online_members_and_publishes_view(t
     value = engine.view['network_members']
     assert len(value) == 3 and value[0]['report']['ip'] == '1.1.1.1'
     assert value[0]['online'] and not value[1]['online'] and not value[2]['online']
-    assert len(value[0]['history']) == 1
+    assert value[0]['history'] == []
     engine.commands.put(('network_report', report(210)))
     engine.step(210)
     assert engine.view['network_members'][0]['report']['checked_at'] == 210
-    assert len(engine.view['network_members'][0]['history']) == 1
+    assert engine.view['network_members'][0]['history'] == []
+
+
+def test_initial_offline_and_purity_only_reports_never_enter_history(tmp_path):
+    bus = Bus()
+    sync = bus.add(tmp_path, 'one', (A,))
+    publish(sync.journal, rules(), config(), report(200), 200)
+    publish(sync.journal, rules(), config(), dict(report(210), purity='危险', risk_score=90), 210)
+    publish(sync.journal, rules(), config(), report(220, '8.8.8.8'), 220)
+    value = members(sync.db, rules(), {}, {}, 'one', 230)[0]
+    assert value['history'] == [] and value['report']['ip'] == '8.8.8.8'
+    assert len(network_facts(sync)) == 3
+
+
+def test_delayed_engine_retains_each_change_before_latest_normal_report(tmp_path):
+    from test_shared_engine import Bus as EngineBus
+    bus = EngineBus()
+    engine, _, _ = bus.add(tmp_path/'one', 'one', (A, B))
+    engine.config.update(shared_billing_v1=True, shared_group_admin='one',
+                         shared_initial_devices=['one', 'two', 'third'])
+    engine.commands.put(('network_report', report(200)))
+    engine.step(200)
+    first = report(210, '8.8.8.8', previous_ip='1.1.1.1', codex_running=True)
+    second = report(220, previous_ip='8.8.8.8', codex_running=True)
+    for value in (first, first, second, report(230)):
+        engine.commands.put(('network_report', value))
+    engine.step(400)
+    member = engine.view['network_members'][0]
+    assert [row['checked_at'] for row in member['history']] == [220, 210]
+    assert member['history'][0]['previous_ip'] == '8.8.8.8'
+    assert not engine._network_change_pending
+    engine.step(410)
+    assert len(engine.view['network_members'][0]['history']) == 2

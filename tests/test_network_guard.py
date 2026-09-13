@@ -134,6 +134,29 @@ def test_process_detection_failure_keeps_ip_monitoring():
     assert item.snapshot()['codex_running']
 
 
+def test_ip_changes_are_only_marked_during_observed_codex_use():
+    current, running = ['1.1.1.1'], [True]
+    item = guard(lambda: geo(current[0]))
+    item.process_reader = lambda: running[0]
+    item.check()
+    assert item.snapshot()['previous_ip'] is None
+    item.risk_reader = lambda ip: dict(purity='纯净', risk_score=20)
+    item.check(force=True)
+    assert item.snapshot()['previous_ip'] is None
+    current[0] = '8.8.8.8';item.check()
+    assert item.snapshot()['previous_ip'] == '1.1.1.1'
+    item.check()
+    assert item.snapshot()['previous_ip'] is None
+    running[0] = False;current[0] = '9.9.9.9';item.check()
+    assert item.snapshot()['previous_ip'] is None
+    running[0] = True;current[0] = '1.0.0.1';item.check()
+    assert item.snapshot()['previous_ip'] is None
+    item.reader = Mock(side_effect=OSError('temporary connection failure'));item.check()
+    assert item.snapshot()['previous_ip'] is None
+    item.reader = lambda: geo('8.8.4.4');item.check()
+    assert item.snapshot()['previous_ip'] == '1.0.0.1'
+
+
 def test_baseline_is_authenticated_group_policy_and_preserves_account_rules(tmp_path):
     db, journals, _ = setup_group(tmp_path)
     rules = load_rules(db, [A, B], 400)
@@ -151,7 +174,7 @@ def test_baseline_is_authenticated_group_policy_and_preserves_account_rules(tmp_
 def test_bridge_uses_verified_current_ip_and_admin_revision_not_browser_supplied_ip(controller):
     group = dict(can_manage=True, revision=2, network_baseline=None)
     controller._config.update(shared_group_enabled=True, shared_billing_v1=True)
-    controller._engine = SimpleNamespace(snapshot=lambda: dict(shared_group=group), commands=queue.Queue(), wakeup=threading.Event())
+    controller._engine = SimpleNamespace(snapshot=lambda project=None: project(dict(shared_group=group)) if project else dict(shared_group=group), commands=queue.Queue(), wakeup=threading.Event())
     item = controller._network_guard = guard()
     item.check()
     result = controller.command('network_baseline', dict(revision=2, ip='8.8.8.8'))
@@ -171,7 +194,7 @@ def test_bridge_uses_verified_current_ip_and_admin_revision_not_browser_supplied
 
 def test_native_alert_only_when_codex_running_and_once_until_recovery(controller):
     group = dict(network_baseline='8.8.8.8')
-    controller._engine = SimpleNamespace(snapshot=lambda: dict(shared_group=group), commands=queue.Queue(), wakeup=threading.Event())
+    controller._engine = SimpleNamespace(snapshot=lambda project=None: project(dict(shared_group=group)) if project else dict(shared_group=group), commands=queue.Queue(), wakeup=threading.Event())
     controller._hidden = True
     controller._window_handler = Mock(return_value=dict(ok=True))
     item = controller._network_guard = guard()
@@ -186,6 +209,10 @@ def test_native_alert_only_when_codex_running_and_once_until_recovery(controller
     assert controller._window_handler.call_count == 2
     item.process_reader = lambda: False;item.check()
     item.process_reader = lambda: True;item.check()
+    assert controller._window_handler.call_count == 3
+    item.reader = Mock(side_effect=TimeoutError('temporary network failure'))
+    item.check();item.check()
+    assert item.snapshot(group['network_baseline'])['state'] == 'error'
     assert controller._window_handler.call_count == 3
 
 

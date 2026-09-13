@@ -7,7 +7,7 @@ from .shared_policy import PERSONS, contiguous, person_for, profile
 
 
 _TEXT_LIMITS = dict(location=240, country=240, purity=40, error=320, risk_error=320)
-_FIELDS = {'ip', 'checked_at', 'risk_score', 'risk_at', *_TEXT_LIMITS}
+_FIELDS = {'ip', 'checked_at', 'risk_score', 'risk_at', 'previous_ip', 'codex_running', *_TEXT_LIMITS}
 _SEMANTIC = ('ip', 'location', 'country', 'purity', 'risk_score', 'error', 'risk_error')
 
 
@@ -15,12 +15,19 @@ def validate_report(value, now, live=False):
     if not isinstance(value, dict) or set(value)-_FIELDS:
         raise ValueError('住宅IP报告无效')
     result = {key: value.get(key) for key in _FIELDS}
+    result['codex_running'] = value.get('codex_running', False)
+    if type(result['codex_running']) is not bool:
+        raise ValueError('住宅IP报告运行状态无效')
     at = result['checked_at']
     if (type(at) not in (int, float) or not math.isfinite(at) or not 0 <= at <= now+60
             or (live and at < now-90)):
         raise ValueError('住宅IP报告时间无效')
     if result['ip'] is not None and public_ip(result['ip']) != result['ip']:
         raise ValueError('住宅IP报告地址无效')
+    previous = result['previous_ip']
+    if previous is not None and (public_ip(previous) != previous or not result['ip']
+                                or previous == result['ip'] or not result['codex_running']):
+        raise ValueError('住宅IP变更记录无效')
     for key, limit in _TEXT_LIMITS.items():
         text = result[key]
         if text is not None and (not isinstance(text, str) or not 1 <= len(text) <= limit
@@ -43,7 +50,7 @@ def signature(report):
 
 def publish(journal, rules, config, report, now):
     """Only IP/metadata changes become immutable facts; timestamps remain live."""
-    value = validate_report(report, now, live=True)
+    value = validate_report(report, now)
     if not rules.get('policy') or not rules.get('accounts'):
         return False
     account = rules['accounts'][0]
@@ -53,7 +60,8 @@ def publish(journal, rules, config, report, now):
             ORDER BY ts DESC,seq DESC LIMIT 1""", (account, config['device_id'])).fetchone()
     if previous:
         old = json.loads(previous['payload'])['network_report']
-        if value['checked_at'] <= old['checked_at'] or signature(old) == signature(value):
+        if (value['checked_at'] <= old['checked_at']
+                or (not value['previous_ip'] and signature(old) == signature(value))):
             return False
     journal.append(account, 'profile', profile(config, account, network_report=value), now)
     return True
@@ -78,7 +86,7 @@ def members(database, rules, devices, reports, local, now):
                 device = row['origin']
                 latest.setdefault(device, value)
                 person = person_for(rules, device, row['ts'])
-                if person in history and len(history[person]) < 20:
+                if value['previous_ip'] and person in history and len(history[person]) < 20:
                     history[person].append(dict(value, device=device, device_name=payload['name']))
     current = dict(latest)
     for device, report in reports.items():

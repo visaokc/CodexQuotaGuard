@@ -41,6 +41,7 @@ class Engine:
         self.shared = SharedSync(self.group_db, self.journal, config['device_id'], config['name'], self.tracked) if self.shared_mode else None
         self.shared_analytics_cache = {}
         self.shared_rules_cache = None
+        self._network_change_pending = []
         self.scanner = Scanner(database, config['codex_home'], config['device_id'], config['started_at'], self.tracked)
         self.recovery = HistoryRecovery(database, self.group_db, config['codex_home'], config['device_id'])
         self.stop_event, self.wakeup = threading.Event(), threading.Event()
@@ -62,6 +63,7 @@ class Engine:
         self.thread = None
         self.analytics_cache = {}
         self._background_mode = False
+        self._force_shared_view = False
         self._network_limited = False
         self._force_read = False
         self._force_sync = False
@@ -103,6 +105,7 @@ class Engine:
         self._background_mode = bool(value)
         if before and not self._background_mode:
             self._force_read = self._force_sync = True
+            self._force_shared_view = True
             self.wakeup.set()
 
     def _limited_network(self):
@@ -291,12 +294,21 @@ class Engine:
             if rules.get('policy'):
                 labels = {a: '账号'+str(i+1) for i, a in enumerate(rules['accounts'])}
         from .network_history import members as network_members, publish as publish_network_report
+        if rules and rules.get('policy'):
+            for change in self._network_change_pending:
+                publish_network_report(self.journal, rules, self.config, change, now)
+            self._network_change_pending.clear()
         report = self.shared.network_reports.get(self.config['device_id'])
         if report and now-report['checked_at'] <= 90:
             publish_network_report(self.journal, rules or {}, self.config, report, now)
         analytics = self.shared_analytics_cache
-        if (not analytics or now-analytics['at'] >= 10
+        if self.background_mode:
+            # Collection, synchronization and IP checks continue while hidden.
+            # The published initial/last chart is enough until the window returns.
+            analytics = analytics or self.view['analytics']
+        elif (self._force_shared_view or not analytics or now-analytics['at'] >= 10
                 or analytics.get('account_ids') != sorted(labels) or self.shared_rules_cache != rules):
+            self._force_shared_view = False
             analytics = shared_usage(self.group_db, scope, labels, now, rules=rules)
         overview = shared_overview(self.group_db, scope, labels, state.get('members', {}),
                                    self.config['device_id'], now, analytics,
@@ -591,8 +603,10 @@ class Engine:
                 self.shared_analytics_cache = None
             elif kind == 'network_report' and self.shared:
                 from .network_history import validate_report
-                report = validate_report(payload, now, live=True)
+                report = validate_report(payload, now)
                 if report['checked_at'] > self.shared.network_reports.get(self.config['device_id'], {}).get('checked_at', -1):
+                    if report['previous_ip']:
+                        self._network_change_pending.append(report)
                     self.shared.network_reports[self.config['device_id']] = report
             elif kind == 'group_rule' and self.shared and self.config.get('shared_billing_v1'):
                 from .shared_policy import load_rules
@@ -897,10 +911,12 @@ class Engine:
         self.commands.put(('cap', dict(account=ident['account'], device=self.config['device_id'], cap=cap)))
         self.wakeup.set()
 
-    def snapshot(self):
+    def snapshot(self, project=None):
         with self.view_lock:
-            result = copy.deepcopy(self.view)
-            result['auto_block'] = not self.shared_mode and bool(self.config['auto_block'])
+            value = dict(self.view, auto_block=not self.shared_mode and bool(self.config['auto_block']))
+            # The bridge copies its allowlisted DTO under the same lock, without
+            # first cloning accounting internals that it immediately discards.
+            result = project(value) if project else copy.deepcopy(value)
             self.view['notifications'] = []
         return result
 

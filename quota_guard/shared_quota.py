@@ -21,6 +21,9 @@ def segment_weights(rows, policy):
     result = {row['id']: weight(row, rates) for row in rows}
     if policy.get('unknown_weight') != 'interval_average_v1':
         return result
+    unknown = [row for row in rows if row['model'] not in rates and row['input_tokens'] is not None]
+    if not unknown:
+        return result
     # An explicitly authorized estimate, not a claim about an internal model's price.
     # Use the interval's Token-weighted model mix; all-unknown intervals use the
     # equal mean of the group's fixed rate table. Cache remains a separate channel.
@@ -28,10 +31,9 @@ def segment_weights(rows, policy):
     mix = known or [(rate, 1) for rate in rates.values()]
     total = sum(count for _, count in mix)
     average = [sum(Fraction(str(rate[index]))*count for rate, count in mix)/total for index in range(3)]
-    for row in rows:
-        if row['model'] not in rates and row['input_tokens'] is not None:
-            values = (row['input_tokens']-row['cached_input_tokens'], row['cached_input_tokens'], row['output_tokens'])
-            result[row['id']] = [int(rate*value*1_000_000) for rate, value in zip(average, values)]
+    for row in unknown:
+        values = (row['input_tokens']-row['cached_input_tokens'], row['cached_input_tokens'], row['output_tokens'])
+        result[row['id']] = [int(rate*value*1_000_000) for rate, value in zip(average, values)]
     return result
 
 

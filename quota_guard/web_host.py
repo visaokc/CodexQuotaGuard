@@ -44,6 +44,8 @@ class DesktopHost:
             scale = form.DeviceDpi / 96.0
             # Removing WinForms chrome changes ClientSize after pywebview sets Size.
             form.ClientSize = Size(round(750 * scale), round(680 * scale))
+            form.Activated += lambda _sender, _event: self.controller._set_hidden(False)
+            form.Deactivate += lambda _sender, _event: self.controller._set_hidden(True)
             self.corners()
         self.invoke(configure)
 

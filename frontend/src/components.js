@@ -116,10 +116,18 @@ export const TrendChart={
     watch(()=>[props.kind,props.data.mode,props.pannable,props.liveRevision,series.value.map(item=>item.id).join('|')].join(':'),()=>resizeScale(requestedMaximum.value));
     onBeforeUnmount(()=>cancelAnimationFrame(scaleFrame));
     const span=computed(()=>props.data.step*Math.max(1,props.data.points.length));
-    const liveEnd=ref(props.viewEnd);let clockFrame=0,clockAnchor=performance.now(),clockValue=props.viewEnd;
-    watch(()=>props.viewEnd,value=>{clockValue=props.live?Math.max(value,liveEnd.value??value):value;clockAnchor=performance.now();liveEnd.value=clockValue;});
-    onMounted(()=>{const tick=at=>{if(props.live&&Number.isFinite(clockValue))liveEnd.value=clockValue+(at-clockAnchor)/1000;clockFrame=requestAnimationFrame(tick);};clockFrame=requestAnimationFrame(tick);});
-    onBeforeUnmount(()=>cancelAnimationFrame(clockFrame));
+    const liveEnd=ref(props.viewEnd);let clockTimer=0,clockMounted=false,clockAnchor=performance.now(),clockValue=props.viewEnd;
+    function tickClock(){
+      clearTimeout(clockTimer);clockTimer=0;
+      if(!clockMounted||!props.live||!props.pannable||document.hidden||!Number.isFinite(clockValue))return;
+      liveEnd.value=clockValue+(performance.now()-clockAnchor)/1000;
+      // A live hour moves only 0.107 SVG pixels per second; avoid full-chart patches for invisible frame-sized steps.
+      clockTimer=setTimeout(tickClock,Math.max(50,Math.min(1000,span.value/width*.05*1000)));
+    }
+    watch(()=>props.viewEnd,value=>{clockValue=props.live?Math.max(value,liveEnd.value??value):value;clockAnchor=performance.now();liveEnd.value=clockValue;tickClock();});
+    watch(()=>[props.live,props.pannable],tickClock);
+    onMounted(()=>{clockMounted=true;document.addEventListener('visibilitychange',tickClock);tickClock();});
+    onBeforeUnmount(()=>{clockMounted=false;clearTimeout(clockTimer);document.removeEventListener('visibilitychange',tickClock);});
     const visibleStart=computed(()=>props.pannable&&Number.isFinite(props.viewEnd)?(props.live?liveEnd.value:props.viewEnd)-span.value:props.data.start);
     const panOffset=computed(()=>props.pannable?(props.data.start-visibleStart.value)/span.value*width:0);
     const curves=computed(()=>animated.value.map(item=>({...item,path:linePath(item.points,props.pannable?width-step.value:width,height,maximum.value),geometry:curveGeometry(item.points,props.pannable?width-step.value:width,height,maximum.value)})));

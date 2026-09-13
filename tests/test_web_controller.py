@@ -28,6 +28,14 @@ def test_bridge_exposes_only_three_public_methods(controller):
     assert [name for name in dir(controller) if not name.startswith('_')] == ['command', 'snapshot', 'window_action']
 
 
+def test_snapshot_reports_current_ui_activity(controller):
+    assert controller.snapshot()['ui_active'] is True
+    controller._set_hidden(True)
+    assert controller.snapshot()['ui_active'] is False
+    controller._set_hidden(False)
+    assert controller.snapshot()['ui_active'] is True
+
+
 def test_compensation_switch_targets_tracked_account_and_requires_bool(controller):
     controller._engine=Mock(commands=queue.Queue(),wakeup=threading.Event())
     assert controller.command('compensation_toggle',dict(account='a'*64,enabled=True))['ok']

@@ -14,8 +14,8 @@ try{
   const page=await browser.newPage({viewport:{width:750,height:680},deviceScaleFactor:1,colorScheme:'dark'}),errors=[];
   page.on('pageerror',error=>errors.push(error.message));page.on('console',message=>{if(message.type()==='error')errors.push(message.text());});
   const fixture=billingFixture(),reportAt=Date.now()/1000-30;
-  const peerReport={ip:'198.51.100.24',country:'日本',location:'东京',purity:'纯净',risk_score:12,checked_at:reportAt,error:null,risk_error:null,risk_at:reportAt};
-  fixture.view.network_members=[{id:'person1',name:'橙猫猫',online:true,device:'fixture-local',report:{...peerReport,ip:'192.0.2.1',purity:null,risk_score:null},history:[]},{id:'person2',name:'A',online:false,device:'fixture-peer',report:peerReport,history:[{...peerReport,device:'fixture-peer',device_name:'A的电脑'},{...peerReport,ip:'192.0.2.24',checked_at:reportAt-3600,purity:'极度纯净',risk_score:0,device:'fixture-peer',device_name:'A的电脑'}]},{id:'person3',name:'第三人',online:false,device:'fixture-third',report:null,history:[]}];
+  const peerReport={ip:'198.51.100.24',country:'日本',location:'日本 东京',purity:'纯净',risk_score:12,checked_at:reportAt,error:null,risk_error:null,risk_at:reportAt};
+  fixture.view.network_members=[{id:'person1',name:'橙猫猫',online:true,device:'fixture-local',report:{...peerReport,ip:'192.0.2.1',purity:null,risk_score:null},history:[]},{id:'person2',name:'A',online:false,device:'fixture-peer',report:peerReport,history:[{...peerReport,previous_ip:'192.0.2.24',device:'fixture-peer',device_name:'A的电脑'},{...peerReport,previous_ip:'192.0.2.23',ip:'192.0.2.24',checked_at:reportAt-3600,purity:'极度纯净',risk_score:0,device:'fixture-peer',device_name:'A的电脑'}]},{id:'person3',name:'第三人',online:false,device:'fixture-third',report:null,history:[]}];
   await page.addInitScript(data=>{window.__fixture=data;window.__commands=[];window.__CQG_TEST_BRIDGE__={snapshot:async()=>structuredClone(window.__fixture),command:async(action,payload)=>{window.__commands.push({action,payload});if(action==='network_retry')Object.assign(window.__fixture.network_guard,{checking:true,state:'checking'});if(action==='chart_history'||action==='member_history')return{ok:true,data:structuredClone(window.__fixture.view.analytics)};return{ok:true,data:{}};},window_action:async()=>({ok:true})};},fixture);
   await page.goto(`http://127.0.0.1:${server.address().port}/?test=1`);
   await page.locator('.app-shell.ready').waitFor();await page.evaluate(()=>window.__CQG_TEST__.pausePolling());
@@ -45,13 +45,19 @@ try{
   assert.ok(cards.every(card=>Math.abs(card.y-cards[0].y)<1));assert.ok(cards[0].x<cards[1].x&&cards[1].x<cards[2].x);assert.ok(cards.every(card=>card.width<200));
   assert.equal(await local.getByTestId('member-purity').evaluate(el=>getComputedStyle(el).color),'rgb(115, 215, 176)');
 
+  const ipStyle=await local.getByTestId('member-ip').evaluate(el=>({background:getComputedStyle(el).backgroundColor,color:getComputedStyle(el).color,parentColor:getComputedStyle(el.parentElement).color,border:getComputedStyle(el).borderColor,dot:getComputedStyle(el,'::before').backgroundColor,dotContent:getComputedStyle(el,'::before').content}));
+  assert.equal(ipStyle.background,'rgba(0, 0, 0, 0)');assert.equal(ipStyle.color,ipStyle.parentColor);assert.equal(ipStyle.border,'rgb(115, 215, 176)');assert.equal(ipStyle.dot,'rgb(115, 215, 176)');assert.equal(ipStyle.dotContent,'""');
   assert.equal(await local.getByTestId('member-ip').innerText(),'203.0.113.20');assert.equal(await peer.getByTestId('member-ip').innerText(),'198.51.100.24');
   assert.equal(await peer.locator('.network-member-presence').innerText(),'离线');assert.equal(await third.getByTestId('member-ip').innerText(),'未上报');
-  await peer.locator('.network-history summary').click();assert.equal(await peer.getByTestId('network-history-row').count(),2);assert.equal(await peer.locator('.network-history-purity').first().evaluate(el=>getComputedStyle(el).color),'rgb(115, 215, 176)');assert.match(await peer.locator('.network-history').innerText(),/192.0.2.24/);
+  await peer.locator('.network-history summary').click();assert.equal(await peer.getByTestId('network-history-row').count(),2);assert.equal(await peer.locator('.network-history-purity').first().evaluate(el=>getComputedStyle(el).color),'rgb(115, 215, 176)');assert.match(await peer.locator('.network-history').innerText(),/192.0.2.24/);assert.match(await peer.getByTestId('network-ip-change').first().innerText(),/192.0.2.24 →\s*198.51.100.24/);assert.doesNotMatch(await peer.locator('.network-history').innerText(),/日本 · 日本/);
   await third.locator('.network-history summary').click();assert.equal(await third.getByTestId('network-history-row').count(),0);assert.match(await third.locator('.network-history').innerText(),/暂无历史记录/);
   await page.screenshot({path:path.join(artifacts,'ip-alignment-history-0611.png')});
   await peer.locator('.network-history summary').click();await third.locator('.network-history summary').click();
-  assert.equal(await local.getByTestId('member-country').innerText(),'美国');assert.equal(await local.getByTestId('member-location').innerText(),'弗吉尼亚州');
+  assert.equal(await local.getByTestId('member-location').innerText(),'美国 · 弗吉尼亚州');
+  await apply(guard('aligned','203.0.113.20',{location:'美国 加利福尼亚州 洛杉矶'}));assert.equal(await local.getByTestId('member-location').innerText(),'美国 加利福尼亚州 洛杉矶');
+  assert.equal(await page.evaluate(()=>window.__fixture.network_guard.location),'美国 加利福尼亚州 洛杉矶');
+  assert.match(await local.locator('.network-history summary').innerText(),/0 条/);
+
   assert.equal(await local.getByTestId('member-purity').innerText(),'极度纯净');assert.equal(await local.getByTestId('member-risk').innerText(),'Ping0 风控值 2%');
   assert.match(await dialog.innerText(),/每10秒检测/);assert.match(await dialog.innerText(),/并非 OpenAI 评定/);assert.doesNotMatch(await dialog.innerText(),/98%|双域名/);
   await apply(guard('aligned','203.0.113.20',{risk_score:0}));assert.equal(await local.getByTestId('member-risk').innerText(),'Ping0 风控值 0%');
@@ -85,9 +91,13 @@ try{
   assert.equal(await page.locator('.app-shell.network-warning').count(),1);assert.equal(await dialog.getByRole('button',{name:'检测中…',exact:true}).isDisabled(),true);
   assert.equal(await page.getByTestId('network-title').innerText(),'住宅IP没有对齐');assert.equal(await status.evaluate(el=>el.classList.contains('aligned')),false);
   await apply(guard('error',null,{error:'出口检测超时',observations:[{host:'ping0.cc',ip:null,error:'连接超时'}],country:null,location:null,purity:null,risk_score:null}));
+  assert.equal(await page.locator('.app-shell.network-warning').count(),0);assert.equal(await dialog.count(),0);
+  await page.evaluate(()=>window.dispatchEvent(new Event('network-alert')));await page.waitForTimeout(250);assert.equal(await dialog.count(),0);
+  await apply(guard('error',null,{error:'出口检测超时',observations:[{host:'ping0.cc',ip:null,error:'连接超时'}],country:null,location:null,purity:null,risk_score:null}));assert.equal(await dialog.count(),0);
+  await status.click();
   assert.equal(await page.getByTestId('network-title').innerText(),'住宅IP检测失败');assert.match(await dialog.innerText(),/出口检测超时/);
-  assert.equal(await local.getByTestId('member-country').innerText(),'地区未获取');assert.equal(await local.getByTestId('member-location').innerText(),'地点未获取');
-  assert.equal(await page.locator('.app-shell.network-warning').count(),1);await apply(guard('aligned'));
+  assert.equal(await local.getByTestId('member-location').innerText(),'地区未获取');
+  assert.equal(await page.locator('.app-shell.network-warning').count(),0);await dismiss();await apply(guard('aligned'));
   assert.equal(await page.locator('.app-shell.network-warning').count(),0);assert.equal(await dialog.count(),0);
   // Normal polls do not replace another active dialog; recovery only closes the warning.
   await navigate('设置');await settings.getByRole('button',{name:'更新住宅IP基准',exact:true}).click();await apply(mismatch);
@@ -110,9 +120,12 @@ try{
   assert.equal(layout.height,126);assert.equal(layout.overflow,false);
   await page.screenshot({path:path.join(artifacts,'ip-alignment-overview-0611.png')});
   await page.getByTestId('device-row').nth(1).click();const personal=page.getByTestId('personal-ip-details');await personal.waitFor();await personal.scrollIntoViewIfNeeded();
+  const personalLayout=await dialog.evaluate(el=>{const total=el.querySelector('.user-cycle-primary').getBoundingClientRect(),ip=el.querySelector('.personal-ip-details').getBoundingClientRect(),models=el.querySelector('.user-model-list').getBoundingClientRect();return{total:{x:total.x,y:total.y,bottom:total.bottom},ip:{x:ip.x,y:ip.y,bottom:ip.bottom,height:ip.height},modelsTop:models.top};});
+  assert.ok(Math.abs(personalLayout.total.y-personalLayout.ip.y)<1);assert.ok(personalLayout.ip.x>personalLayout.total.x);assert.equal(personalLayout.ip.height,210);assert.ok(personalLayout.modelsTop>personalLayout.ip.bottom);
+  assert.equal(await dialog.getByTestId('personal-ip-details').count(),1);assert.match(await dialog.locator('.user-cycle-primary').innerText(),/总用量/);assert.match(await dialog.locator('.user-cycle-primary').innerText(),/额度消耗/);
   assert.equal(await personal.getByTestId('member-ip').innerText(),'198.51.100.24');assert.equal(await personal.getByTestId('member-purity').innerText(),'纯净');
   assert.equal(await dialog.getByTestId('shared-consumption-card').count(),1);
-  await personal.locator('.network-history summary').click();assert.equal(await personal.getByTestId('network-history-row').count(),2);await personal.scrollIntoViewIfNeeded();
+  await personal.locator('.network-history summary').click();assert.equal(await personal.getByTestId('network-history-row').count(),2);await personal.scrollIntoViewIfNeeded();assert.equal(await personal.evaluate(el=>el.getBoundingClientRect().height),210);assert.ok(await personal.locator('.network-history-list').evaluate(el=>el.scrollHeight>el.clientHeight&&el.clientHeight<=125));
   await page.screenshot({path:path.join(artifacts,'ip-alignment-personal-0611.png')});await dismiss();
   await page.evaluate(()=>{window.__fixture.settings.theme='light';window.__CQG_TEST__.applySnapshot(structuredClone(window.__fixture));});await apply(mismatch);
   assert.equal(await dialog.locator('.network-error').first().evaluate(el=>getComputedStyle(el).color),'rgb(199, 47, 72)');

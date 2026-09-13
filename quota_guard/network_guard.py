@@ -110,6 +110,7 @@ class NetworkGuard:
     def __init__(self, reader=probe, risk_reader=probe_risk, on_result=None, process_reader=codex_running):
         self.reader, self.risk_reader, self.on_result = reader, risk_reader, on_result
         self.process_reader, self.codex_running = process_reader, False
+        self.active_ip = None
         self.risk_cache = {}
         self.force_risk = False
         self.lock = threading.Lock()
@@ -172,6 +173,12 @@ class NetworkGuard:
             except (OSError, AttributeError):
                 running = False
             with self.lock:
+                ip = observation.get('ip')
+                observation['previous_ip'] = self.active_ip if running and ip and self.active_ip != ip else None
+                if not running:
+                    self.active_ip = None
+                elif ip:
+                    self.active_ip = ip
                 self.observations = [observation]
                 self.checked_at = time.time()
                 self.codex_running = running
@@ -204,7 +211,7 @@ class NetworkGuard:
                     check_interval=CHECK_INTERVAL, risk_cache_seconds=RISK_CACHE_SECONDS,
                     codex_running=running,
                     **{k: (rows[0].get(k) if rows else None) for k in
-                       ('country','location','purity','risk_score','risk_error','risk_at')})
+                       ('country','location','purity','risk_score','risk_error','risk_at','previous_ip')})
 
     def baseline_candidate(self):
         value = self.snapshot()

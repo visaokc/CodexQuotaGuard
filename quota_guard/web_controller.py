@@ -92,7 +92,7 @@ def _view(value):
     result['analytics'] = _pick(analytics, ('account', 'at', 'models', 'cycle_start', 'statistics_start',
         'quota_unavailable', 'donut_archive_at', 'quota_estimate', 'account_estimates'))
     if analytics.get('live_reporting'):
-        result['analytics']['personal_daily'] = analytics['live_reporting']['daily']
+        result['analytics']['personal_daily'] = copy.deepcopy(analytics['live_reporting']['daily'])
     if analytics.get('donut_windows'):
         result['analytics']['donut_windows'] = _view({'analytics': {'windows': analytics['donut_windows']}})['analytics']['windows']
     if analytics.get('cycle_pair'):
@@ -125,11 +125,17 @@ def _view(value):
             result['analytics']['windows'][key] = window
     result['recovery'] = _pick(value.get('recovery'), ('scanning', 'recovered_events', 'recovered_tokens',
         'inferred_tokens', 'runtime_tokens', 'unresolved_events', 'unresolved_tokens'))
-    fields = ('ip','location','country','purity','risk_score','checked_at','error','risk_error','risk_at','device','device_name')
+    fields = ('ip','location','country','purity','risk_score','checked_at','error','risk_error','risk_at','device','device_name','previous_ip','codex_running')
     result['network_members'] = [dict(_pick(row, ('id','name','online','device')),
         report=_pick(row['report'], fields) if row.get('report') else None,
         history=[_pick(item, fields) for item in row.get('history', [])]) for row in value.get('network_members', [])]
     return result
+
+
+def _snapshot(value):
+    return dict(view=_view(value), notifications=list(value.get('notifications', [])),
+                auto_block=value.get('auto_block'),
+                network_baseline=value.get('shared_group', {}).get('network_baseline'))
 
 
 class WebController:
@@ -228,16 +234,17 @@ class WebController:
 
     def snapshot(self):
         # Never wait for a network command, disk write, or Engine restart here.
-        raw = self._engine.snapshot() if self._engine else copy.deepcopy(self._demo_view)
-        safe = _view(raw)
+        raw = self._engine.snapshot(_snapshot) if self._engine else _snapshot(self._demo_view)
+        safe = raw['view']
         if raw.get('notifications'):
             # Engine emits these internally; arbitrary mesh payloads never enter this list.
             self._notices = list(dict.fromkeys(self._notices + raw['notifications']))[-5:]
         settings = copy.deepcopy(self._settings_cache)
-        if 'auto_block' in raw:
+        if raw['auto_block'] is not None:
             settings['auto_block'] = raw['auto_block']
         return dict(version=__version__, view=safe, settings=settings,
-                    network_guard=self._network_guard.snapshot(raw.get('shared_group', {}).get('network_baseline')),
+                    ui_active=not self._hidden,
+                    network_guard=self._network_guard.snapshot(raw['network_baseline']),
                     accounts=copy.deepcopy(self._accounts_cache),
                     pairing=dict(self._pairing, **safe['connection']),
                     update=copy.deepcopy(self._update), notices=list(self._notices))
@@ -464,10 +471,10 @@ class WebController:
     def _network_result(self):
         if self._closed.is_set() or self._network_guard.closed.is_set() or not self._engine:
             return
-        group = self._engine.snapshot().get('shared_group', {})
+        group = self._engine.snapshot(lambda value: _pick(value.get('shared_group'), ('network_baseline',)))
         value = self._network_guard.snapshot(group.get('network_baseline'))
         if self._config.get('shared_billing_v1'):
-            report = {k: value.get(k) for k in ('location','country','purity','risk_score','checked_at','error','risk_error','risk_at')}
+            report = {k: value.get(k) for k in ('location','country','purity','risk_score','checked_at','error','risk_error','risk_at','previous_ip','codex_running')}
             report['ip'] = value['current_ip']
             self._engine.commands.put(('network_report', report))
             self._engine.wakeup.set()

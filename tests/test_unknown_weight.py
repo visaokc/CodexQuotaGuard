@@ -44,3 +44,16 @@ def test_unknown_weight_does_not_mask_missing_token_details_or_bad_policy(tmp_pa
     assert accounting(rules, attribution(db, rules, 400), 400)['status']=='syncing'
     with pytest.raises(ValueError, match='未知模型'):
         publish_change(journals['one'], rules, 'one', 'one', 50, dict(unknown_weight='free'), 400)
+
+
+def test_known_models_do_not_compute_unused_unknown_model_average(monkeypatch):
+    from quota_guard import shared_quota
+    def no_average(*args):
+        raise AssertionError('Known models do not need a fallback average')
+    monkeypatch.setattr(shared_quota, 'Fraction', no_average)
+    policy = dict(rates={'known': [2, .2, 10]}, unknown_weight='interval_average_v1')
+    rows = [dict(id='known', model='known', input_tokens=100, cached_input_tokens=50,
+                 output_tokens=10, tokens=110),
+            dict(id='missing', model='unknown', input_tokens=None)]
+    assert shared_quota.segment_weights(rows, policy) == {
+        'known': [100_000_000, 10_000_000, 100_000_000], 'missing': None}

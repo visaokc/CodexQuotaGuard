@@ -15,6 +15,12 @@ def points(value):
     return value/UNIT
 
 
+def personal_balance(value):
+    """Net personal rights; keep the underlying physical inventory unchanged."""
+    available = value.get('available')
+    return available-(value.get('debt') or 0.) if available is not None else None
+
+
 def split(amount, weights):
     """Largest remainders with a stable tie order preserve every quota unit."""
     total = sum(weights.values())

@@ -7,7 +7,8 @@ from test_web_controller import controller
 def test_auto_enroll_shared_login_persists_once_and_excludes_api_and_unrelated_accounts(controller, tmp_path):
     db, _, _ = setup_group(tmp_path/'group')
     controller._config.update(shared_billing_v1=True, shared_group_enabled=True)
-    controller._engine = SimpleNamespace(group_db=db, tracked=controller._config['tracked_accounts'], snapshot=lambda:controller._demo_view)
+    controller._engine = SimpleNamespace(group_db=db, tracked=controller._config['tracked_accounts'],
+        snapshot=lambda project=None: project(controller._demo_view) if project else controller._demo_view)
     identity = dict(mode='account', account=B, label='Shared second')
     assert controller._auto_enroll(identity, 400)
     assert controller._config['tracked_accounts'][B]['added_at'] == 400

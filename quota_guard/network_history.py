@@ -7,41 +7,52 @@ from .network_guard import public_ip
 from .shared_policy import PERSONS, contiguous, person_for, profile
 
 
-_TEXT_LIMITS = dict(location=240, country=240, purity=40, error=320, risk_error=320)
-_FIELDS = {'ip', 'checked_at', 'risk_score', 'risk_at', 'previous_ip', 'codex_running', *_TEXT_LIMITS}
+_LEGACY_FIELDS = {'ip', 'previous_ip', 'location', 'country', 'purity', 'error',
+                  'risk_score', 'risk_error', 'risk_at'}
+REPORT_FIELDS = ('checked_at', 'codex_running', 'changed', 'mismatch', 'verified')
+
+
+def _validate_legacy(value, now):
+    ip, previous = value.get('ip'), value.get('previous_ip')
+    if ip is not None and public_ip(ip) != ip:
+        raise ValueError('住宅IP报告地址无效')
+    if previous is not None and (public_ip(previous) != previous or not ip
+                                or previous == ip or not value.get('codex_running', False)):
+        raise ValueError('住宅IP变更记录无效')
+    for key, limit in dict(location=240, country=240, purity=40, error=320, risk_error=320).items():
+        text = value.get(key)
+        if text is not None and (not isinstance(text, str) or not 1 <= len(text) <= limit or not text.isprintable()):
+            raise ValueError('住宅IP报告字段无效')
+    score, risk_at = value.get('risk_score'), value.get('risk_at')
+    if score is not None and (type(score) not in (int, float) or not math.isfinite(score) or not 0 <= score <= 100):
+        raise ValueError('住宅IP报告评分无效')
+    if risk_at is not None and (type(risk_at) not in (int, float) or not math.isfinite(risk_at) or not 0 <= risk_at <= value['checked_at']+60):
+        raise ValueError('住宅IP报告评分时间无效')
+    if ip is None and not value.get('error'):
+        raise ValueError('住宅IP报告缺少检测结果')
 
 
 def validate_report(value, now, live=False):
-    if not isinstance(value, dict) or set(value)-_FIELDS:
+    if not isinstance(value, dict) or set(value)-set(REPORT_FIELDS)-_LEGACY_FIELDS:
         raise ValueError('住宅IP报告无效')
-    result = {key: value.get(key) for key in _FIELDS}
-    result['codex_running'] = value.get('codex_running', False)
-    if type(result['codex_running']) is not bool:
-        raise ValueError('住宅IP报告运行状态无效')
-    at = result['checked_at']
+    at = value.get('checked_at')
     if (type(at) not in (int, float) or not math.isfinite(at) or not 0 <= at <= now+60
             or (live and at < now-90)):
         raise ValueError('住宅IP报告时间无效')
-    if result['ip'] is not None and public_ip(result['ip']) != result['ip']:
-        raise ValueError('住宅IP报告地址无效')
-    previous = result['previous_ip']
-    if previous is not None and (public_ip(previous) != previous or not result['ip']
-                                or previous == result['ip'] or not result['codex_running']):
-        raise ValueError('住宅IP变更记录无效')
-    for key, limit in _TEXT_LIMITS.items():
-        text = result[key]
-        if text is not None and (not isinstance(text, str) or not 1 <= len(text) <= limit
-                                 or not text.isprintable()):
-            raise ValueError('住宅IP报告字段无效')
-    score, risk_at = result['risk_score'], result['risk_at']
-    if score is not None and (type(score) not in (int, float) or not math.isfinite(score) or not 0 <= score <= 100):
-        raise ValueError('住宅IP报告评分无效')
-    if risk_at is not None and (type(risk_at) not in (int, float) or not math.isfinite(risk_at)
-                               or not 0 <= risk_at <= at+60):
-        raise ValueError('住宅IP报告评分时间无效')
-    if result['ip'] is None and not result['error']:
-        raise ValueError('住宅IP报告缺少检测结果')
-    return result
+    if _LEGACY_FIELDS.intersection(value):
+        _validate_legacy(value, now)
+    running = value.get('codex_running', False)
+    changed = value.get('changed', bool(value.get('previous_ip')) and running)
+    verified = value.get('verified', False)
+    mismatch = value.get('mismatch')
+    if (any(type(flag) is not bool for flag in (running, changed, verified))
+            or mismatch is not None and type(mismatch) is not bool
+            or changed and not running or mismatch is not None and not verified):
+        raise ValueError('住宅IP报告状态无效')
+    # Legacy peers may still send addresses. Strip every legacy field before storage,
+    # presentation, or forwarding; their address-based alignment is not trusted.
+    return dict(checked_at=at, codex_running=running, changed=changed,
+                mismatch=mismatch, verified=verified)
 
 
 def validate_change(value, now):
@@ -60,7 +71,7 @@ def redact_record(record):
         return dict(record, ts=float(record['ts'])) if 'network_change' in record['payload'] else record
     payload = dict(record['payload'])
     report = validate_report(payload.pop('network_report'), record['ts'])
-    if report['previous_ip']:
+    if report['changed']:
         payload['network_change'] = dict(checked_at=report['checked_at'])
     # SQLite stores the envelope timestamp as REAL; replays must use the same digest.
     return dict(record, ts=float(record['ts']), payload=payload)
@@ -92,9 +103,9 @@ def redact_persisted(database):
 
 
 def publish(journal, rules, config, report, now):
-    """Persist only change times. Current IP and metadata stay in memory."""
+    """Persist only change times; observations contain no address or location."""
     value = validate_report(report, now)
-    if not value['previous_ip'] or not rules.get('policy') or not rules.get('accounts'):
+    if not value['changed'] or not rules.get('policy') or not rules.get('accounts'):
         return False
     account = rules['accounts'][0]
     with journal.db.connect() as db:

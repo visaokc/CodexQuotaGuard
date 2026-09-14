@@ -62,7 +62,9 @@ def test_live_catalog_refreshes_timestamp_but_only_self_report_and_no_replay(tmp
     right.network_reports['two'] = report(200, previous_ip='8.8.8.8', codex_running=True)
     right.network_reports['third'] = report(200, '8.8.8.8')
     catalog = right._catalog(200)
-    assert 'previous_ip' not in catalog['network_report']
+    assert not {'ip','previous_ip','location','country','purity','risk_score'}.intersection(catalog['network_status'])
+    assert '1.1.1.1' not in json.dumps(catalog)
+    assert 'network_report' not in catalog
     assert 'network_reports' not in catalog
     assert left.receive('two', catalog, mesh, 200)
     assert set(left.network_reports) == {'two'}
@@ -70,14 +72,35 @@ def test_live_catalog_refreshes_timestamp_but_only_self_report_and_no_replay(tmp
     assert left.receive('two', right._catalog(210), mesh, 210)
     assert left.network_reports['two']['checked_at'] == 210
     older = right._catalog(211)
+    older.pop('network_status')
     older['network_report'] = report(205, '8.8.8.8')
     assert left.receive('two', older, mesh, 211)
-    assert left.network_reports['two']['ip'] == '1.1.1.1'
+    assert left.network_reports['two']['checked_at'] == 210
+    assert '1.1.1.1' not in json.dumps(left.network_reports)
     bad = right._catalog(212)
-    bad['network_report']['device'] = 'third'
+    bad['network_status']['device'] = 'third'
     assert not left.receive('two', bad, mesh, 212)
     assert set(left.network_reports) == {'two'}
-    assert 'network_report' not in right._catalog(400)
+    assert 'network_status' not in right._catalog(400)
+
+
+def test_safe_status_takes_precedence_and_legacy_reports_are_stripped(tmp_path):
+    bus = Bus()
+    left, right = bus.add(tmp_path, 'one', (A,)), bus.add(tmp_path, 'two', (A,))
+    mesh = bus.clients['one'][1]
+    right.network_reports['two'] = dict(checked_at=200, codex_running=True,
+                                       changed=True, mismatch=True, verified=True)
+    catalog = right._catalog(200)
+    catalog['network_report'] = report(200)
+    assert left.receive('two', catalog, mesh, 200)
+    assert left.network_reports['two'] == catalog['network_status']
+    legacy = right._catalog(210)
+    legacy.pop('network_status')
+    legacy['network_report'] = report(210)
+    assert left.receive('two', legacy, mesh, 210)
+    assert left.network_reports['two']['verified'] is False
+    assert set(left.network_reports['two']) == {'checked_at','codex_running','changed','mismatch','verified'}
+    assert '1.1.1.1' not in json.dumps(left.network_reports)
 
 
 @pytest.mark.parametrize('change', [
@@ -159,7 +182,7 @@ def test_error_transition_keeps_failure_timestamp_and_can_recover(tmp_path):
     assert not publish(sync.journal, rules(), config(), report(230), 230)
     value = members(sync.db, rules(), {}, {'one': report(230)}, 'one', 230)[0]
     assert value['history'] == []
-    assert value['report']['ip'] == '1.1.1.1' and value['report']['checked_at'] == 230
+    assert value['report']['checked_at'] == 230 and 'ip' not in value['report']
 
 
 def test_engine_accepts_report_without_three_online_members_and_publishes_view(tmp_path):
@@ -171,7 +194,7 @@ def test_engine_accepts_report_without_three_online_members_and_publishes_view(t
     engine.commands.put(('network_report', report(200)))
     engine.step(200)
     value = engine.view['network_members']
-    assert len(value) == 3 and value[0]['report']['ip'] == '1.1.1.1'
+    assert len(value) == 3 and 'ip' not in value[0]['report']
     assert value[0]['online'] and not value[1]['online'] and not value[2]['online']
     assert value[0]['history'] == []
     engine.commands.put(('network_report', report(210)))
@@ -187,7 +210,7 @@ def test_initial_offline_and_purity_only_reports_never_enter_history(tmp_path):
     publish(sync.journal, rules(), config(), dict(report(210), purity='危险', risk_score=90), 210)
     publish(sync.journal, rules(), config(), report(220, '8.8.8.8'), 220)
     value = members(sync.db, rules(), {}, {'one': report(220, '8.8.8.8')}, 'one', 230)[0]
-    assert value['history'] == [] and value['report']['ip'] == '8.8.8.8'
+    assert value['history'] == [] and 'ip' not in value['report']
     assert len(network_facts(sync)) == 0
 
 

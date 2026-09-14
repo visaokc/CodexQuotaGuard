@@ -1,4 +1,5 @@
 import copy
+import json
 import queue
 import threading
 import time
@@ -23,8 +24,8 @@ def geo(ip='1.1.1.1'):
     return dict(ip=ip, location='美国 加利福尼亚州 洛杉矶', country='美国')
 
 
-def guard(reader=lambda: geo(), risk_reader=lambda ip: dict(purity='极度纯净', risk_score=2)):
-    return ng.NetworkGuard(reader, risk_reader, process_reader=lambda: True)
+def guard(reader=lambda: geo()):
+    return ng.NetworkGuard(reader, process_reader=lambda: True)
 
 
 def test_probe_uses_documented_geo_and_bounded_https_without_account_credentials(monkeypatch):
@@ -35,7 +36,7 @@ def test_probe_uses_documented_geo_and_bounded_https_without_account_credentials
     opener = Mock()
     opener.open.return_value = response
     monkeypatch.setattr(ng.urllib.request, 'build_opener', lambda *args: opener)
-    assert ng.probe() == dict(ip='1.1.1.1', location='美国 洛杉矶', country='美国')
+    assert ng.probe() == dict(ip='1.1.1.1')
     request = opener.open.call_args.args[0]
     assert request.full_url == 'https://ping0.cc/geo'
     assert not {'Authorization', 'Cookie'}.intersection(request.headers)
@@ -46,30 +47,19 @@ def test_probe_uses_documented_geo_and_bounded_https_without_account_credentials
         ng.NoRedirect().redirect_request(None, None, 302, '', {}, 'http://example.com')
 
 
-def test_risk_parser_checks_ip_and_preserves_risk_instead_of_inverting_purity():
-    page = '''<script>window.ip = '1.1.1.1'</script><div class="riskitem riskcurrent"><span class="value">2%</span><span class="lab"> 极度纯净 </span></div>'''
-    assert ng.parse_risk(page, '1.1.1.1') == dict(purity='极度纯净', risk_score=2)
-    assert ng.parse_risk(page.replace('2%', '0%'), '1.1.1.1')['risk_score'] == 0
-    for invalid in (page.replace('1.1.1.1', '8.8.8.8'), page.replace('2%', '102%'), page.replace('riskcurrent', 'riskitem')):
-        with pytest.raises(ValueError): ng.parse_risk(invalid, '1.1.1.1')
-
-
-def test_risk_cache_is_keyed_by_ip_and_retry_refreshes_without_false_ip_alarm():
-    current = ['1.1.1.1']
-    risk = Mock(return_value=dict(purity='极度纯净', risk_score=2))
-    item = guard(lambda: geo(current[0]), risk)
-    item.check();item.check()
-    assert risk.call_count == 1
-    item.check(force=True)
-    assert risk.call_count == 2
-    current[0] = '8.8.8.8'
-    risk.side_effect = ValueError('Unavailable')
+def test_nonbaseline_address_and_metadata_are_not_retained_or_reported():
+    item = guard(lambda: geo('8.8.8.8'))
     item.check()
-    value = item.snapshot('8.8.8.8')
-    assert value['state'] == 'aligned' and value['purity'] is None and value['risk_score'] is None
-    assert value['risk_error'] and risk.call_count == 3
-    item.risk_cache['risk_at'] -= 601
-    item.check();assert risk.call_count == 4
+    value = item.snapshot('1.1.1.1')
+    assert value['state'] == 'mismatch' and value['verified']
+    assert value['mismatch'] is True and not value['changed']
+    assert '8.8.8.8' not in json.dumps(value) and '洛杉矶' not in json.dumps(value)
+    assert '8.8.8.8' not in repr(vars(item))
+    assert not {'current_ip','location','country','purity','risk_score','previous_ip'}.intersection(value)
+    assert not hasattr(item, 'risk_cache') and not hasattr(item, 'active_ip')
+    assert value['observations'] == [dict(host='ping0.cc', success=True, error=None)]
+    item.check(force=True)
+    assert item.snapshot('1.1.1.1')['state'] == 'mismatch'
 
 
 def test_mismatch_errors_recovery_and_expiry_never_report_false_alignment():
@@ -139,22 +129,21 @@ def test_ip_changes_are_only_marked_during_observed_codex_use():
     item = guard(lambda: geo(current[0]))
     item.process_reader = lambda: running[0]
     item.check()
-    assert item.snapshot()['previous_ip'] is None
-    item.risk_reader = lambda ip: dict(purity='纯净', risk_score=20)
+    assert item.snapshot()['changed'] is False
     item.check(force=True)
-    assert item.snapshot()['previous_ip'] is None
+    assert item.snapshot()['changed'] is False
     current[0] = '8.8.8.8';item.check()
-    assert item.snapshot()['previous_ip'] == '1.1.1.1'
+    assert item.snapshot()['changed'] is True
     item.check()
-    assert item.snapshot()['previous_ip'] is None
+    assert item.snapshot()['changed'] is False
     running[0] = False;current[0] = '9.9.9.9';item.check()
-    assert item.snapshot()['previous_ip'] is None
+    assert item.snapshot()['changed'] is False
     running[0] = True;current[0] = '1.0.0.1';item.check()
-    assert item.snapshot()['previous_ip'] is None
+    assert item.snapshot()['changed'] is False
     item.reader = Mock(side_effect=OSError('temporary connection failure'));item.check()
-    assert item.snapshot()['previous_ip'] is None
+    assert item.snapshot()['changed'] is False
     item.reader = lambda: geo('8.8.4.4');item.check()
-    assert item.snapshot()['previous_ip'] == '1.0.0.1'
+    assert item.snapshot()['changed'] is True
 
 
 def test_baseline_is_authenticated_group_policy_and_preserves_account_rules(tmp_path):
@@ -232,5 +221,6 @@ def test_member_network_bridge_exports_only_display_fields(controller):
     controller._demo_view['network_members'] = [dict(id='person1', name='Local', online=True, device='one',
         report=dict(geo(), checked_at=100, secret='hidden'), history=[dict(geo(), checked_at=90, secret='hidden')])]
     result = controller.snapshot()['view']['network_members'][0]
-    assert result['report']['ip'] == '1.1.1.1' and result['history'][0]['checked_at'] == 90
+    assert result['report'] == {'checked_at':100} and result['history'][0]['checked_at'] == 90
+    assert '1.1.1.1' not in json.dumps(result)
     assert 'secret' not in result['report'] and 'secret' not in result['history'][0]

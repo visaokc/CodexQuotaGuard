@@ -605,7 +605,7 @@ class Engine:
                 from .network_history import validate_report
                 report = validate_report(payload, now)
                 if report['checked_at'] > self.shared.network_reports.get(self.config['device_id'], {}).get('checked_at', -1):
-                    if report['previous_ip']:
+                    if report['changed']:
                         self._network_change_pending.append(report)
                     self.shared.network_reports[self.config['device_id']] = report
             elif kind == 'group_rule' and self.shared and self.config.get('shared_billing_v1'):

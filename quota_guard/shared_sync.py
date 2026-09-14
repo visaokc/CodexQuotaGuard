@@ -108,6 +108,7 @@ class SharedSync:
         return result
 
     def _catalog(self, now):
+        from .network_history import validate_report
         own = self.directory[self.device]
         message = dict(type='group_sync', at=now, name=own['name'], revision=own['revision'],
                     app_version=__version__,
@@ -115,7 +116,7 @@ class SharedSync:
                     directory=[copy.deepcopy(row) for device, row in sorted(self.directory.items()) if device != self.device],
                     current_account=self.current_accounts.get(self.device),
                     vectors={account: self.journal.vector(account) for account in self._labels()},
-                    **({'network_report': {key: copy.deepcopy(value) for key, value in self.network_reports[self.device].items() if key != 'previous_ip'}}
+                    **({'network_status': validate_report(self.network_reports[self.device], now)}
                        if self.device in self.network_reports and now-self.network_reports[self.device]['checked_at'] <= 90 else {}),
                     **({'presence': copy.deepcopy(self._presence)} if self._presence else {}))
         if len(json.dumps(message, separators=(',', ':')).encode()) > _MAX_BYTES:
@@ -183,7 +184,7 @@ class SharedSync:
             if current is None:
                 raise ValueError('设备心跳无效')
             self._presence_value(peer, current, presence, now)
-        network_report = message.get('network_report')
+        network_report = message.get('network_status', message.get('network_report'))
         if network_report is not None:
             from .network_history import validate_report
             network_report = validate_report(network_report, now, live=True)

@@ -4,6 +4,7 @@ import json
 from .analytics import usage
 from .cycle_statistics import cycle_statistics
 from .cycle_pair import choose_cycles
+from .pool_accounting import personal_balance
 
 
 def person_rows(database, row, rules, now, share_tokens=False):
@@ -262,7 +263,7 @@ def shared_overview(database, scope, accounts, members, local, now, analytics, r
             quota = sum(row['quota'] for row in analytics['windows']['cycle']['quota_rows'] if row['device'] == person)
             value = billing.get('people', {}).get(person, {})
             confirmed = (billing.get('last_confirmed') or {}).get('people', {}).get(person, {})
-            debt, available = value.get('debt'), value.get('available')
+            debt, available = value.get('debt'), personal_balance(value)
             pending = any(row['device'] == person for row in analytics['windows']['cycle']['quota_pending_rows'])
             name = next((people[d]['name'] for d in attached if people[d].get('name')), '待加入成员' if index == 2 else '成员'+str(index+1))
             active_models = latest_active_models(database, people, device_rows, now)
@@ -274,7 +275,7 @@ def shared_overview(database, scope, accounts, members, local, now, analytics, r
                 carry=value['fair_usage']-quota if value.get('fair_usage') is not None else 0,
                 fair_usage=value.get('fair_usage'),
                 tokens=totals.get(person, 0), available=available, rollover=value.get('rollover'), available_cap=100/3, debt=debt, pending_debt=value.get('pending'),
-                confirmed_available=confirmed.get('available'), confirmed_available_cap=100/3,
+                confirmed_available=personal_balance(confirmed), confirmed_available_cap=100/3,
                 confirmed_debt=value.get('confirmed'), by_account=value.get('by_account', {}), removed=False,
                 active=sum(d.get('active', 0) for d in device_rows), uncertain=sum(d.get('uncertain', 0) for d in device_rows),
                 unbound_active=sum(d.get('unbound_active', 0) for d in device_rows), unbound_uncertain=sum(d.get('unbound_uncertain', 0) for d in device_rows),

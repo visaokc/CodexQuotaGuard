@@ -4,7 +4,7 @@ from datetime import datetime
 from .shared_costs import apply, token_shares
 from .shared_policy import PERSONS, person_for
 from .shared_quota import segment_weights
-from .pool_accounting import points, units
+from .pool_accounting import points, units, personal_balance
 from .quota_estimation import fit_rate, project
 
 PERSONAL_BASE = 100/3
@@ -125,9 +125,9 @@ def reports(database, rules, attributed, billing, now):
     stale_reset = bool(reset_pending.intersection(set(rules['accounts'])-paused)) or any(epochs and epochs[-1]['started'] > base_at for account, epochs in attributed['epochs'].items() if account not in paused)
     balances = {}
     for person in PERSONS:
-        available = base.get(person, {}).get('available')
+        available = personal_balance(base.get(person, {}))
         pending = sum(row['quota'] for row in estimates if row['device'] == person and row['account'] not in paused)
-        balances[person] = dict(available_estimate=max(0., available-pending) if available is not None and not stale_reset and person not in incomplete else None,
+        balances[person] = dict(available_estimate=available-pending if available is not None and not stale_reset and person not in incomplete else None,
             balance_estimated=bool(pending or confirmed) and not stale_reset and person not in incomplete,
             estimate_missing=stale_reset or person in incomplete,
             estimate_pending=pending, estimate_at=base_at)

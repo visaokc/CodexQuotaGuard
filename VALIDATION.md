@@ -1,3 +1,15 @@
+## 0.6.13 — 2026-09-15
+
+- Fixed-copy accounting audit: 16,933 raw events, 2,186,025,228 Token, zero input/output/cache breakdown errors. Current-cycle attributed units conserve official increments; stream event IDs are unique; debts sum to zero. Original Token and quota facts were not edited.
+- Personal display now uses inventory minus signed debt, including the last-confirmed fallback, before subtracting projected consumption. Physical inventory and repayment remain unchanged. The same snapshot projects personal balances of 0.6%, -1.5%, and 69.6% on the exact 100/3-point basis.
+- Accounting/estimation regressions: 32 passed. Maintenance, rollover, paused-account, reset, clean-start and donut regressions: 41 passed. Natural/card repayment and temporary-reset waiver are covered without double deductions.
+- Full backend run: 631 passed; one pre-existing auto-enrollment test double lacked the snapshot projection parameter. The test double was updated to the actual interface; follow-up auto-enrollment and latest network-history tests: 30 passed. Latest sync/engine/bridge/background/window/projection integration suite: 83 passed.
+- Network observations retain only process-lifetime keyed fingerprints. UI DTOs, live member reports and persisted change records contain no detected address, country, location or purity. The public baseline remains visible. Legacy incoming address reports are validated and stripped before forwarding or persistence.
+- New status travels in the optional network_status catalog field. The actual v0.6.12 receiver accepted a new catalog; older clients can continue quota synchronization while awaiting upgrade.
+- Existing local and working-copy database verification: 199 databases, no legacy address reports, timestamp-only change records, no pending SQLite/WAL erasure. No additional legacy rows needed deletion. Other members' disks were not directly inspected.
+
+- Headless Edge: baseline-only member and personal cards, address-bearing legacy fields/errors excluded from DOM, negative personal balance (-30.0%) with zero-width fill, Codex-only alert gating, retry deduplication and paused-account UI passed. Status and personal-card screenshots were visually inspected. No user desktop input was taken.
+
 ## 0.6.11 — 2026-09-13
 
 - Network guard/history, shared sync/engine and web controller regressions: 109 passed (85.72 s). Coverage includes Ping0 identity/response validation, risk cache, ten-second polling, process-detection failure, native alert dispatch/deduplication, authenticated reports, stale/replayed report rejection, Codex-running IP changes, delayed report batches and unchanged quota records.

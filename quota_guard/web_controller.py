@@ -125,7 +125,7 @@ def _view(value):
             result['analytics']['windows'][key] = window
     result['recovery'] = _pick(value.get('recovery'), ('scanning', 'recovered_events', 'recovered_tokens',
         'inferred_tokens', 'runtime_tokens', 'unresolved_events', 'unresolved_tokens'))
-    fields = ('ip','location','country','purity','risk_score','checked_at','error','risk_error','risk_at','device','device_name','codex_running')
+    fields = ('checked_at','codex_running','changed','mismatch','verified')
     result['network_members'] = [dict(_pick(row, ('id','name','online','device')),
         report=_pick(row['report'], fields) if row.get('report') else None,
         history=[_pick(item, ('checked_at',)) for item in row.get('history', [])]) for row in value.get('network_members', [])]
@@ -478,14 +478,14 @@ class WebController:
         group = self._engine.snapshot(lambda value: _pick(value.get('shared_group'), ('network_baseline',)))
         value = self._network_guard.snapshot(group.get('network_baseline'))
         if self._config.get('shared_billing_v1'):
-            report = {k: value.get(k) for k in ('location','country','purity','risk_score','checked_at','error','risk_error','risk_at','previous_ip','codex_running')}
-            report['ip'] = value['current_ip']
+            from .network_history import REPORT_FIELDS
+            report = {key: value.get(key) for key in REPORT_FIELDS}
             self._engine.commands.put(('network_report', report))
             self._engine.wakeup.set()
         if value['state'] == 'aligned' or not value['codex_running']:
             self._network_episode = None
         elif value['state'] == 'mismatch':
-            episode = (value['baseline'], value['current_ip'])
+            episode = value['baseline']
             if episode != self._network_episode:
                 if self._hidden and self._window_handler:
                     try:
